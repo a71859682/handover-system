@@ -5,13 +5,15 @@ import sqlite3
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask
 from openpyxl import load_workbook
 from werkzeug.security import generate_password_hash
 
 from db_compat import IntegrityError, connect_db
 from routes.admin import admin_bp
+from routes.api import api_bp
 from routes.auth import admin_required as auth_admin_required, auth_bp, login_required as auth_login_required
+from routes.sheet import sheet_bp
 from services.progress_service import reset_sheet, update_progress, update_unit_extra
 from services.sheet_service import available_sheets, load_grid, render_grid_payload, resolve_sheet_id
 
@@ -48,7 +50,9 @@ app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
 ASSET_VERSION = "20260627-010"
 app.register_blueprint(admin_bp)
+app.register_blueprint(api_bp)
 app.register_blueprint(auth_bp)
+app.register_blueprint(sheet_bp)
 
 
 @app.context_processor
@@ -472,88 +476,9 @@ def bootstrap() -> None:
         ensure_extra_fields(conn)
         migrate_unit_layout(conn)
 
-
-@app.route("/")
-def index():
-    if not session.get("user_id"):
-        return redirect(url_for("auth.login"))
-    return redirect(url_for("sheet"))
-
 def query_settings() -> dict[str, str]:
     with db() as conn:
         return get_settings(conn)
-
-
-@app.route("/sheet")
-@app.route("/sheet/<int:sheet_id>")
-@login_required
-def sheet(sheet_id: int | None = None):
-    with db() as conn:
-        resolved = resolve_sheet_id(conn, sheet_id)
-    session["sheet_id"] = resolved
-    grid = load_grid(resolved)
-    return render_template(
-        "sheet.html",
-        grid=grid,
-        settings=grid["settings"],
-        done_value=DONE_VALUE,
-        working_value=WORKING_VALUE,
-    )
-
-
-@app.route("/api/grid")
-@login_required
-def api_grid():
-    sheet_id = request.args.get("sheet_id", type=int) or session.get("sheet_id")
-    return jsonify(render_grid_payload(sheet_id))
-
-
-@app.route("/api/progress", methods=["POST"])
-@login_required
-def api_progress():
-    data = request.get_json(force=True)
-    result = update_progress(
-        unit_id=int(data.get("unit_id")),
-        task_id=int(data.get("task_id")),
-        value=data.get("value", WORKING_VALUE),
-        user_id=session["user_id"],
-        fallback_sheet_id=session.get("sheet_id"),
-    )
-    if not result["ok"]:
-        return jsonify(result), 400
-    return jsonify({"ok": True, "grid": render_grid_payload(result["sheet_id"])})
-
-
-@app.route("/api/unit-extra", methods=["POST"])
-@login_required
-def api_unit_extra():
-    data = request.get_json(force=True)
-    result = update_unit_extra(
-        unit_id=int(data.get("unit_id")),
-        field=data.get("field", ""),
-        value=data.get("value", ""),
-        user_id=session["user_id"],
-        fallback_sheet_id=session.get("sheet_id"),
-    )
-    if not result["ok"]:
-        return jsonify(result), 400
-    return jsonify({"ok": True, "grid": render_grid_payload(result["sheet_id"])})
-
-
-@app.route("/api/reset-sheet", methods=["POST"])
-@admin_required
-def api_reset_sheet():
-    data = request.get_json(force=True)
-    result = reset_sheet(
-        sheet_id=data.get("sheet_id") or session.get("sheet_id"),
-        user_id=session["user_id"],
-        password=data.get("password", ""),
-    )
-    if not result["ok"]:
-        return jsonify(result), 403
-    return jsonify({"ok": True, "grid": render_grid_payload(result["sheet_id"])})
-
-
 bootstrap()
 
 if __name__ == "__main__":
