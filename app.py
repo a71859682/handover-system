@@ -5,11 +5,11 @@ import sqlite3
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask
+from flask import Flask, has_app_context
 from openpyxl import load_workbook
 from werkzeug.security import generate_password_hash
 
-from config import APP_DB_PATH, DATABASE_URL
+from config import APP_DB_PATH, DATABASE_URL, USE_SQLALCHEMY_READS
 from database import init_database
 from db_compat import IntegrityError, connect_db
 from routes.admin import admin_bp
@@ -17,6 +17,7 @@ from routes.api import api_bp
 from routes.auth import admin_required as auth_admin_required, auth_bp, login_required as auth_login_required
 from routes.sheet import sheet_bp
 from services.progress_service import reset_sheet, update_progress, update_unit_extra
+from services.settings_orm_service import get_setting_orm, get_settings_orm
 from services.sheet_service import available_sheets, load_grid, render_grid_payload, resolve_sheet_id
 from tools.import_seed import import_seed_into_conn
 
@@ -222,11 +223,23 @@ def seed_admin(conn: sqlite3.Connection) -> None:
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return get_setting_orm(key, DEFAULT_SETTINGS[key])
+        with app.app_context():
+            return get_setting_orm(key, DEFAULT_SETTINGS[key])
+
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else DEFAULT_SETTINGS[key]
 
 
 def get_settings(conn: sqlite3.Connection) -> dict[str, str]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return get_settings_orm(DEFAULT_SETTINGS)
+        with app.app_context():
+            return get_settings_orm(DEFAULT_SETTINGS)
+
     settings = DEFAULT_SETTINGS.copy()
     rows = conn.execute("SELECT key, value FROM meta").fetchall()
     for row in rows:
