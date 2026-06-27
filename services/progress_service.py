@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from werkzeug.security import check_password_hash
 
+from services.write_service import upsert_progress_sqlite
+
 
 def _app_state():
     import app
@@ -25,16 +27,12 @@ def update_progress(unit_id, task_id, value, user_id, fallback_sheet_id=None):
         return {"ok": False, "message": "Value must be O or X."}
 
     with app.db() as conn:
-        conn.execute(
-            """
-            INSERT INTO progress (unit_id, task_id, value, updated_by, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(unit_id, task_id) DO UPDATE SET
-                value = excluded.value,
-                updated_by = excluded.updated_by,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (unit_id, task_id, value, user_id),
+        upsert_progress_sqlite(
+            conn,
+            unit_id=unit_id,
+            task_id=task_id,
+            value=value,
+            updated_by=user_id,
         )
 
     return {"ok": True, "sheet_id": _sheet_id_for_unit(unit_id, fallback_sheet_id)}

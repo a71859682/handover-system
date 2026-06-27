@@ -33,6 +33,12 @@ from services.sheets_orm_service import (
     list_units_for_floor_orm,
 )
 from services.users_orm_service import get_user_by_id_orm, get_user_by_username_orm, list_users_orm
+from services.write_service import (
+    create_sheet_sqlite,
+    create_user_sqlite,
+    seed_settings_sqlite,
+    upsert_setting_sqlite,
+)
 from tools.import_seed import import_seed_into_conn
 
 
@@ -516,9 +522,12 @@ def seed_admin(conn: sqlite3.Connection) -> None:
     exists = conn.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()
     if exists:
         return
-    conn.execute(
-        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
-        ("admin", "管理員", generate_password_hash("admin"), "admin"),
+    create_user_sqlite(
+        conn,
+        username="admin",
+        display_name="管理員",
+        password_hash=generate_password_hash("admin"),
+        role="admin",
     )
 
 
@@ -549,20 +558,11 @@ def get_settings(conn: sqlite3.Connection) -> dict[str, str]:
 
 
 def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
-    conn.execute(
-        """
-        INSERT INTO meta (key, value) VALUES (?, ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """,
-        (key, value),
-    )
+    upsert_setting_sqlite(conn, key, value)
 
 
 def seed_settings(conn: sqlite3.Connection) -> None:
-    for key, value in DEFAULT_SETTINGS.items():
-        row = conn.execute("SELECT key FROM meta WHERE key = ?", (key,)).fetchone()
-        if not row:
-            set_setting(conn, key, value)
+    seed_settings_sqlite(conn, DEFAULT_SETTINGS)
 
 
 def seed_from_excel(conn: sqlite3.Connection) -> None:
@@ -576,8 +576,7 @@ def seed_from_excel(conn: sqlite3.Connection) -> None:
     ws = wb.active
     sheet_row = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
     if not sheet_row:
-        cur = conn.execute("INSERT INTO sheets (name, sort_order) VALUES (?, ?)", (get_setting(conn, "tab_title"), 1))
-        sheet_id = cur.lastrowid
+        sheet_id = create_sheet_sqlite(conn, name=get_setting(conn, "tab_title"), sort_order=1)
     else:
         sheet_id = sheet_row["id"]
     task_ids: dict[int, int] = {}
@@ -670,11 +669,7 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         )
     sheet = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
     if not sheet:
-        cur = conn.execute(
-            "INSERT INTO sheets (name, sort_order) VALUES (?, ?)",
-            (get_setting(conn, "tab_title"), 1),
-        )
-        default_sheet_id = cur.lastrowid
+        default_sheet_id = create_sheet_sqlite(conn, name=get_setting(conn, "tab_title"), sort_order=1)
     else:
         default_sheet_id = sheet["id"]
     if "sheet_id" not in task_cols:
