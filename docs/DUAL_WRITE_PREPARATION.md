@@ -31,6 +31,21 @@ Current boundary:
   dry-run does not perform any PostgreSQL `INSERT`, `UPDATE`, or `DELETE`
 - Logged fields:
   `operation`, `table`, `key`, `fields`, `timestamp`, `dry_run=true`
+- Log visibility:
+  dry-run logs should appear in Render Logs, gunicorn logs, local console output, or local `server.err.log`
+- Expected prefix:
+  `DUAL_WRITE_DRY_RUN operation=... table=... key=... fields=... timestamp=... dry_run=true`
+
+## Observing Dry-Run Logs
+
+- Render:
+  open the service logs and search for `DUAL_WRITE_DRY_RUN`
+- gunicorn / platform logs:
+  search stderr/stdout for `DUAL_WRITE_DRY_RUN`
+- Local Flask server:
+  run with `DUAL_WRITE_DRY_RUN=true` and inspect console output or redirected `server.err.log`
+- Verification flow:
+  modify a setting, update progress, create a sheet, or create a user, then confirm a matching `DUAL_WRITE_DRY_RUN` line appears
 
 ## Write Entry Inventory
 
