@@ -3,7 +3,7 @@ gunicorn==23.0.0
 openpyxl==3.1.5
 Werkzeug==3.1.8
 psycopg[binary]==3.3.4
-SQLAlchemy
-Flask-SQLAlchemy
-Flask-Migrate
-Alembic
+SQLAlchemy==2.0.51
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.1.0
+Alembic==1.18.5
