@@ -12,6 +12,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from db_compat import IntegrityError, connect_db
 from routes.auth import admin_required as auth_admin_required, auth_bp, login_required as auth_login_required
+from services.progress_service import reset_sheet, update_progress, update_unit_extra
 from services.sheet_service import available_sheets, load_grid, render_grid_payload, resolve_sheet_id
 
 
@@ -533,9 +534,9 @@ def api_grid():
     return jsonify(render_grid_payload(sheet_id))
 
 
-@app.route("/api/progress", methods=["POST"])
+@app.route("/_legacy_api_progress_disabled", methods=["POST"])
 @login_required
-def api_progress():
+def legacy_api_progress_disabled():
     data = request.get_json(force=True)
     unit_id = int(data.get("unit_id"))
     task_id = int(data.get("task_id"))
@@ -561,9 +562,9 @@ def api_progress():
     return jsonify({"ok": True, "grid": render_grid_payload(sheet_row["sheet_id"] if sheet_row else session.get("sheet_id"))})
 
 
-@app.route("/api/unit-extra", methods=["POST"])
+@app.route("/_legacy_api_unit_extra_disabled", methods=["POST"])
 @login_required
-def api_unit_extra():
+def legacy_api_unit_extra_disabled():
     data = request.get_json(force=True)
     unit_id = int(data.get("unit_id"))
     field = data.get("field", "")
@@ -615,9 +616,9 @@ def api_unit_extra():
     return jsonify({"ok": True, "grid": render_grid_payload(sheet_row["sheet_id"] if sheet_row else session.get("sheet_id"))})
 
 
-@app.route("/api/reset-sheet", methods=["POST"])
+@app.route("/_legacy_api_reset_sheet_disabled", methods=["POST"])
 @admin_required
-def api_reset_sheet():
+def legacy_api_reset_sheet_disabled():
     data = request.get_json(force=True)
     password = data.get("password", "")
     user = query_one("SELECT * FROM users WHERE id = ?", (session["user_id"],))
@@ -666,6 +667,52 @@ def api_reset_sheet():
             (sheet_id, sheet_id),
         )
     return jsonify({"ok": True, "grid": render_grid_payload(sheet_id)})
+
+
+@app.route("/api/progress", methods=["POST"])
+@login_required
+def api_progress():
+    data = request.get_json(force=True)
+    result = update_progress(
+        unit_id=int(data.get("unit_id")),
+        task_id=int(data.get("task_id")),
+        value=data.get("value", WORKING_VALUE),
+        user_id=session["user_id"],
+        fallback_sheet_id=session.get("sheet_id"),
+    )
+    if not result["ok"]:
+        return jsonify(result), 400
+    return jsonify({"ok": True, "grid": render_grid_payload(result["sheet_id"])})
+
+
+@app.route("/api/unit-extra", methods=["POST"])
+@login_required
+def api_unit_extra():
+    data = request.get_json(force=True)
+    result = update_unit_extra(
+        unit_id=int(data.get("unit_id")),
+        field=data.get("field", ""),
+        value=data.get("value", ""),
+        user_id=session["user_id"],
+        fallback_sheet_id=session.get("sheet_id"),
+    )
+    if not result["ok"]:
+        return jsonify(result), 400
+    return jsonify({"ok": True, "grid": render_grid_payload(result["sheet_id"])})
+
+
+@app.route("/api/reset-sheet", methods=["POST"])
+@admin_required
+def api_reset_sheet():
+    data = request.get_json(force=True)
+    result = reset_sheet(
+        sheet_id=data.get("sheet_id") or session.get("sheet_id"),
+        user_id=session["user_id"],
+        password=data.get("password", ""),
+    )
+    if not result["ok"]:
+        return jsonify(result), 403
+    return jsonify({"ok": True, "grid": render_grid_payload(result["sheet_id"])})
 
 
 @app.route("/admin/users", methods=["GET", "POST"])
