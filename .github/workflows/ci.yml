@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check progress ORM
+        run: python tools/check_progress_orm.py
+
+      - name: Check sheets ORM
+        run: python tools/check_sheets_orm.py
+
+      - name: Check users ORM
+        run: python tools/check_users_orm.py
+
+      - name: Check settings ORM
+        run: python tools/check_settings_orm.py
+
+      - name: Check model schema
+        run: python tools/check_model_schema.py
+
+      - name: Run smoke test
+        run: python tests/smoke_test.py
