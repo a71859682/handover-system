@@ -34,13 +34,13 @@ def admin_required(fn):
 
 @auth_bp.route("/login", methods=["GET", "POST"])
 def login():
-    from app import query_one, query_settings
+    from app import get_user_by_username, query_settings
 
     settings = query_settings()
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
-        user = query_one("SELECT * FROM users WHERE username = ?", (username,))
+        user = get_user_by_username(username)
         if user and check_password_hash(user["password_hash"], password):
             session.clear()
             session["user_id"] = user["id"]

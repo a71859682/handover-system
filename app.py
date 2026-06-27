@@ -19,6 +19,7 @@ from routes.sheet import sheet_bp
 from services.progress_service import reset_sheet, update_progress, update_unit_extra
 from services.settings_orm_service import get_setting_orm, get_settings_orm
 from services.sheet_service import available_sheets, load_grid, render_grid_payload, resolve_sheet_id
+from services.users_orm_service import get_user_by_id_orm, get_user_by_username_orm, list_users_orm
 from tools.import_seed import import_seed_into_conn
 
 
@@ -82,6 +83,58 @@ def db():
 def query_one(sql: str, params: tuple = ()) -> sqlite3.Row | None:
     with db() as conn:
         return conn.execute(sql, params).fetchone()
+
+
+def _user_to_payload(row, include_password_hash: bool = True) -> dict[str, object] | None:
+    if row is None:
+        return None
+
+    payload = {
+        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
+        "username": row["username"] if isinstance(row, sqlite3.Row) else row.username,
+        "display_name": row["display_name"] if isinstance(row, sqlite3.Row) else row.display_name,
+        "role": row["role"] if isinstance(row, sqlite3.Row) else row.role,
+        "created_at": row["created_at"] if isinstance(row, sqlite3.Row) else row.created_at,
+    }
+    if include_password_hash:
+        payload["password_hash"] = (
+            row["password_hash"] if isinstance(row, sqlite3.Row) else row.password_hash
+        )
+    return payload
+
+
+def get_user_by_username(username: str) -> dict[str, object] | None:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return _user_to_payload(get_user_by_username_orm(username))
+        with app.app_context():
+            return _user_to_payload(get_user_by_username_orm(username))
+
+    return _user_to_payload(query_one("SELECT * FROM users WHERE username = ?", (username,)))
+
+
+def get_user_by_id(user_id: int) -> dict[str, object] | None:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return _user_to_payload(get_user_by_id_orm(user_id))
+        with app.app_context():
+            return _user_to_payload(get_user_by_id_orm(user_id))
+
+    return _user_to_payload(query_one("SELECT * FROM users WHERE id = ?", (user_id,)))
+
+
+def list_users() -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_user_to_payload(user, include_password_hash=False) for user in list_users_orm()]
+        with app.app_context():
+            return [_user_to_payload(user, include_password_hash=False) for user in list_users_orm()]
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, username, display_name, role, created_at FROM users ORDER BY id"
+        ).fetchall()
+    return [_user_to_payload(row, include_password_hash=False) for row in rows]
 
 
 def login_required(fn):

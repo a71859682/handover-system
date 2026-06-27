@@ -79,8 +79,8 @@ def users():
         return redirect(url_for("admin.users"))
 
     with app.db() as conn:
-        all_users = conn.execute("SELECT id, username, display_name, role, created_at FROM users ORDER BY id").fetchall()
         settings = app.get_settings(conn)
+    all_users = app.list_users()
     return render_template("users.html", users=all_users, settings=settings)
 
 

@@ -91,7 +91,7 @@ def update_unit_extra(unit_id, field, value, user_id, fallback_sheet_id=None):
 def reset_sheet(sheet_id, user_id, password):
     app = _app_state()
 
-    user = app.query_one("SELECT * FROM users WHERE id = ?", (user_id,))
+    user = app.get_user_by_id(user_id)
     if not user or not check_password_hash(user["password_hash"], password):
         return {"ok": False, "message": "Password verification failed."}
 
