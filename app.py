@@ -10,9 +10,11 @@ from flask import Flask, flash, jsonify, redirect, render_template, request, ses
 from openpyxl import load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from db_compat import connect as db_connect
+
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = Path(os.environ.get("APP_DB_PATH", r"I:\公司web\大英新埔\site.db"))
+DB_PATH = BASE_DIR / "site.db"  # SQLite fallback only; production uses DATABASE_URL
 SOURCE_XLSX = BASE_DIR / "source.xlsx"
 MAX_WORK_COL = 60  # D:BH
 DONE_VALUE = "O"
@@ -49,13 +51,11 @@ def inject_asset_version():
     return {"asset_version": ASSET_VERSION}
 
 
-def db() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def db():
+    return db_connect()
 
 
-def query_one(sql: str, params: tuple = ()) -> sqlite3.Row | None:
+def query_one(sql: str, params: tuple = ()) -> dict | None:
     with db() as conn:
         return conn.execute(sql, params).fetchone()
 
@@ -83,7 +83,7 @@ def admin_required(fn):
     return wrapper
 
 
-def init_schema(conn: sqlite3.Connection) -> None:
+def init_schema(conn) -> None:
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -184,7 +184,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     )
 
 
-def seed_admin(conn: sqlite3.Connection) -> None:
+def seed_admin(conn) -> None:
     exists = conn.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()
     if exists:
         return
@@ -194,12 +194,12 @@ def seed_admin(conn: sqlite3.Connection) -> None:
     )
 
 
-def get_setting(conn: sqlite3.Connection, key: str) -> str:
+def get_setting(conn, key: str) -> str:
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else DEFAULT_SETTINGS[key]
 
 
-def get_settings(conn: sqlite3.Connection) -> dict[str, str]:
+def get_settings(conn) -> dict[str, str]:
     settings = DEFAULT_SETTINGS.copy()
     rows = conn.execute("SELECT key, value FROM meta").fetchall()
     for row in rows:
@@ -208,7 +208,7 @@ def get_settings(conn: sqlite3.Connection) -> dict[str, str]:
     return settings
 
 
-def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+def set_setting(conn, key: str, value: str) -> None:
     conn.execute(
         """
         INSERT INTO meta (key, value) VALUES (?, ?)
@@ -218,14 +218,14 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
-def seed_settings(conn: sqlite3.Connection) -> None:
+def seed_settings(conn) -> None:
     for key, value in DEFAULT_SETTINGS.items():
         row = conn.execute("SELECT key FROM meta WHERE key = ?", (key,)).fetchone()
         if not row:
             set_setting(conn, key, value)
 
 
-def seed_from_excel(conn: sqlite3.Connection) -> None:
+def seed_from_excel(conn) -> None:
     seeded = conn.execute("SELECT value FROM meta WHERE key = 'excel_seeded'").fetchone()
     if seeded:
         return
@@ -291,7 +291,7 @@ def desired_units_for_floor(floor_name: str) -> list[str]:
     return ["A1", "A2", "A3", "A5", "A6", "A7", "B1", "B2", "B3", "B5", "B6", "B7"]
 
 
-def migrate_schema(conn: sqlite3.Connection) -> None:
+def migrate_schema(conn) -> None:
     existing_tables = {
         row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
@@ -345,7 +345,7 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE floors SET sheet_id = ?", (default_sheet_id,))
 
 
-def normalize_progress_values(conn: sqlite3.Connection) -> None:
+def normalize_progress_values(conn) -> None:
     rows = conn.execute("SELECT unit_id, task_id, value FROM progress").fetchall()
     for row in rows:
         value = row["value"]
@@ -360,7 +360,7 @@ def normalize_progress_values(conn: sqlite3.Connection) -> None:
             )
 
 
-def migrate_unit_layout(conn: sqlite3.Connection) -> None:
+def migrate_unit_layout(conn) -> None:
     version = conn.execute("SELECT value FROM meta WHERE key = 'unit_layout_version'").fetchone()
     if version and version["value"] == "2026-06-26-ab":
         return
@@ -375,7 +375,7 @@ def migrate_unit_layout(conn: sqlite3.Connection) -> None:
         ).fetchall()
         old_by_name = {unit["name"]: unit for unit in old_units}
         old_progress: dict[tuple[str, int], str] = {}
-        old_extra: dict[str, sqlite3.Row] = {}
+        old_extra: dict[str, dict] = {}
         for unit in old_units:
             for progress in conn.execute("SELECT task_id, value FROM progress WHERE unit_id = ?", (unit["id"],)):
                 old_progress[(unit["name"], progress["task_id"])] = progress["value"]
@@ -430,7 +430,7 @@ def migrate_unit_layout(conn: sqlite3.Connection) -> None:
     set_setting(conn, "unit_layout_version", "2026-06-26-ab")
 
 
-def ensure_unit_extra_rows(conn: sqlite3.Connection) -> None:
+def ensure_unit_extra_rows(conn) -> None:
     for unit in conn.execute("SELECT id FROM units"):
         conn.execute(
             "INSERT OR IGNORE INTO unit_extra (unit_id, handover) VALUES (?, ?)",
@@ -438,7 +438,7 @@ def ensure_unit_extra_rows(conn: sqlite3.Connection) -> None:
         )
 
 
-def ensure_extra_fields(conn: sqlite3.Connection) -> None:
+def ensure_extra_fields(conn) -> None:
     for sheet in conn.execute("SELECT id FROM sheets"):
         for field_key, field in BUILTIN_EXTRA_FIELDS.items():
             conn.execute(
@@ -464,11 +464,11 @@ def bootstrap() -> None:
         migrate_unit_layout(conn)
 
 
-def available_sheets(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def available_sheets(conn) -> list[dict]:
     return conn.execute("SELECT * FROM sheets ORDER BY sort_order, id").fetchall()
 
 
-def resolve_sheet_id(conn: sqlite3.Connection, sheet_id: int | None = None) -> int:
+def resolve_sheet_id(conn, sheet_id: int | None = None) -> int:
     if sheet_id:
         row = conn.execute("SELECT id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
         if row:
@@ -480,7 +480,7 @@ def resolve_sheet_id(conn: sqlite3.Connection, sheet_id: int | None = None) -> i
     return cur.lastrowid
 
 
-def extra_done(field: dict | sqlite3.Row, extra: dict) -> bool:
+def extra_done(field: dict | dict, extra: dict) -> bool:
     field_key = field["field_key"]
     if field_key == "initial_check":
         return bool(extra.get("recheck_1")) or bool(extra.get("recheck_2")) or extra.get("handover") == DONE_VALUE
