@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
@@ -9,7 +8,21 @@ from typing import Mapping
 from config import DUAL_WRITE_DRY_RUN
 
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("dual_write")
+
+
+def _ensure_dual_write_logger() -> logging.Logger:
+    logger = LOGGER
+    logger.setLevel(logging.INFO)
+    logger.propagate = True
+
+    if not logger.handlers and not logging.getLogger().handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+
+    return logger
 
 
 def _normalize_log_fields(payload: Mapping[str, object]) -> dict[str, object]:
@@ -32,15 +45,16 @@ def _log_dual_write_dry_run(
     if not DUAL_WRITE_DRY_RUN:
         return
 
-    payload = {
-        "operation": operation,
-        "table": table,
-        "key": _normalize_log_fields(key),
-        "fields": _normalize_log_fields(fields),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "dry_run": True,
-    }
-    LOGGER.info("DUAL_WRITE_DRY_RUN %s", json.dumps(payload, ensure_ascii=True, sort_keys=True))
+    timestamp = datetime.now(timezone.utc).isoformat()
+    logger = _ensure_dual_write_logger()
+    logger.info(
+        "DUAL_WRITE_DRY_RUN operation=%s table=%s key=%r fields=%r timestamp=%s dry_run=true",
+        operation,
+        table,
+        _normalize_log_fields(key),
+        _normalize_log_fields(fields),
+        timestamp,
+    )
 
 
 def _future_dual_write_placeholder(operation: str, payload: Mapping[str, object]) -> None:

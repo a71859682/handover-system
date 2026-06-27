@@ -32,10 +32,11 @@ def _build_temp_db() -> Path:
 def main() -> int:
     db_path = _build_temp_db()
 
-    logger = logging.getLogger(write_service.__name__)
+    logger = logging.getLogger("dual_write")
     logger.setLevel(logging.INFO)
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
+    handler.setLevel(logging.INFO)
     logger.addHandler(handler)
 
     try:
@@ -61,18 +62,26 @@ def main() -> int:
             ).fetchone()
 
         log_output = stream.getvalue()
+        has_handler = bool(logger.handlers) or bool(logging.getLogger().handlers)
 
         checks = [
             ("DUAL_WRITE_DRY_RUN enabled", DUAL_WRITE_DRY_RUN is True),
             ("USE_SQLALCHEMY_WRITES disabled", USE_SQLALCHEMY_WRITES is False),
+            ("Logger has visible handler path", has_handler),
             ("SQLite settings write still works", site_title is not None and site_title["value"] == "Dry Run Site"),
             (
                 "SQLite progress write still works",
                 progress is not None and progress["value"] == DONE_VALUE and progress["updated_by"] == user["id"],
             ),
-            ("Dry-run logged meta write", '"table": "meta"' in log_output and '"dry_run": true' in log_output.lower()),
-            ("Dry-run logged progress write", '"table": "progress"' in log_output),
-            ("No PostgreSQL write attempted", "postgres" not in log_output.lower()),
+            (
+                "Dry-run logger emitted meta record",
+                "DUAL_WRITE_DRY_RUN operation=upsert table=meta" in log_output and "dry_run=true" in log_output,
+            ),
+            (
+                "Dry-run logger emitted progress record",
+                "DUAL_WRITE_DRY_RUN operation=upsert table=progress" in log_output and "dry_run=true" in log_output,
+            ),
+            ("No PostgreSQL write attempted", "INSERT INTO" not in log_output and "UPDATE " not in log_output and "DELETE " not in log_output),
         ]
 
         failed = [label for label, ok in checks if not ok]
@@ -80,6 +89,9 @@ def main() -> int:
         print(f"DUAL_WRITE_DRY_RUN={str(DUAL_WRITE_DRY_RUN).lower()}")
         print(f"USE_SQLALCHEMY_WRITES={str(USE_SQLALCHEMY_WRITES).lower()}")
         print(f"TEMP_DB_PATH={db_path}")
+        print("LOG_OUTPUT_BEGIN")
+        print(log_output.strip())
+        print("LOG_OUTPUT_END")
         for label, ok in checks:
             print(f"[{'PASS' if ok else 'FAIL'}] {label}")
 
