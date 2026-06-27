@@ -17,8 +17,8 @@ from _db_migration_common import (
     fetch_sqlite_columns,
     fetch_sqlite_counts,
     redact_database_url,
+    resolved_sqlite_source,
     require_postgres_database_url,
-    resolve_sqlite_source_path,
 )
 
 
@@ -111,35 +111,40 @@ def reset_postgres_sequences(pg_conn) -> None:
 
 def main() -> int:
     args = parse_args()
-    sqlite_path = resolve_sqlite_source_path()
     database_url = require_postgres_database_url()
 
-    print(f"SQLite source: {sqlite_path}")
     print(f"PostgreSQL target: {redact_database_url(database_url)}")
 
-    with connect_sqlite(sqlite_path) as sqlite_conn, connect_postgres(database_url) as pg_conn:
-        sqlite_counts = fetch_sqlite_counts(sqlite_conn)
-        postgres_counts = fetch_postgres_counts(pg_conn)
+    with resolved_sqlite_source() as sqlite_source:
+        if sqlite_source.is_temporary_seeded:
+            print("using temporary seeded sqlite source")
+            print(f"temp db path: {sqlite_source.path}")
+        else:
+            print(f"SQLite source: {sqlite_source.path}")
 
-        ensure_target_is_empty(postgres_counts, force=args.force)
+        with connect_sqlite(sqlite_source.path) as sqlite_conn, connect_postgres(database_url) as pg_conn:
+            sqlite_counts = fetch_sqlite_counts(sqlite_conn)
+            postgres_counts = fetch_postgres_counts(pg_conn)
 
-        with pg_conn.transaction():
-            if args.force:
-                delete_target_rows(pg_conn)
+            ensure_target_is_empty(postgres_counts, force=args.force)
 
-            imported_counts = {
-                table: import_table(sqlite_conn, pg_conn, table) for table in TABLE_ORDER
-            }
-            reset_postgres_sequences(pg_conn)
+            with pg_conn.transaction():
+                if args.force:
+                    delete_target_rows(pg_conn)
 
-        print("Imported rows:")
-        for table in TABLE_ORDER:
-            print(f"  {table}: {imported_counts[table]} rows")
+                imported_counts = {
+                    table: import_table(sqlite_conn, pg_conn, table) for table in TABLE_ORDER
+                }
+                reset_postgres_sequences(pg_conn)
 
-        final_counts = fetch_postgres_counts(pg_conn)
-        print("Final counts:")
-        for table in TABLE_ORDER:
-            print(f"  {table}: sqlite={sqlite_counts[table]} postgres={final_counts[table]}")
+            print("Imported rows:")
+            for table in TABLE_ORDER:
+                print(f"  {table}: {imported_counts[table]} rows")
+
+            final_counts = fetch_postgres_counts(pg_conn)
+            print("Final counts:")
+            for table in TABLE_ORDER:
+                print(f"  {table}: sqlite={sqlite_counts[table]} postgres={final_counts[table]}")
 
     return 0
 

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import importlib
 import os
 import sqlite3
+import sys
+import tempfile
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -9,6 +14,7 @@ import psycopg
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+SEED_PATH = BASE_DIR / "seeds" / "default_seed.json"
 TABLE_ORDER = [
     "meta",
     "users",
@@ -37,11 +43,21 @@ PRIMARY_KEYS = {
 SEQUENCE_TABLES = ("users", "sheets", "tasks", "floors", "units", "extra_fields")
 
 
-def resolve_sqlite_source_path() -> Path:
+@dataclass
+class SQLiteSource:
+    path: Path
+    is_temporary_seeded: bool = False
+
+
+def resolve_sqlite_source_path() -> Path | None:
     source = os.environ.get("APP_SQLITE_SOURCE_PATH")
     if source:
         return Path(source).expanduser().resolve()
-    return (BASE_DIR / "site.db").resolve()
+
+    default_path = (BASE_DIR / "site.db").resolve()
+    if default_path.exists():
+        return default_path
+    return None
 
 
 def require_postgres_database_url() -> str:
@@ -78,6 +94,56 @@ def connect_sqlite(path: Path) -> sqlite3.Connection:
 
 def connect_postgres(database_url: str) -> psycopg.Connection:
     return psycopg.connect(database_url)
+
+
+def _restore_environment_variable(name: str, value: str | None) -> None:
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
+
+
+@contextmanager
+def temporary_seeded_sqlite_source():
+    if not SEED_PATH.exists():
+        raise SystemExit(f"Seed file not found: {SEED_PATH}")
+
+    original_app_db_path = os.environ.get("APP_DB_PATH")
+    original_database_url = os.environ.get("DATABASE_URL")
+    had_app_module = "app" in sys.modules
+    app_module = sys.modules.get("app")
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="sqlite-seeded-source-"))
+    temp_db_path = temp_dir / "site.db"
+    try:
+        os.environ["APP_DB_PATH"] = str(temp_db_path)
+        os.environ.pop("DATABASE_URL", None)
+
+        if app_module is None:
+            app_module = importlib.import_module("app")
+        app_module = importlib.reload(app_module)
+        app_module.bootstrap()
+
+        yield SQLiteSource(path=temp_db_path, is_temporary_seeded=True)
+    finally:
+        _restore_environment_variable("APP_DB_PATH", original_app_db_path)
+        _restore_environment_variable("DATABASE_URL", original_database_url)
+
+        if had_app_module and app_module is not None:
+            importlib.reload(app_module)
+        else:
+            sys.modules.pop("app", None)
+
+
+@contextmanager
+def resolved_sqlite_source():
+    path = resolve_sqlite_source_path()
+    if path is not None:
+        yield SQLiteSource(path=path, is_temporary_seeded=False)
+        return
+
+    with temporary_seeded_sqlite_source() as temporary_source:
+        yield temporary_source
 
 
 def fetch_sqlite_columns(conn: sqlite3.Connection, table: str) -> list[str]:
