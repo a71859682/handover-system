@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-import shutil
 import sys
 import tempfile
 
@@ -10,25 +9,35 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+TEST_DB_DIR = Path(tempfile.mkdtemp(prefix="handover-smoke-test-"))
+TEST_DB_PATH = TEST_DB_DIR / "site.db"
+
+
 def configure_test_db():
-    source = ROOT / "site.db"
-    target = Path(tempfile.gettempdir()) / "handover-smoke-test.db"
-    shutil.copyfile(source, target)
-    os.environ["APP_DB_PATH"] = str(target)
+    if TEST_DB_PATH.exists():
+        TEST_DB_PATH.unlink()
+    os.environ["APP_DB_PATH"] = str(TEST_DB_PATH)
 
 
 configure_test_db()
 
 
+def load_app_module():
+    from app import app, bootstrap, create_app
+
+    bootstrap()
+    return app, bootstrap, create_app
+
+
 def test_app_imports():
-    from app import app, create_app
+    app, _, create_app = load_app_module()
 
     assert app is not None
     assert create_app() is not None
 
 
 def make_client():
-    from app import create_app
+    _, _, create_app = load_app_module()
 
     return create_app().test_client()
 
