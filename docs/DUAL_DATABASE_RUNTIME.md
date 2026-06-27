@@ -43,6 +43,14 @@ At the current stage:
 - Without `DATABASE_URL`, the app still falls back to SQLite.
 - With `DATABASE_URL`, SQLAlchemy is configured with `postgresql+psycopg://`.
 
+## Validation Notes
+
+- SQLite consistency check is only applicable in environments where a SQLite database actually exists.
+  Examples: local development, migration tooling, or validation runs that still keep a SQLite source.
+- In Render production-like environments where SQLite does not exist, skip the SQLite ↔ PostgreSQL consistency check.
+- For Render environments without SQLite, use PostgreSQL runtime health validation instead.
+  The intended check there is `tools/check_postgres_runtime_health.py`.
+
 ## Intended Use
 
 These flags are meant to support a gradual rollout of dual-database runtime behavior in later steps.

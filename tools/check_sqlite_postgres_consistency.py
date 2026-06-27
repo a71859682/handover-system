@@ -69,11 +69,27 @@ TABLE_SPECS = {
 }
 
 
-def resolve_sqlite_path() -> Path:
+def resolve_sqlite_candidates() -> list[tuple[str, Path]]:
     configured = os.environ.get("APP_DB_PATH")
     if configured:
-        return Path(configured).expanduser().resolve()
-    return (BASE_DIR / "site.db").resolve()
+        return [
+            ("APP_DB_PATH", Path(configured).expanduser().resolve()),
+            ("/var/data/site.db", Path("/var/data/site.db")),
+            ("./site.db", Path.cwd() / "site.db"),
+        ]
+    return [
+        ("APP_DB_PATH", BASE_DIR / "site.db"),
+        ("/var/data/site.db", Path("/var/data/site.db")),
+        ("./site.db", Path.cwd() / "site.db"),
+    ]
+
+
+def resolve_sqlite_path() -> tuple[Path | None, list[tuple[str, Path]]]:
+    candidates = resolve_sqlite_candidates()
+    for _, path in candidates:
+        if path.exists():
+            return path, candidates
+    return None, candidates
 
 
 def require_postgres_database_url() -> str:
@@ -100,8 +116,6 @@ def redact_database_url(database_url: str) -> str:
 
 
 def connect_sqlite(path: Path) -> sqlite3.Connection:
-    if not path.exists():
-        raise SystemExit(f"SQLite source not found: {path}")
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
@@ -189,11 +203,23 @@ def compare_table(
 
 
 def main() -> int:
-    sqlite_path = resolve_sqlite_path()
-    database_url = require_postgres_database_url()
+    sqlite_path, checked_paths = resolve_sqlite_path()
 
-    print(f"SQLite source: {sqlite_path}")
+    if sqlite_path is None:
+        print("----------------------------------------")
+        print("SQLite database not found.")
+        print()
+        print("Checked:")
+        for label, _ in checked_paths:
+            print(f"- {label}")
+        print()
+        print("Skipping SQLite ↔ PostgreSQL consistency check.")
+        print("----------------------------------------")
+        return 0
+
+    database_url = require_postgres_database_url()
     print(f"PostgreSQL target: {redact_database_url(database_url)}")
+    print(f"SQLite source: {sqlite_path}")
 
     has_failure = False
     with connect_sqlite(sqlite_path) as sqlite_conn, connect_postgres(database_url) as pg_conn:
