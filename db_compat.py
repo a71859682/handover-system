@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import os
@@ -7,163 +6,190 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
-BASE_DIR = Path(__file__).resolve().parent
-SQLITE_DB_PATH = Path(os.environ.get("APP_DB_PATH", BASE_DIR / "site.db"))
-
-POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
-
-if POSTGRES:
+try:
     import psycopg
-    from psycopg.rows import dict_row
-else:
+except Exception:  # psycopg is only required on PostgreSQL runtime
     psycopg = None
 
-ID_TABLES = {"users", "tasks", "sheets", "floors", "units", "extra_fields"}
 
-class Result:
-    def __init__(self, rows=None, lastrowid=None, cursor=None):
-        self._rows = rows
-        self.lastrowid = lastrowid
-        self._cursor = cursor
+class Row(dict):
+    """Row object compatible with sqlite3.Row style access: row['id'] and row[0]."""
 
-    def fetchone(self):
-        if self._rows is not None:
-            return self._rows[0] if self._rows else None
-        return self._cursor.fetchone()
+    def __init__(self, keys: list[str], values: Iterable[Any]):
+        values = list(values)
+        super().__init__(zip(keys, values))
+        self._keys = keys
+        self._values = values
 
-    def fetchall(self):
-        if self._rows is not None:
-            return self._rows
-        return self._cursor.fetchall()
-
-    def __iter__(self):
-        return iter(self.fetchall())
-
-    def __getitem__(self, index):
-        return self.fetchall()[index]
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, int):
+            return self._values[key]
+        return super().__getitem__(key)
 
 
-def _split_sql_script(script: str) -> list[str]:
-    parts = []
-    buf = []
-    in_single = False
-    in_double = False
-    for ch in script:
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        if ch == ";" and not in_single and not in_double:
-            s = "".join(buf).strip()
-            if s:
-                parts.append(s)
-            buf = []
-        else:
-            buf.append(ch)
-    s = "".join(buf).strip()
-    if s:
-        parts.append(s)
-    return parts
+class IntegrityError(sqlite3.IntegrityError):
+    pass
 
 
-def _qmark_to_percent(sql: str) -> str:
-    # safe for this project: no SQL text literals contain question-mark placeholders
+def _database_url() -> str:
+    return os.environ.get("DATABASE_URL", "").strip()
+
+
+def is_postgres() -> bool:
+    url = _database_url()
+    return url.startswith("postgres://") or url.startswith("postgresql://")
+
+
+def connect_db(sqlite_path: str | Path):
+    if is_postgres():
+        if psycopg is None:
+            raise RuntimeError("psycopg is not installed. Add psycopg[binary] to requirements.txt")
+        return PostgresCompatConnection(_database_url())
+    conn = sqlite3.connect(sqlite_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _convert_placeholders(sql: str) -> str:
+    # Convert DB-API qmark placeholders to psycopg placeholders.
     return sql.replace("?", "%s")
 
 
-def _insert_table(sql: str) -> str | None:
-    m = re.match(r"\s*INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)", sql, re.I)
-    return m.group(1).lower() if m else None
+def _split_sql_script(script: str) -> list[str]:
+    statements: list[str] = []
+    buff: list[str] = []
+    in_single = False
+    in_double = False
+    prev = ""
+    for ch in script:
+        if ch == "'" and not in_double and prev != "\\":
+            in_single = not in_single
+        elif ch == '"' and not in_single and prev != "\\":
+            in_double = not in_double
+        if ch == ";" and not in_single and not in_double:
+            stmt = "".join(buff).strip()
+            if stmt:
+                statements.append(stmt)
+            buff = []
+        else:
+            buff.append(ch)
+        prev = ch
+    tail = "".join(buff).strip()
+    if tail:
+        statements.append(tail)
+    return statements
 
 
-def _pg_schema(script: str) -> str:
-    s = script
-    s = s.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
-    s = s.replace("INTEGER PRIMARY KEY,", "INTEGER PRIMARY KEY,")
-    return s
+def _translate_sql(sql: str) -> str:
+    stripped = sql.strip()
+    low = re.sub(r"\s+", " ", stripped.lower())
 
+    if low == "select name from sqlite_master where type = 'table'":
+        return "SELECT tablename AS name FROM pg_tables WHERE schemaname = 'public'"
 
-def _pg_translate(sql: str) -> str:
-    s = sql.strip()
-    # SQLite system catalog emulation is handled before execution.
+    pragma = re.match(r"pragma\s+table_info\(([^)]+)\)", low)
+    if pragma:
+        table = pragma.group(1).strip('"')
+        return (
+            "SELECT column_name AS name "
+            "FROM information_schema.columns "
+            f"WHERE table_schema = 'public' AND table_name = '{table}' "
+            "ORDER BY ordinal_position"
+        )
+
+    s = stripped
+    s = re.sub(r"id\s+INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT", "id SERIAL PRIMARY KEY", s, flags=re.I)
     s = re.sub(r"INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", s, flags=re.I)
-    s = _qmark_to_percent(s)
-    if re.search(r"INSERT\s+INTO", s, re.I) and " OR IGNORE " not in sql.upper():
-        table = _insert_table(s)
-        if table in ID_TABLES and "RETURNING" not in s.upper() and "ON CONFLICT" not in s.upper():
-            s = s.rstrip().rstrip(";") + " RETURNING id"
-    # For INSERT OR IGNORE conversions where unique constraints exist.
-    if re.search(r"INSERT\s+INTO\s+unit_extra\b", s, re.I) and "ON CONFLICT" not in s.upper():
-        s += " ON CONFLICT (unit_id) DO NOTHING"
-    if re.search(r"INSERT\s+INTO\s+extra_fields\b", s, re.I) and "ON CONFLICT" not in s.upper():
-        s += " ON CONFLICT (sheet_id, field_key) DO NOTHING"
+    if re.search(r"INSERT\s+INTO", s, re.I) and "ON CONFLICT" not in s.upper() and "DO NOTHING" not in s.upper():
+        # For translated INSERT OR IGNORE, add a generic do-nothing conflict handler when obvious.
+        original_was_ignore = re.search(r"INSERT\s+OR\s+IGNORE\s+INTO", stripped, re.I) is not None
+        if original_was_ignore:
+            s += " ON CONFLICT DO NOTHING"
+
+    s = _convert_placeholders(s)
     return s
 
 
-class SQLiteConnection:
-    def __enter__(self):
-        self.conn = sqlite3.connect(SQLITE_DB_PATH)
-        self.conn.row_factory = sqlite3.Row
-        return self.conn
-    def __exit__(self, exc_type, exc, tb):
-        if exc_type:
-            self.conn.rollback()
-        else:
-            self.conn.commit()
-        self.conn.close()
+def _insert_needs_returning_id(sql: str) -> bool:
+    low = re.sub(r"\s+", " ", sql.strip().lower())
+    if not low.startswith("insert into "):
+        return False
+    if " returning " in low or " on conflict " in low:
+        return False
+    return bool(re.match(r"insert into (users|tasks|sheets|floors|units|extra_fields)\b", low))
 
 
-class PostgresConnection:
+class CompatCursor:
+    def __init__(self, cursor, keys: list[str] | None = None, lastrowid: int | None = None):
+        self._cursor = cursor
+        self._keys = keys
+        self.lastrowid = lastrowid
+
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        if row is None:
+            return None
+        return Row(self._keys or [d.name for d in self._cursor.description], row)
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        keys = self._keys or [d.name for d in self._cursor.description]
+        return [Row(keys, row) for row in rows]
+
+    def __iter__(self):
+        keys = self._keys or [d.name for d in self._cursor.description]
+        for row in self._cursor:
+            yield Row(keys, row)
+
+
+class PostgresCompatConnection:
+    def __init__(self, url: str):
+        self._conn = psycopg.connect(url)
+
     def __enter__(self):
-        self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
         return self
+
     def __exit__(self, exc_type, exc, tb):
-        if exc_type:
-            self.conn.rollback()
-        else:
-            self.conn.commit()
-        self.conn.close()
-
-    def execute(self, sql: str, params: Iterable[Any] = ()) -> Result:
-        raw = sql.strip()
-        # emulate SQLite table checks used by migration code
-        if re.search(r"FROM\s+sqlite_master", raw, re.I):
-            cur = self.conn.execute("SELECT tablename AS name FROM pg_catalog.pg_tables WHERE schemaname = 'public'")
-            return Result(cur.fetchall())
-        m = re.match(r"PRAGMA\s+table_info\(([^)]+)\)", raw, re.I)
-        if m:
-            table = m.group(1).strip().strip('"')
-            cur = self.conn.execute(
-                """
-                SELECT column_name AS name
-                FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = %s
-                ORDER BY ordinal_position
-                """,
-                (table,),
-            )
-            return Result(cur.fetchall())
-        sql2 = _pg_translate(raw)
         try:
-            cur = self.conn.execute(sql2, tuple(params))
-            lastrowid = None
-            if sql2.upper().rstrip().endswith("RETURNING ID"):
-                row = cur.fetchone()
-                if row:
-                    lastrowid = row["id"]
-                return Result([], lastrowid=lastrowid)
-            return Result(cursor=cur)
-        except Exception as e:
-            if psycopg and isinstance(e, psycopg.IntegrityError):
-                raise sqlite3.IntegrityError(str(e)) from e
-            raise
+            if exc_type:
+                self._conn.rollback()
+            else:
+                self._conn.commit()
+        finally:
+            self._conn.close()
+        return False
 
-    def executescript(self, script: str) -> None:
-        script = _pg_schema(script)
+    def close(self):
+        self._conn.close()
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def executescript(self, script: str):
         for stmt in _split_sql_script(script):
             self.execute(stmt)
 
-
-def connect():
-    return PostgresConnection() if POSTGRES else SQLiteConnection()
+    def execute(self, sql: str, params: tuple | list = ()):  # sqlite-like execute
+        translated = _translate_sql(sql)
+        if _insert_needs_returning_id(translated):
+            translated = translated.rstrip().rstrip(";") + " RETURNING id"
+        cur = self._conn.cursor()
+        try:
+            cur.execute(translated, params)
+            lastrowid = None
+            keys = None
+            if cur.description:
+                keys = [d.name for d in cur.description]
+                if keys == ["id"] and translated.lower().strip().startswith("insert into"):
+                    row = cur.fetchone()
+                    lastrowid = row[0] if row else None
+                    # Replace with an empty cursor-like object for callers that only inspect lastrowid.
+                    cur = self._conn.cursor()
+            return CompatCursor(cur, keys, lastrowid)
+        except Exception as exc:
+            if psycopg and isinstance(exc, psycopg.errors.UniqueViolation):
+                raise IntegrityError(str(exc)) from exc
+            raise
