@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.3.1 - Quality & CI
+日期：2026-06-27
+
+- 新增 GitHub Actions CI
+- CI 自動執行 ORM checks 與 smoke test
+- 新增 requirements-dev.txt
+- 新增 pyproject.toml
+- 新增 docs/CI.md
+- 確認 CI 在 feature branch 與 main 都通過
+
 ## v2.3.0 - SQLAlchemy Foundation
 日期：2026-06-27
 
