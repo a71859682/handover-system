@@ -62,22 +62,12 @@ def load_grid(sheet_id: int | None = None) -> dict:
             floor["id"]: app.list_units_for_floor(floor["id"])
             for floor in floors
         }
-        progress_rows = conn.execute("SELECT unit_id, task_id, value FROM progress").fetchall()
-        extra_rows = conn.execute("SELECT * FROM unit_extra").fetchall()
-        extra_fields = conn.execute(
-            "SELECT * FROM extra_fields WHERE sheet_id = ? AND active = 1 ORDER BY sort_order, id",
-            (current_sheet_id,),
-        ).fetchall()
-        extra_value_rows = conn.execute(
-            """
-            SELECT v.unit_id, v.field_key, v.value
-            FROM unit_extra_values v
-            JOIN units u ON u.id = v.unit_id
-            JOIN floors f ON f.id = u.floor_id
-            WHERE f.sheet_id = ?
-            """,
-            (current_sheet_id,),
-        ).fetchall()
+        progress_rows = app.list_progress()
+        extra_rows = app.list_unit_extra()
+        extra_fields = [
+            field for field in app.list_extra_fields_for_sheet(current_sheet_id) if field["active"] == 1
+        ]
+        extra_value_rows = app.list_unit_extra_values_for_sheet(current_sheet_id)
 
     progress = {(row["unit_id"], row["task_id"]): row["value"] for row in progress_rows}
     extras = {row["unit_id"]: dict(row) for row in extra_rows}

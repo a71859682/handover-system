@@ -17,6 +17,12 @@ from routes.api import api_bp
 from routes.auth import admin_required as auth_admin_required, auth_bp, login_required as auth_login_required
 from routes.sheet import sheet_bp
 from services.progress_service import reset_sheet, update_progress, update_unit_extra
+from services.progress_orm_service import (
+    list_extra_fields_for_sheet_orm,
+    list_progress_orm,
+    list_unit_extra_orm,
+    list_unit_extra_values_for_sheet_orm,
+)
 from services.settings_orm_service import get_setting_orm, get_settings_orm
 from services.sheet_service import available_sheets, load_grid, render_grid_payload, resolve_sheet_id
 from services.sheets_orm_service import (
@@ -152,6 +158,51 @@ def _unit_to_payload(row) -> dict[str, object]:
     }
 
 
+def _progress_to_payload(row) -> dict[str, object]:
+    return {
+        "unit_id": row["unit_id"] if isinstance(row, sqlite3.Row) else row.unit_id,
+        "task_id": row["task_id"] if isinstance(row, sqlite3.Row) else row.task_id,
+        "value": row["value"] if isinstance(row, sqlite3.Row) else row.value,
+        "updated_by": row["updated_by"] if isinstance(row, sqlite3.Row) else row.updated_by,
+        "updated_at": row["updated_at"] if isinstance(row, sqlite3.Row) else row.updated_at,
+    }
+
+
+def _unit_extra_to_payload(row) -> dict[str, object]:
+    return {
+        "unit_id": row["unit_id"] if isinstance(row, sqlite3.Row) else row.unit_id,
+        "initial_check": row["initial_check"] if isinstance(row, sqlite3.Row) else row.initial_check,
+        "recheck_1": row["recheck_1"] if isinstance(row, sqlite3.Row) else row.recheck_1,
+        "recheck_2": row["recheck_2"] if isinstance(row, sqlite3.Row) else row.recheck_2,
+        "handover": row["handover"] if isinstance(row, sqlite3.Row) else row.handover,
+        "updated_by": row["updated_by"] if isinstance(row, sqlite3.Row) else row.updated_by,
+        "updated_at": row["updated_at"] if isinstance(row, sqlite3.Row) else row.updated_at,
+    }
+
+
+def _extra_field_to_payload(row) -> dict[str, object]:
+    return {
+        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
+        "sheet_id": row["sheet_id"] if isinstance(row, sqlite3.Row) else row.sheet_id,
+        "field_key": row["field_key"] if isinstance(row, sqlite3.Row) else row.field_key,
+        "name": row["name"] if isinstance(row, sqlite3.Row) else row.name,
+        "field_type": row["field_type"] if isinstance(row, sqlite3.Row) else row.field_type,
+        "sort_order": row["sort_order"] if isinstance(row, sqlite3.Row) else row.sort_order,
+        "is_builtin": row["is_builtin"] if isinstance(row, sqlite3.Row) else row.is_builtin,
+        "active": row["active"] if isinstance(row, sqlite3.Row) else row.active,
+    }
+
+
+def _unit_extra_value_to_payload(row) -> dict[str, object]:
+    return {
+        "unit_id": row["unit_id"] if isinstance(row, sqlite3.Row) else row.unit_id,
+        "field_key": row["field_key"] if isinstance(row, sqlite3.Row) else row.field_key,
+        "value": row["value"] if isinstance(row, sqlite3.Row) else row.value,
+        "updated_by": row["updated_by"] if isinstance(row, sqlite3.Row) else row.updated_by,
+        "updated_at": row["updated_at"] if isinstance(row, sqlite3.Row) else row.updated_at,
+    }
+
+
 def get_user_by_username(username: str) -> dict[str, object] | None:
     if USE_SQLALCHEMY_READS:
         if has_app_context():
@@ -250,6 +301,75 @@ def list_units_for_floor(floor_id: int) -> list[dict[str, object]]:
             "SELECT * FROM units WHERE floor_id = ? ORDER BY sort_order", (floor_id,)
         ).fetchall()
     return [_unit_to_payload(row) for row in rows]
+
+
+def list_progress() -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_progress_to_payload(row) for row in list_progress_orm()]
+        with app.app_context():
+            return [_progress_to_payload(row) for row in list_progress_orm()]
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM progress ORDER BY unit_id, task_id"
+        ).fetchall()
+    return [_progress_to_payload(row) for row in rows]
+
+
+def list_unit_extra() -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_unit_extra_to_payload(row) for row in list_unit_extra_orm()]
+        with app.app_context():
+            return [_unit_extra_to_payload(row) for row in list_unit_extra_orm()]
+
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM unit_extra ORDER BY unit_id").fetchall()
+    return [_unit_extra_to_payload(row) for row in rows]
+
+
+def list_extra_fields_for_sheet(sheet_id: int) -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_extra_field_to_payload(row) for row in list_extra_fields_for_sheet_orm(sheet_id)]
+        with app.app_context():
+            return [_extra_field_to_payload(row) for row in list_extra_fields_for_sheet_orm(sheet_id)]
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM extra_fields WHERE sheet_id = ? ORDER BY sort_order, id",
+            (sheet_id,),
+        ).fetchall()
+    return [_extra_field_to_payload(row) for row in rows]
+
+
+def list_unit_extra_values_for_sheet(sheet_id: int) -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [
+                _unit_extra_value_to_payload(row)
+                for row in list_unit_extra_values_for_sheet_orm(sheet_id)
+            ]
+        with app.app_context():
+            return [
+                _unit_extra_value_to_payload(row)
+                for row in list_unit_extra_values_for_sheet_orm(sheet_id)
+            ]
+
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT v.*
+            FROM unit_extra_values v
+            JOIN units u ON u.id = v.unit_id
+            JOIN floors f ON f.id = u.floor_id
+            WHERE f.sheet_id = ?
+            ORDER BY v.unit_id, v.field_key
+            """,
+            (sheet_id,),
+        ).fetchall()
+    return [_unit_extra_value_to_payload(row) for row in rows]
 
 
 def login_required(fn):
