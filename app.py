@@ -9,6 +9,7 @@ from flask import Flask
 from openpyxl import load_workbook
 from werkzeug.security import generate_password_hash
 
+from database import init_database
 from db_compat import IntegrityError, connect_db
 from routes.admin import admin_bp
 from routes.api import api_bp
@@ -51,6 +52,13 @@ ASSET_VERSION = "20260627-010"
 def create_app():
     app = Flask(__name__)
     app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+    else:
+        app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH.resolve().as_posix()}"
+    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    init_database(app)
 
     @app.context_processor
     def inject_asset_version():
