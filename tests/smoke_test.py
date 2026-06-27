@@ -120,6 +120,96 @@ def test_create_user_sqlite_with_sqlite_connection():
     assert row[1] == "sqlite_user"
 
 
+def test_controlled_dual_write_meta_stays_gated_to_meta():
+    os.environ["DUAL_WRITE_ENABLED"] = "true"
+    os.environ["DUAL_WRITE_TABLES"] = "meta"
+    os.environ["DUAL_WRITE_STRICT"] = "false"
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+    os.environ["DATABASE_URL"] = "postgresql://example.test/app"
+
+    import config
+    import services.write_service as write_service
+
+    config = importlib.reload(config)
+    write_service = importlib.reload(write_service)
+
+    logger = logging.getLogger("dual_write")
+    logger.setLevel(logging.INFO)
+    messages: list[str] = []
+
+    class CollectHandler(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+
+    handler = CollectHandler(level=logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    postgres_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params):
+            postgres_calls.append((sql, params))
+
+    class FakePostgresConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+    class FakePsycopg:
+        def connect(self, url):
+            postgres_calls.append(("CONNECT", (url,)))
+            return FakePostgresConnection()
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL
+        )
+        """
+    )
+
+    write_service.psycopg = FakePsycopg()
+
+    try:
+        write_service.upsert_setting_sqlite(conn, "site_title", "Controlled")
+        meta_calls = len(postgres_calls)
+        write_service.create_user_sqlite(
+            conn,
+            username="meta_only_user",
+            display_name="Meta Only User",
+            password_hash="hash",
+            role="member",
+        )
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    log_output = "\n".join(messages)
+    assert meta_calls > 0
+    assert len(postgres_calls) == meta_calls
+    assert "DUAL_WRITE operation=upsert table=meta" in log_output
+    assert "DUAL_WRITE_DRY_RUN operation=upsert table=meta" in log_output
+    assert "DUAL_WRITE operation=insert table=users" not in log_output
+
+
 def test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log():
     write_service = load_write_service(dual_write_dry_run=True)
     logger = logging.getLogger("dual_write")
@@ -178,6 +268,7 @@ def run():
     test_sheet_route_after_login()
     test_logout_redirects()
     test_create_user_sqlite_with_sqlite_connection()
+    test_controlled_dual_write_meta_stays_gated_to_meta()
     test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log()
 
 
