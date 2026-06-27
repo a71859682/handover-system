@@ -74,6 +74,9 @@ def main() -> int:
     postgres_calls: list[tuple[str, tuple[object, ...]]] = []
 
     class FakeCursor:
+        def __init__(self, should_fail: bool = False):
+            self.should_fail = should_fail
+
         def __enter__(self):
             return self
 
@@ -81,9 +84,19 @@ def main() -> int:
             return False
 
         def execute(self, sql: str, params: tuple[object, ...]):
+            if self.should_fail:
+                raise RuntimeError("forced secondary failure")
             postgres_calls.append((sql, params))
 
+        def close(self):
+            return None
+
     class FakePostgresConnection:
+        def __init__(self, should_fail: bool = False):
+            self.should_fail = should_fail
+            self.committed = False
+            self.rolled_back = False
+
         def __enter__(self):
             return self
 
@@ -91,12 +104,24 @@ def main() -> int:
             return False
 
         def cursor(self):
-            return FakeCursor()
+            return FakeCursor(should_fail=self.should_fail)
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            return None
 
     class FakePsycopg:
-        def connect(self, database_url: str):
-            postgres_calls.append(("CONNECT", (database_url,)))
-            return FakePostgresConnection()
+        def __init__(self, should_fail: bool = False):
+            self.should_fail = should_fail
+
+        def connect(self, database_url: str, **kwargs):
+            postgres_calls.append(("CONNECT", (database_url, kwargs)))
+            return FakePostgresConnection(should_fail=self.should_fail)
 
     class NonSqlitePrimaryConnection:
         pass
@@ -128,6 +153,14 @@ def main() -> int:
         )
         non_sqlite_primary_attempted = len(postgres_calls) > before_non_sqlite_calls
 
+        write_service.psycopg = FakePsycopg(should_fail=True)
+        conn_before_failure = _make_sqlite_meta_conn()
+        write_service.upsert_setting_sqlite(conn_before_failure, "site_title", "Primary survives secondary failure")
+        sqlite_value_after_failure = conn_before_failure.execute(
+            "SELECT value FROM meta WHERE key = ?",
+            ("site_title",),
+        ).fetchone()[0]
+
         log_output = stream.getvalue()
 
         allowed_tables = write_service._controlled_dual_write_tables()  # type: ignore[attr-defined]
@@ -139,9 +172,11 @@ def main() -> int:
             ("Users do not dual write to PostgreSQL", non_meta_calls_unchanged),
             ("Non-SQLite runtime still attempts PostgreSQL secondary", non_sqlite_primary_attempted),
             ("Meta primary SQLite write still works", sqlite_value == "Controlled Dual Write"),
+            ("Meta primary write survives failed secondary in non-strict mode", sqlite_value_after_failure == "Primary survives secondary failure"),
             ("Meta PostgreSQL secondary write can be attempted", any(call[0] == "CONNECT" for call in postgres_calls)),
             ("Controlled dual write log emitted", "DUAL_WRITE operation=upsert table=meta" in log_output),
             ("Controlled dual write log reports success", "postgres_result=success" in log_output),
+            ("Controlled dual write reports failed on non-strict secondary error", "postgres_result=failed" in log_output),
             ("Controlled dual write no longer reports skipped_non_sqlite_primary", "skipped_non_sqlite_primary" not in log_output),
             ("Dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=upsert table=meta" in log_output),
         ]

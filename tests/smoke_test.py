@@ -148,6 +148,9 @@ def test_controlled_dual_write_meta_stays_gated_to_meta():
     postgres_calls: list[tuple[str, tuple[object, ...]]] = []
 
     class FakeCursor:
+        def close(self):
+            return None
+
         def __enter__(self):
             return self
 
@@ -158,6 +161,10 @@ def test_controlled_dual_write_meta_stays_gated_to_meta():
             postgres_calls.append((sql, params))
 
     class FakePostgresConnection:
+        def __init__(self):
+            self.committed = False
+            self.rolled_back = False
+
         def __enter__(self):
             return self
 
@@ -167,9 +174,18 @@ def test_controlled_dual_write_meta_stays_gated_to_meta():
         def cursor(self):
             return FakeCursor()
 
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            return None
+
     class FakePsycopg:
-        def connect(self, url):
-            postgres_calls.append(("CONNECT", (url,)))
+        def connect(self, url, **kwargs):
+            postgres_calls.append(("CONNECT", (url, kwargs)))
             return FakePostgresConnection()
 
     conn = sqlite3.connect(":memory:")
@@ -240,6 +256,9 @@ def test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_
     postgres_calls: list[tuple[str, tuple[object, ...]]] = []
 
     class FakeCursor:
+        def close(self):
+            return None
+
         def __enter__(self):
             return self
 
@@ -250,6 +269,10 @@ def test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_
             postgres_calls.append((sql, params))
 
     class FakePostgresConnection:
+        def __init__(self):
+            self.committed = False
+            self.rolled_back = False
+
         def __enter__(self):
             return self
 
@@ -259,9 +282,18 @@ def test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_
         def cursor(self):
             return FakeCursor()
 
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            return None
+
     class FakePsycopg:
-        def connect(self, url):
-            postgres_calls.append(("CONNECT", (url,)))
+        def connect(self, url, **kwargs):
+            postgres_calls.append(("CONNECT", (url, kwargs)))
             return FakePostgresConnection()
 
     class NonSqlitePrimaryConnection:
@@ -312,9 +344,37 @@ def test_controlled_dual_write_meta_strict_false_logs_postgres_error_without_blo
     handler.setFormatter(logging.Formatter("%(message)s"))
     logger.addHandler(handler)
 
+    class FailingCursor:
+        def execute(self, sql, params):
+            raise RuntimeError("forced secondary failure")
+
+        def close(self):
+            return None
+
+    class FailingPostgresConnection:
+        def __init__(self):
+            self.rolled_back = False
+            self.closed = False
+
+        def cursor(self):
+            return FailingCursor()
+
+        def commit(self):
+            raise AssertionError("commit should not be called on failed secondary write")
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            self.closed = True
+
+    failing_connections: list[FailingPostgresConnection] = []
+
     class FailingPsycopg:
-        def connect(self, url):
-            raise RuntimeError(f"cannot connect to {url}")
+        def connect(self, url, **kwargs):
+            conn = FailingPostgresConnection()
+            failing_connections.append(conn)
+            return conn
 
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
@@ -330,8 +390,60 @@ def test_controlled_dual_write_meta_strict_false_logs_postgres_error_without_blo
     stored_value = conn.execute("SELECT value FROM meta WHERE key = ?", ("site_title",)).fetchone()[0]
     assert stored_value == "Primary still succeeds"
     assert "DUAL_WRITE operation=upsert table=meta" in log_output
-    assert "postgres_result=error" in log_output
+    assert "postgres_result=failed" in log_output
     assert "dry_run=true" in log_output
+    assert failing_connections and failing_connections[0].rolled_back is True
+
+
+def test_controlled_dual_write_meta_strict_true_raises_after_primary_write():
+    os.environ["DUAL_WRITE_ENABLED"] = "true"
+    os.environ["DUAL_WRITE_TABLES"] = "meta"
+    os.environ["DUAL_WRITE_STRICT"] = "true"
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+    os.environ["DATABASE_URL"] = "postgresql://example.test/app"
+
+    import config
+    import services.write_service as write_service
+
+    config = importlib.reload(config)
+    write_service = importlib.reload(write_service)
+
+    class FailingCursor:
+        def execute(self, sql, params):
+            raise RuntimeError("strict secondary failure")
+
+        def close(self):
+            return None
+
+    class FailingPostgresConnection:
+        def cursor(self):
+            return FailingCursor()
+
+        def commit(self):
+            raise AssertionError("commit should not be called on failed secondary write")
+
+        def rollback(self):
+            return None
+
+        def close(self):
+            return None
+
+    class FailingPsycopg:
+        def connect(self, url, **kwargs):
+            return FailingPostgresConnection()
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    write_service.psycopg = FailingPsycopg()
+
+    try:
+        try:
+            write_service.upsert_setting_sqlite(conn, "site_title", "Strict write")
+            raise AssertionError("strict mode should raise when secondary write fails")
+        except RuntimeError as exc:
+            assert "Controlled dual write failed" in str(exc)
+    finally:
+        conn.close()
 
 
 def test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log():
@@ -395,6 +507,7 @@ def run():
     test_controlled_dual_write_meta_stays_gated_to_meta()
     test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_write()
     test_controlled_dual_write_meta_strict_false_logs_postgres_error_without_blocking_primary()
+    test_controlled_dual_write_meta_strict_true_raises_after_primary_write()
     test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log()
 
 

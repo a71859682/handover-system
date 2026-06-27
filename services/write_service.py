@@ -21,6 +21,8 @@ except Exception:
 
 LOGGER = logging.getLogger("dual_write")
 ALLOWED_CONTROLLED_DUAL_WRITE_TABLES = frozenset({"meta"})
+POSTGRES_CONNECT_TIMEOUT_SECONDS = 3
+POSTGRES_STATEMENT_TIMEOUT_MS = 3000
 
 
 def _ensure_dual_write_logger() -> logging.Logger:
@@ -122,19 +124,46 @@ def _write_meta_to_postgres_secondary(*, key: str, value: str) -> tuple[str, str
     if psycopg is None:
         return "skipped_no_psycopg", "psycopg is not installed"
 
+    conn = None
+    cur = None
     try:
-        with psycopg.connect(DATABASE_URL) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO meta (key, value) VALUES (%s, %s)
-                    ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
-                    """,
-                    (key, value),
-                )
+        conn = psycopg.connect(
+            DATABASE_URL,
+            connect_timeout=POSTGRES_CONNECT_TIMEOUT_SECONDS,
+            options=f"-c statement_timeout={POSTGRES_STATEMENT_TIMEOUT_MS}",
+        )
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO meta (key, value)
+            VALUES (%s, %s)
+            ON CONFLICT (key)
+            DO UPDATE SET value = EXCLUDED.value
+            """,
+            (key, value),
+        )
+        conn.commit()
         return "success", None
-    except Exception as exc:
-        return "error", str(exc)
+    except BaseException as exc:
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            raise
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        return "failed", str(exc)
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def _maybe_controlled_dual_write_meta(
@@ -156,7 +185,7 @@ def _maybe_controlled_dual_write_meta(
         postgres_result=postgres_result,
         error=error,
     )
-    if postgres_result == "error" and DUAL_WRITE_STRICT:
+    if postgres_result == "failed" and DUAL_WRITE_STRICT:
         raise RuntimeError(f"Controlled dual write failed for meta key '{key}': {error}")
 
 
