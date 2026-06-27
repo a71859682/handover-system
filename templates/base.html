@@ -20,7 +20,7 @@
       <a href="{{ url_for('users') }}">&#25104;&#21729;&#31649;&#29702;</a>
       {% endif %}
       <span class="user">{{ session.get("display_name") or session.get("username") }}</span>
-      <form method="post" action="{{ url_for('logout') }}">
+      <form method="post" action="{{ url_for('auth.logout') }}">
         <button type="submit" class="ghost">&#30331;&#20986;</button>
       </form>
     </nav>

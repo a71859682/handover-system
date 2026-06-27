@@ -11,6 +11,7 @@ from openpyxl import load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from db_compat import IntegrityError, connect_db
+from routes.auth import admin_required as auth_admin_required, auth_bp, login_required as auth_login_required
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -44,6 +45,7 @@ DEFAULT_SETTINGS = {
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
 ASSET_VERSION = "20260627-010"
+app.register_blueprint(auth_bp)
 
 
 @app.context_processor
@@ -81,6 +83,10 @@ def admin_required(fn):
         return fn(*args, **kwargs)
 
     return wrapper
+
+
+login_required = auth_login_required
+admin_required = auth_admin_required
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
@@ -589,12 +595,12 @@ def render_grid_payload(sheet_id: int | None = None) -> dict:
 @app.route("/")
 def index():
     if not session.get("user_id"):
-        return redirect(url_for("login"))
+        return redirect(url_for("auth.login"))
     return redirect(url_for("sheet"))
 
 
-@app.route("/login", methods=["GET", "POST"])
-def login():
+@app.route("/_legacy_login_disabled", methods=["GET", "POST"])
+def legacy_login_disabled():
     settings = query_settings()
     if request.method == "POST":
         username = request.form.get("username", "").strip()
@@ -617,11 +623,11 @@ def query_settings() -> dict[str, str]:
         return get_settings(conn)
 
 
-@app.route("/logout", methods=["POST"])
+@app.route("/_legacy_logout_disabled", methods=["POST"])
 @login_required
-def logout():
+def legacy_logout_disabled():
     session.clear()
-    return redirect(url_for("login"))
+    return redirect(url_for("auth.login"))
 
 
 @app.route("/sheet")

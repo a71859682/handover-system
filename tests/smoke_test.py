@@ -29,3 +29,13 @@ def test_index_route_smoke():
     response = client.get("/")
 
     assert response.status_code in (200, 302)
+
+
+def run():
+    test_app_imports()
+    test_login_route_smoke()
+    test_index_route_smoke()
+
+
+if __name__ == "__main__":
+    run()

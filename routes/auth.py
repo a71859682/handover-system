@@ -1,8 +1,59 @@
-"""
-Auth route preparation for v2.2 modular refactor.
+from __future__ import annotations
 
-Later in v2.2, `/login`, `/logout`, `login_required`, and
-`admin_required` will move here.
+from functools import wraps
 
-For now, `app.py` stays unchanged to avoid breaking current behavior.
-"""
+from flask import Blueprint, flash, redirect, render_template, request, session, url_for
+from werkzeug.security import check_password_hash
+
+
+auth_bp = Blueprint("auth", __name__)
+
+
+def login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not session.get("user_id"):
+            return redirect(url_for("auth.login"))
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not session.get("user_id"):
+            return redirect(url_for("auth.login"))
+        if session.get("role") != "admin":
+            flash("Admin access required.", "error")
+            return redirect(url_for("sheet"))
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+@auth_bp.route("/login", methods=["GET", "POST"])
+def login():
+    from app import query_one, query_settings
+
+    settings = query_settings()
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        user = query_one("SELECT * FROM users WHERE username = ?", (username,))
+        if user and check_password_hash(user["password_hash"], password):
+            session.clear()
+            session["user_id"] = user["id"]
+            session["username"] = user["username"]
+            session["display_name"] = user["display_name"] or user["username"]
+            session["role"] = user["role"]
+            return redirect(url_for("sheet"))
+        flash("Invalid username or password.", "error")
+    return render_template("login.html", settings=settings)
+
+
+@auth_bp.route("/logout", methods=["POST"])
+@login_required
+def logout():
+    session.clear()
+    return redirect(url_for("auth.login"))
