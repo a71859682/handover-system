@@ -247,6 +247,7 @@ def test_sqlite_postgres_tooling_smoke():
     )
     run_help("migrate_sqlite_to_postgres.py")
     run_help("check_sqlite_postgres_counts.py")
+    run_help("check_sqlite_postgres_content.py")
 
 
 def run():
