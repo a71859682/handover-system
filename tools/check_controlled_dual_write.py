@@ -99,8 +99,7 @@ def main() -> int:
             return FakePostgresConnection()
 
     class NonSqlitePrimaryConnection:
-        def execute(self, sql, params=()):
-            raise AssertionError("Non-SQLite primary should not execute meta write in this check")
+        pass
 
     try:
         write_service.psycopg = FakePsycopg()
@@ -127,7 +126,7 @@ def main() -> int:
             key="ignored",
             value="ignored",
         )
-        non_sqlite_primary_skipped = len(postgres_calls) == before_non_sqlite_calls
+        non_sqlite_primary_attempted = len(postgres_calls) > before_non_sqlite_calls
 
         log_output = stream.getvalue()
 
@@ -138,10 +137,12 @@ def main() -> int:
             ("DUAL_WRITE_TABLES limited to meta/settings", allowed_tables == {"meta"}),
             ("Meta dual write is gated on", write_service._is_controlled_dual_write_enabled_for("meta") is True),  # type: ignore[attr-defined]
             ("Users do not dual write to PostgreSQL", non_meta_calls_unchanged),
-            ("Non-SQLite primary skips PostgreSQL secondary", non_sqlite_primary_skipped),
+            ("Non-SQLite runtime still attempts PostgreSQL secondary", non_sqlite_primary_attempted),
             ("Meta primary SQLite write still works", sqlite_value == "Controlled Dual Write"),
             ("Meta PostgreSQL secondary write can be attempted", any(call[0] == "CONNECT" for call in postgres_calls)),
             ("Controlled dual write log emitted", "DUAL_WRITE operation=upsert table=meta" in log_output),
+            ("Controlled dual write log reports success", "postgres_result=success" in log_output),
+            ("Controlled dual write no longer reports skipped_non_sqlite_primary", "skipped_non_sqlite_primary" not in log_output),
             ("Dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=upsert table=meta" in log_output),
         ]
 

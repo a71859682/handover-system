@@ -57,11 +57,6 @@ def _normalize_table_name(table: str) -> str:
 def _controlled_dual_write_tables() -> set[str]:
     return {_normalize_table_name(table) for table in DUAL_WRITE_TABLES}
 
-
-def _is_sqlite_primary_connection(conn) -> bool:
-    return isinstance(conn, sqlite3.Connection)
-
-
 def _is_controlled_dual_write_enabled_for(table: str) -> bool:
     normalized = _normalize_table_name(table)
     return (
@@ -150,17 +145,6 @@ def _maybe_controlled_dual_write_meta(
     value: str,
 ) -> None:
     if not _is_controlled_dual_write_enabled_for("meta"):
-        return
-
-    if not _is_sqlite_primary_connection(conn):
-        _log_controlled_dual_write(
-            operation=operation,
-            table="meta",
-            key={"key": key},
-            sqlite_result="success",
-            postgres_result="skipped_non_sqlite_primary",
-            error=None,
-        )
         return
 
     postgres_result, error = _write_meta_to_postgres_secondary(key=key, value=value)

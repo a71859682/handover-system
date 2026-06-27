@@ -206,8 +206,132 @@ def test_controlled_dual_write_meta_stays_gated_to_meta():
     assert meta_calls > 0
     assert len(postgres_calls) == meta_calls
     assert "DUAL_WRITE operation=upsert table=meta" in log_output
+    assert "postgres_result=success" in log_output
+    assert "skipped_non_sqlite_primary" not in log_output
     assert "DUAL_WRITE_DRY_RUN operation=upsert table=meta" in log_output
     assert "DUAL_WRITE operation=insert table=users" not in log_output
+
+
+def test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_write():
+    os.environ["DUAL_WRITE_ENABLED"] = "true"
+    os.environ["DUAL_WRITE_TABLES"] = "meta"
+    os.environ["DUAL_WRITE_STRICT"] = "false"
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+    os.environ["DATABASE_URL"] = "postgresql://example.test/app"
+
+    import config
+    import services.write_service as write_service
+
+    config = importlib.reload(config)
+    write_service = importlib.reload(write_service)
+
+    logger = logging.getLogger("dual_write")
+    logger.setLevel(logging.INFO)
+    messages: list[str] = []
+
+    class CollectHandler(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+
+    handler = CollectHandler(level=logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    postgres_calls: list[tuple[str, tuple[object, ...]]] = []
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params):
+            postgres_calls.append((sql, params))
+
+    class FakePostgresConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+    class FakePsycopg:
+        def connect(self, url):
+            postgres_calls.append(("CONNECT", (url,)))
+            return FakePostgresConnection()
+
+    class NonSqlitePrimaryConnection:
+        pass
+
+    write_service.psycopg = FakePsycopg()
+
+    try:
+        write_service._maybe_controlled_dual_write_meta(  # type: ignore[attr-defined]
+            NonSqlitePrimaryConnection(),
+            operation="upsert",
+            key="site_title",
+            value="Controlled from compat runtime",
+        )
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    log_output = "\n".join(messages)
+    assert any(call[0] == "CONNECT" for call in postgres_calls)
+    assert "DUAL_WRITE operation=upsert table=meta" in log_output
+    assert "postgres_result=success" in log_output
+    assert "skipped_non_sqlite_primary" not in log_output
+
+
+def test_controlled_dual_write_meta_strict_false_logs_postgres_error_without_blocking_primary():
+    os.environ["DUAL_WRITE_ENABLED"] = "true"
+    os.environ["DUAL_WRITE_TABLES"] = "meta"
+    os.environ["DUAL_WRITE_STRICT"] = "false"
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+    os.environ["DATABASE_URL"] = "postgresql://example.test/app"
+
+    import config
+    import services.write_service as write_service
+
+    config = importlib.reload(config)
+    write_service = importlib.reload(write_service)
+
+    logger = logging.getLogger("dual_write")
+    logger.setLevel(logging.INFO)
+    messages: list[str] = []
+
+    class CollectHandler(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+
+    handler = CollectHandler(level=logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    class FailingPsycopg:
+        def connect(self, url):
+            raise RuntimeError(f"cannot connect to {url}")
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    write_service.psycopg = FailingPsycopg()
+
+    try:
+        write_service.upsert_setting_sqlite(conn, "site_title", "Primary still succeeds")
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    log_output = "\n".join(messages)
+    stored_value = conn.execute("SELECT value FROM meta WHERE key = ?", ("site_title",)).fetchone()[0]
+    assert stored_value == "Primary still succeeds"
+    assert "DUAL_WRITE operation=upsert table=meta" in log_output
+    assert "postgres_result=error" in log_output
+    assert "dry_run=true" in log_output
 
 
 def test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log():
@@ -269,6 +393,8 @@ def run():
     test_logout_redirects()
     test_create_user_sqlite_with_sqlite_connection()
     test_controlled_dual_write_meta_stays_gated_to_meta()
+    test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_write()
+    test_controlled_dual_write_meta_strict_false_logs_postgres_error_without_blocking_primary()
     test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log()
 
 
