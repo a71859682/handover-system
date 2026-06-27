@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from urllib.parse import urlparse
 
 from sqlalchemy import create_engine, text
@@ -18,22 +17,20 @@ def safe_url(database_url: str) -> str:
 
 
 def main() -> int:
+    import app
+
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         print("using sqlite fallback")
         return 0
 
     parsed = urlparse(database_url)
-    if parsed.scheme not in {"postgresql", "postgres"}:
+    if parsed.scheme not in {"postgresql", "postgres", "postgresql+psycopg"}:
         print(f"FAIL: unsupported DATABASE_URL scheme: {parsed.scheme}")
         print(f"url: {safe_url(database_url)}")
         return 1
 
-    connect_url = database_url
-    if parsed.scheme == "postgres":
-        connect_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
-    elif parsed.scheme == "postgresql":
-        connect_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    connect_url = app.normalize_sqlalchemy_database_url(database_url)
 
     print(f"url: {safe_url(database_url)}")
     print("engine: attempting connection")

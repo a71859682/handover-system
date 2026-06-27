@@ -7,21 +7,19 @@ from sqlalchemy import create_engine, text
 
 
 def main() -> int:
+    import app
+
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         print("FAIL: DATABASE_URL is not set")
         return 1
 
     parsed = urlparse(database_url)
-    if parsed.scheme not in {"postgresql", "postgres"}:
+    if parsed.scheme not in {"postgresql", "postgres", "postgresql+psycopg"}:
         print(f"FAIL: DATABASE_URL is not PostgreSQL: {parsed.scheme}")
         return 1
 
-    connect_url = database_url
-    if parsed.scheme == "postgres":
-        connect_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
-    elif parsed.scheme == "postgresql":
-        connect_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    connect_url = app.normalize_sqlalchemy_database_url(database_url)
 
     try:
         engine = create_engine(connect_url, pool_pre_ping=True)
