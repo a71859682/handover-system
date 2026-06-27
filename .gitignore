@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
 .env
+site.db
+*.db
+*.sqlite
+*.sqlite3
 server.log
 server.err.log
 *.backup-*
