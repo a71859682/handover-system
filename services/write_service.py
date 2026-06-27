@@ -63,6 +63,13 @@ def _future_dual_write_placeholder(operation: str, payload: Mapping[str, object]
     _ = (operation, payload)
 
 
+def _require_lastrowid(cursor, *, table: str) -> int:
+    created_id = getattr(cursor, "lastrowid", None)
+    if created_id is None:
+        raise RuntimeError(f"Insert into {table} did not return lastrowid on the current runtime path")
+    return int(created_id)
+
+
 def upsert_setting_sqlite(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute(
         """
@@ -94,12 +101,12 @@ def create_user_sqlite(
     display_name: str,
     password_hash: str,
     role: str,
-) -> None:
-    conn.execute(
+) -> int:
+    cur = conn.execute(
         "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
         (username, display_name, password_hash, role),
     )
-    created_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    created_id = _require_lastrowid(cur, table="users")
     _log_dual_write_dry_run(
         operation="insert",
         table="users",
@@ -111,6 +118,7 @@ def create_user_sqlite(
             "role": role,
         },
     )
+    return created_id
     _future_dual_write_placeholder(
         "create_user",
         {
@@ -173,7 +181,7 @@ def update_user_sqlite(
 
 def create_sheet_sqlite(conn: sqlite3.Connection, *, name: str, sort_order: int) -> int:
     cur = conn.execute("INSERT INTO sheets (name, sort_order) VALUES (?, ?)", (name, sort_order))
-    sheet_id = cur.lastrowid
+    sheet_id = _require_lastrowid(cur, table="sheets")
     _log_dual_write_dry_run(
         operation="insert",
         table="sheets",
