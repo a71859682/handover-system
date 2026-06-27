@@ -65,11 +65,23 @@ DEFAULT_SETTINGS = {
 }
 
 ASSET_VERSION = "20260627-010"
+
+
+def normalize_sqlalchemy_database_url(database_url: str) -> str:
+    if database_url.startswith("postgresql+psycopg://"):
+        return database_url
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if database_url.startswith("postgres://"):
+        return database_url.replace("postgres://", "postgresql+psycopg://", 1)
+    return database_url
+
+
 def create_app():
     app = Flask(__name__)
     app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
     if DATABASE_URL:
-        app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
+        app.config["SQLALCHEMY_DATABASE_URI"] = normalize_sqlalchemy_database_url(DATABASE_URL)
     else:
         app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH.resolve().as_posix()}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
