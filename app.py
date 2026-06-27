@@ -1011,6 +1011,7 @@ def table_admin():
     return render_template("table_admin.html", settings=settings, sheets=sheets, current_sheet=current_sheet, tasks=tasks, extra_fields=extra_fields, floors=floors, units=units)
 
 
+bootstrap()
+
 if __name__ == "__main__":
-    bootstrap()
     app.run(host="0.0.0.0", port=5000, debug=False)
