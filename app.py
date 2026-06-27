@@ -9,6 +9,7 @@ from flask import Flask
 from openpyxl import load_workbook
 from werkzeug.security import generate_password_hash
 
+from config import APP_DB_PATH, DATABASE_URL
 from database import init_database
 from db_compat import IntegrityError, connect_db
 from routes.admin import admin_bp
@@ -21,7 +22,7 @@ from tools.import_seed import import_seed_into_conn
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = Path(os.environ.get("APP_DB_PATH", BASE_DIR / "site.db"))
+DB_PATH = APP_DB_PATH
 SEED_PATH = BASE_DIR / "seeds" / "default_seed.json"
 SOURCE_XLSX = BASE_DIR / "source.xlsx"
 MAX_WORK_COL = 60  # D:BH
@@ -52,9 +53,8 @@ ASSET_VERSION = "20260627-010"
 def create_app():
     app = Flask(__name__)
     app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
-    database_url = os.environ.get("DATABASE_URL")
-    if database_url:
-        app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+    if DATABASE_URL:
+        app.config["SQLALCHEMY_DATABASE_URI"] = DATABASE_URL
     else:
         app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH.resolve().as_posix()}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
