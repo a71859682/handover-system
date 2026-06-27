@@ -7,6 +7,13 @@ from flask import Blueprint, flash, redirect, render_template, request, session,
 from werkzeug.security import generate_password_hash
 
 from routes.auth import admin_required
+from services.write_service import (
+    create_builtin_extra_fields_sqlite,
+    create_sheet_sqlite,
+    create_user_sqlite,
+    update_sheet_name_sqlite,
+    update_user_sqlite,
+)
 
 
 admin_bp = Blueprint("admin", __name__)
@@ -38,9 +45,12 @@ def users():
             else:
                 try:
                     with app.db() as conn:
-                        conn.execute(
-                            "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
-                            (username, display_name, generate_password_hash(password), role),
+                        create_user_sqlite(
+                            conn,
+                            username=username,
+                            display_name=display_name,
+                            password_hash=generate_password_hash(password),
+                            role=role,
                         )
                     flash("\u6210\u54e1\u5df2\u65b0\u589e\u3002", "success")
                 except (sqlite3.IntegrityError, app.IntegrityError):
@@ -52,20 +62,14 @@ def users():
             else:
                 try:
                     with app.db() as conn:
-                        if password:
-                            conn.execute(
-                                """
-                                UPDATE users
-                                SET username = ?, display_name = ?, password_hash = ?, role = ?
-                                WHERE id = ?
-                                """,
-                                (username, display_name, generate_password_hash(password), role, user_id),
-                            )
-                        else:
-                            conn.execute(
-                                "UPDATE users SET username = ?, display_name = ?, role = ? WHERE id = ?",
-                                (username, display_name, role, user_id),
-                            )
+                        update_user_sqlite(
+                            conn,
+                            user_id=user_id,
+                            username=username,
+                            display_name=display_name,
+                            role=role,
+                            password_hash=generate_password_hash(password) if password else None,
+                        )
                     if user_id == session.get("user_id"):
                         session["username"] = username
                         session["display_name"] = display_name
@@ -98,18 +102,14 @@ def table_admin():
             if action == "create_sheet":
                 name = request.form.get("new_sheet_name", "").strip() or "????"
                 next_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM sheets").fetchone()[0]
-                cur = conn.execute("INSERT INTO sheets (name, sort_order) VALUES (?, ?)", (name, next_order))
-                for field_key, field in app.BUILTIN_EXTRA_FIELDS.items():
-                    conn.execute(
-                        """
-                        INSERT INTO extra_fields
-                        (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
-                        VALUES (?, ?, ?, ?, ?, 1, 1)
-                        """,
-                        (cur.lastrowid, field_key, field["name"], field["type"], field["sort_order"]),
-                    )
+                sheet_id = create_sheet_sqlite(conn, name=name, sort_order=next_order)
+                create_builtin_extra_fields_sqlite(
+                    conn,
+                    sheet_id=sheet_id,
+                    builtin_fields=app.BUILTIN_EXTRA_FIELDS,
+                )
                 flash("???????", "success")
-                return redirect(url_for("admin.table_admin", sheet_id=cur.lastrowid))
+                return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
             if action == "delete_sheet":
                 count = conn.execute("SELECT COUNT(*) FROM sheets").fetchone()[0]
                 if count <= 1:
@@ -215,7 +215,11 @@ def table_admin():
                 flash("??????", "success")
                 return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
 
-            conn.execute("UPDATE sheets SET name = ? WHERE id = ?", (request.form.get("sheet_name", "").strip() or "???", sheet_id))
+            update_sheet_name_sqlite(
+                conn,
+                sheet_id=sheet_id,
+                name=request.form.get("sheet_name", "").strip() or "???",
+            )
             for key in app.DEFAULT_SETTINGS:
                 if key in request.form:
                     app.set_setting(conn, key, request.form.get(key, "").strip())
