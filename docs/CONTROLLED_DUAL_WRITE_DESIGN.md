@@ -64,6 +64,52 @@ v2.7.1 validation:
 - run `python tests/smoke_test.py`
 - inspect Render logs for both `DUAL_WRITE_DRY_RUN` and `DUAL_WRITE` lines when `meta` dual write is enabled in a safe environment
 
+## Meta Secondary Write Runtime
+
+Current `meta` secondary write flow is runtime-aware:
+
+- if the current primary connection is `PostgresCompatConnection`, secondary write reuses the same underlying psycopg transaction
+- if there is an active Flask app context without a compat primary connection, secondary write can use the existing SQLAlchemy engine
+- if neither of the above applies, secondary write falls back to a short-timeout raw psycopg connection
+
+Connection flow:
+
+- `CONNECT_START`
+- `CONNECT_OK`
+- `BEGIN_TX`
+- `EXECUTE_SQL_START`
+- `EXECUTE_SQL_OK`
+- `COMMIT_START`
+- `COMMIT_OK`
+- `CLOSE`
+
+When reusing an existing PostgreSQL primary transaction:
+
+- `SAVEPOINT_START`
+- `SAVEPOINT_OK`
+- `EXECUTE_SQL_START`
+- `EXECUTE_SQL_OK`
+- `CLOSE`
+
+Timeout handling:
+
+- raw psycopg fallback uses `connect_timeout=3`
+- raw psycopg fallback sets `statement_timeout=3000ms`
+- SQLAlchemy engine path sets `SET LOCAL statement_timeout = 3000`
+- elapsed time in milliseconds is logged for each step
+
+Logging flow:
+
+- `DUAL_WRITE_META_SECONDARY strategy=<strategy> event=<event> key=<key> elapsed_ms=<ms> error=<error>`
+- `DUAL_WRITE operation=<operation> table=meta key=<key> sqlite_result=<result> postgres_result=<result> error=<error> timestamp=<timestamp>`
+
+Rollback flow:
+
+- non-strict mode must never let a secondary failure abort the formal request write path
+- raw psycopg fallback performs `ROLLBACK` on secondary failure
+- reused compat-primary path uses a savepoint and rolls back to the savepoint on secondary failure
+- strict mode may still raise after the failure is logged
+
 ## Per-Table Risk Analysis
 
 ### `meta`

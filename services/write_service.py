@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from datetime import datetime, timezone
 from typing import Mapping
+
+from flask import has_app_context
 
 from config import (
     DATABASE_URL,
@@ -12,6 +15,8 @@ from config import (
     DUAL_WRITE_STRICT,
     DUAL_WRITE_TABLES,
 )
+from database import db
+from db_compat import PostgresCompatConnection
 
 try:
     import psycopg
@@ -118,52 +123,319 @@ def _log_controlled_dual_write(
     )
 
 
-def _write_meta_to_postgres_secondary(*, key: str, value: str) -> tuple[str, str | None]:
-    if not DATABASE_URL:
-        return "skipped_no_database_url", "DATABASE_URL is not configured"
-    if psycopg is None:
-        return "skipped_no_psycopg", "psycopg is not installed"
+def _log_meta_secondary_event(
+    *,
+    strategy: str,
+    event: str,
+    elapsed_ms: int,
+    key: str,
+    error: str | None = None,
+) -> None:
+    logger = _ensure_dual_write_logger()
+    logger.info(
+        "DUAL_WRITE_META_SECONDARY strategy=%s event=%s key=%r elapsed_ms=%s error=%r",
+        strategy,
+        event,
+        key,
+        elapsed_ms,
+        error,
+    )
 
+
+def _is_postgres_compat_primary_connection(conn) -> bool:
+    return isinstance(conn, PostgresCompatConnection)
+
+
+def _write_meta_with_existing_psycopg_connection(raw_conn, *, key: str, value: str) -> tuple[str, str | None, dict[str, object]]:
+    strategy = "reuse_primary_postgres_connection"
+    started = time.perf_counter()
+    cur = None
+    details: dict[str, object] = {"strategy": strategy}
+    savepoint_name = "dual_write_meta_secondary"
+    try:
+        _log_meta_secondary_event(strategy=strategy, event="BEGIN_TX", key=key, elapsed_ms=0)
+        cur = raw_conn.cursor()
+        _log_meta_secondary_event(strategy=strategy, event="SAVEPOINT_START", key=key, elapsed_ms=0)
+        cur.execute(f"SAVEPOINT {savepoint_name}")
+        _log_meta_secondary_event(
+            strategy=strategy,
+            event="SAVEPOINT_OK",
+            key=key,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
+        _log_meta_secondary_event(strategy=strategy, event="EXECUTE_SQL_START", key=key, elapsed_ms=0)
+        cur.execute(
+            """
+            INSERT INTO meta(key, value)
+            VALUES (%s, %s)
+            ON CONFLICT(key)
+            DO UPDATE
+            SET value = EXCLUDED.value
+            """,
+            (key, value),
+        )
+        cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        details["elapsed_ms"] = elapsed_ms
+        _log_meta_secondary_event(strategy=strategy, event="EXECUTE_SQL_OK", key=key, elapsed_ms=elapsed_ms)
+        return "success", None, details
+    except BaseException as exc:
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            raise
+        if cur is not None:
+            try:
+                cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                _log_meta_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK",
+                    key=key,
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    error=str(exc),
+                )
+            except Exception as rollback_exc:
+                _log_meta_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK_FAILED",
+                    key=key,
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    error=str(rollback_exc),
+                )
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        details["elapsed_ms"] = elapsed_ms
+        details["exception_type"] = type(exc).__name__
+        _log_meta_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_FAILED",
+            key=key,
+            elapsed_ms=elapsed_ms,
+            error=str(exc),
+        )
+        return "failed", str(exc), details
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+                _log_meta_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE",
+                    key=key,
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                )
+            except Exception as exc:
+                _log_meta_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE_FAILED",
+                    key=key,
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    error=str(exc),
+                )
+
+
+def _write_meta_with_sqlalchemy_engine(*, key: str, value: str) -> tuple[str, str | None, dict[str, object]]:
+    strategy = "sqlalchemy_engine"
+    started = time.perf_counter()
+    details: dict[str, object] = {"strategy": strategy}
+    _log_meta_secondary_event(strategy=strategy, event="CONNECT_START", key=key, elapsed_ms=0)
+    try:
+        engine = db.engine
+        _log_meta_secondary_event(
+            strategy=strategy,
+            event="CONNECT_OK",
+            key=key,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
+        with engine.begin() as sql_conn:
+            _log_meta_secondary_event(
+                strategy=strategy,
+                event="BEGIN_TX",
+                key=key,
+                elapsed_ms=int((time.perf_counter() - started) * 1000),
+            )
+            _log_meta_secondary_event(
+                strategy=strategy,
+                event="EXECUTE_SQL_START",
+                key=key,
+                elapsed_ms=int((time.perf_counter() - started) * 1000),
+            )
+            sql_conn.exec_driver_sql(
+                "SET LOCAL statement_timeout = %s",
+                (str(POSTGRES_STATEMENT_TIMEOUT_MS),),
+            )
+            sql_conn.exec_driver_sql(
+                """
+                INSERT INTO meta(key, value)
+                VALUES (%s, %s)
+                ON CONFLICT(key)
+                DO UPDATE
+                SET value = EXCLUDED.value
+                """,
+                (key, value),
+            )
+            _log_meta_secondary_event(
+                strategy=strategy,
+                event="EXECUTE_SQL_OK",
+                key=key,
+                elapsed_ms=int((time.perf_counter() - started) * 1000),
+            )
+            _log_meta_secondary_event(
+                strategy=strategy,
+                event="COMMIT_START",
+                key=key,
+                elapsed_ms=int((time.perf_counter() - started) * 1000),
+            )
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        details["elapsed_ms"] = elapsed_ms
+        _log_meta_secondary_event(strategy=strategy, event="COMMIT_OK", key=key, elapsed_ms=elapsed_ms)
+        return "success", None, details
+    except BaseException as exc:
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            raise
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        details["elapsed_ms"] = elapsed_ms
+        details["exception_type"] = type(exc).__name__
+        _log_meta_secondary_event(
+            strategy=strategy,
+            event="ROLLBACK",
+            key=key,
+            elapsed_ms=elapsed_ms,
+            error=str(exc),
+        )
+        return "failed", str(exc), details
+    finally:
+        _log_meta_secondary_event(
+            strategy=strategy,
+            event="CLOSE",
+            key=key,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+
+def _write_meta_with_raw_psycopg(*, key: str, value: str) -> tuple[str, str | None, dict[str, object]]:
+    strategy = "raw_psycopg"
+    started = time.perf_counter()
     conn = None
     cur = None
+    details: dict[str, object] = {"strategy": strategy}
     try:
+        _log_meta_secondary_event(strategy=strategy, event="CONNECT_START", key=key, elapsed_ms=0)
         conn = psycopg.connect(
             DATABASE_URL,
             connect_timeout=POSTGRES_CONNECT_TIMEOUT_SECONDS,
             options=f"-c statement_timeout={POSTGRES_STATEMENT_TIMEOUT_MS}",
         )
+        _log_meta_secondary_event(
+            strategy=strategy,
+            event="CONNECT_OK",
+            key=key,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
+        _log_meta_secondary_event(
+            strategy=strategy,
+            event="BEGIN_TX",
+            key=key,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
         cur = conn.cursor()
+        _log_meta_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_START",
+            key=key,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
         cur.execute(
             """
-            INSERT INTO meta (key, value)
+            INSERT INTO meta(key, value)
             VALUES (%s, %s)
-            ON CONFLICT (key)
-            DO UPDATE SET value = EXCLUDED.value
+            ON CONFLICT(key)
+            DO UPDATE
+            SET value = EXCLUDED.value
             """,
             (key, value),
         )
+        _log_meta_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_OK",
+            key=key,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
+        _log_meta_secondary_event(
+            strategy=strategy,
+            event="COMMIT_START",
+            key=key,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
         conn.commit()
-        return "success", None
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        details["elapsed_ms"] = elapsed_ms
+        _log_meta_secondary_event(strategy=strategy, event="COMMIT_OK", key=key, elapsed_ms=elapsed_ms)
+        return "success", None, details
     except BaseException as exc:
         if isinstance(exc, (SystemExit, KeyboardInterrupt)):
             raise
         if conn is not None:
             try:
                 conn.rollback()
-            except Exception:
-                pass
-        return "failed", str(exc)
+                _log_meta_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK",
+                    key=key,
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    error=str(exc),
+                )
+            except Exception as rollback_exc:
+                _log_meta_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK_FAILED",
+                    key=key,
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    error=str(rollback_exc),
+                )
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        details["elapsed_ms"] = elapsed_ms
+        details["exception_type"] = type(exc).__name__
+        return "failed", str(exc), details
     finally:
         if cur is not None:
             try:
                 cur.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log_meta_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE_CURSOR_FAILED",
+                    key=key,
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    error=str(exc),
+                )
         if conn is not None:
             try:
                 conn.close()
-            except Exception:
-                pass
+                _log_meta_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE",
+                    key=key,
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                )
+            except Exception as exc:
+                _log_meta_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE_FAILED",
+                    key=key,
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    error=str(exc),
+                )
+
+
+def _write_meta_to_postgres_secondary(conn=None, *, key: str, value: str) -> tuple[str, str | None, dict[str, object]]:
+    if not DATABASE_URL:
+        return "skipped_no_database_url", "DATABASE_URL is not configured", {"strategy": "none"}
+    if psycopg is None:
+        return "skipped_no_psycopg", "psycopg is not installed", {"strategy": "none"}
+    if _is_postgres_compat_primary_connection(conn):
+        return _write_meta_with_existing_psycopg_connection(conn._conn, key=key, value=value)
+    if has_app_context():
+        return _write_meta_with_sqlalchemy_engine(key=key, value=value)
+    return _write_meta_with_raw_psycopg(key=key, value=value)
 
 
 def _maybe_controlled_dual_write_meta(
@@ -176,7 +448,7 @@ def _maybe_controlled_dual_write_meta(
     if not _is_controlled_dual_write_enabled_for("meta"):
         return
 
-    postgres_result, error = _write_meta_to_postgres_secondary(key=key, value=value)
+    postgres_result, error, _details = _write_meta_to_postgres_secondary(conn, key=key, value=value)
     _log_controlled_dual_write(
         operation=operation,
         table="meta",

@@ -178,6 +178,9 @@ def main() -> int:
             ("Controlled dual write log reports success", "postgres_result=success" in log_output),
             ("Controlled dual write reports failed on non-strict secondary error", "postgres_result=failed" in log_output),
             ("Controlled dual write no longer reports skipped_non_sqlite_primary", "skipped_non_sqlite_primary" not in log_output),
+            ("Secondary debug log includes connect step", "DUAL_WRITE_META_SECONDARY strategy=raw_psycopg event=CONNECT_START" in log_output),
+            ("Secondary debug log includes execute step", "DUAL_WRITE_META_SECONDARY strategy=raw_psycopg event=EXECUTE_SQL_START" in log_output),
+            ("Secondary debug log includes rollback step on failure", "DUAL_WRITE_META_SECONDARY strategy=raw_psycopg event=ROLLBACK" in log_output),
             ("Dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=upsert table=meta" in log_output),
         ]
 
