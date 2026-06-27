@@ -16,10 +16,12 @@ from routes.auth import admin_required as auth_admin_required, auth_bp, login_re
 from routes.sheet import sheet_bp
 from services.progress_service import reset_sheet, update_progress, update_unit_extra
 from services.sheet_service import available_sheets, load_grid, render_grid_payload, resolve_sheet_id
+from tools.import_seed import import_seed_into_conn
 
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("APP_DB_PATH", BASE_DIR / "site.db"))
+SEED_PATH = BASE_DIR / "seeds" / "default_seed.json"
 SOURCE_XLSX = BASE_DIR / "source.xlsx"
 MAX_WORK_COL = 60  # D:BH
 DONE_VALUE = "O"
@@ -468,13 +470,26 @@ def ensure_extra_fields(conn: sqlite3.Connection) -> None:
             )
 
 
+def primary_tables_are_empty(conn: sqlite3.Connection) -> bool:
+    for table in ("users", "sheets", "tasks", "floors", "units"):
+        if conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]:
+            return False
+    return True
+
+
 def bootstrap() -> None:
     with db() as conn:
         init_schema(conn)
+        if primary_tables_are_empty(conn):
+            if SEED_PATH.exists():
+                import_seed_into_conn(conn, SEED_PATH)
+            else:
+                seed_admin(conn)
+                seed_settings(conn)
+                seed_from_excel(conn)
+        migrate_schema(conn)
         seed_admin(conn)
         seed_settings(conn)
-        seed_from_excel(conn)
-        migrate_schema(conn)
         normalize_progress_values(conn)
         ensure_unit_extra_rows(conn)
         ensure_extra_fields(conn)
