@@ -15,14 +15,33 @@ This document describes the runtime flags introduced for the dual-database trans
 
 ## Current Behavior
 
-At this stage, these flags are configuration-only.
+The runtime currently supports these rollout stages:
 
-- Existing route and service flows are unchanged.
-- Existing reads are not switched to ORM.
-- Existing writes are not switched to ORM.
-- The default runtime behavior stays the same as before:
-  without `DATABASE_URL`, the app uses SQLite;
-  with `DATABASE_URL`, SQLAlchemy is configured with that PostgreSQL URL.
+- `SQLite only`
+  `USE_SQLALCHEMY_READS=false`
+  `USE_SQLALCHEMY_WRITES=false`
+  Reads and writes both use SQLite.
+
+- `Read from PostgreSQL / ORM`
+  `USE_SQLALCHEMY_READS=true`
+  `USE_SQLALCHEMY_WRITES=false`
+  Read paths can use SQLAlchemy ORM backed by PostgreSQL while writes still use SQLite.
+
+- `Future: Dual Write`
+  `USE_SQLALCHEMY_READS=true`
+  `USE_SQLALCHEMY_WRITES=true`
+  Reads use PostgreSQL / ORM, and writes are expected to write to both SQLite and PostgreSQL.
+
+- `Future: PostgreSQL primary`
+  PostgreSQL becomes the primary runtime database after dual-write validation is complete.
+
+At the current stage:
+
+- Existing route URLs are unchanged.
+- Existing write flows still use sqlite3.
+- `settings`, `users`, `sheets`, `progress`, `unit_extra`, `extra_fields`, and `unit_extra_values` read paths can switch through `USE_SQLALCHEMY_READS`.
+- Without `DATABASE_URL`, the app still falls back to SQLite.
+- With `DATABASE_URL`, SQLAlchemy is configured with `postgresql+psycopg://`.
 
 ## Intended Use
 
