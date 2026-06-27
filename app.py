@@ -8,7 +8,7 @@ from pathlib import Path
 
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
 from openpyxl import load_workbook
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import generate_password_hash
 
 from db_compat import IntegrityError, connect_db
 from routes.auth import admin_required as auth_admin_required, auth_bp, login_required as auth_login_required
@@ -478,36 +478,9 @@ def index():
         return redirect(url_for("auth.login"))
     return redirect(url_for("sheet"))
 
-
-@app.route("/_legacy_login_disabled", methods=["GET", "POST"])
-def legacy_login_disabled():
-    settings = query_settings()
-    if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        display_name = request.form.get("display_name", "").strip() or username
-        password = request.form.get("password", "")
-        user = query_one("SELECT * FROM users WHERE username = ?", (username,))
-        if user and check_password_hash(user["password_hash"], password):
-            session.clear()
-            session["user_id"] = user["id"]
-            session["username"] = user["username"]
-            session["display_name"] = user["display_name"] or user["username"]
-            session["role"] = user["role"]
-            return redirect(url_for("sheet"))
-        flash("帳號或密碼錯誤。", "error")
-    return render_template("login.html", settings=settings)
-
-
 def query_settings() -> dict[str, str]:
     with db() as conn:
         return get_settings(conn)
-
-
-@app.route("/_legacy_logout_disabled", methods=["POST"])
-@login_required
-def legacy_logout_disabled():
-    session.clear()
-    return redirect(url_for("auth.login"))
 
 
 @app.route("/sheet")
@@ -532,141 +505,6 @@ def sheet(sheet_id: int | None = None):
 def api_grid():
     sheet_id = request.args.get("sheet_id", type=int) or session.get("sheet_id")
     return jsonify(render_grid_payload(sheet_id))
-
-
-@app.route("/_legacy_api_progress_disabled", methods=["POST"])
-@login_required
-def legacy_api_progress_disabled():
-    data = request.get_json(force=True)
-    unit_id = int(data.get("unit_id"))
-    task_id = int(data.get("task_id"))
-    value = data.get("value", WORKING_VALUE)
-    if value not in (DONE_VALUE, WORKING_VALUE):
-        return jsonify({"ok": False, "message": "狀態只能是 O 或 X。"}), 400
-    with db() as conn:
-        conn.execute(
-            """
-            INSERT INTO progress (unit_id, task_id, value, updated_by, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(unit_id, task_id) DO UPDATE SET
-                value = excluded.value,
-                updated_by = excluded.updated_by,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (unit_id, task_id, value, session["user_id"]),
-        )
-    sheet_row = query_one(
-        "SELECT f.sheet_id FROM units u JOIN floors f ON f.id = u.floor_id WHERE u.id = ?",
-        (unit_id,),
-    )
-    return jsonify({"ok": True, "grid": render_grid_payload(sheet_row["sheet_id"] if sheet_row else session.get("sheet_id"))})
-
-
-@app.route("/_legacy_api_unit_extra_disabled", methods=["POST"])
-@login_required
-def legacy_api_unit_extra_disabled():
-    data = request.get_json(force=True)
-    unit_id = int(data.get("unit_id"))
-    field = data.get("field", "")
-    value = data.get("value", "")
-    with db() as conn:
-        field_row = conn.execute(
-            """
-            SELECT ef.*
-            FROM extra_fields ef
-            JOIN floors f ON f.sheet_id = ef.sheet_id
-            JOIN units u ON u.floor_id = f.id
-            WHERE u.id = ? AND ef.field_key = ? AND ef.active = 1
-            """,
-            (unit_id, field),
-        ).fetchone()
-        if not field_row:
-            return jsonify({"ok": False, "message": "欄位錯誤。"}), 400
-        if field_row["field_type"] == "status" and value not in (DONE_VALUE, WORKING_VALUE):
-            return jsonify({"ok": False, "message": "O/X 欄位只能是 O 或 X。"}), 400
-        conn.execute(
-            "INSERT OR IGNORE INTO unit_extra (unit_id, handover) VALUES (?, ?)",
-            (unit_id, WORKING_VALUE),
-        )
-        if field in EXTRA_FIELDS:
-            conn.execute(
-                f"""
-                UPDATE unit_extra
-                SET {field} = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE unit_id = ?
-                """,
-                (value, session["user_id"], unit_id),
-            )
-        else:
-            conn.execute(
-                """
-                INSERT INTO unit_extra_values (unit_id, field_key, value, updated_by, updated_at)
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ON CONFLICT(unit_id, field_key) DO UPDATE SET
-                    value = excluded.value,
-                    updated_by = excluded.updated_by,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (unit_id, field, value, session["user_id"]),
-            )
-    sheet_row = query_one(
-        "SELECT f.sheet_id FROM units u JOIN floors f ON f.id = u.floor_id WHERE u.id = ?",
-        (unit_id,),
-    )
-    return jsonify({"ok": True, "grid": render_grid_payload(sheet_row["sheet_id"] if sheet_row else session.get("sheet_id"))})
-
-
-@app.route("/_legacy_api_reset_sheet_disabled", methods=["POST"])
-@admin_required
-def legacy_api_reset_sheet_disabled():
-    data = request.get_json(force=True)
-    password = data.get("password", "")
-    user = query_one("SELECT * FROM users WHERE id = ?", (session["user_id"],))
-    if not user or not check_password_hash(user["password_hash"], password):
-        return jsonify({"ok": False, "message": "管理員密碼錯誤。"}), 403
-
-    with db() as conn:
-        sheet_id = resolve_sheet_id(conn, data.get("sheet_id") or session.get("sheet_id"))
-        conn.execute(
-            """
-            UPDATE progress
-            SET value = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE task_id IN (SELECT id FROM tasks WHERE sheet_id = ?)
-            """,
-            (WORKING_VALUE, session["user_id"], sheet_id),
-        )
-        conn.execute(
-            """
-            UPDATE unit_extra
-            SET initial_check = '',
-                recheck_1 = '',
-                recheck_2 = '',
-                handover = ?,
-                updated_by = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE unit_id IN (
-                SELECT u.id
-                FROM units u
-                JOIN floors f ON f.id = u.floor_id
-                WHERE f.sheet_id = ?
-            )
-            """,
-            (WORKING_VALUE, session["user_id"], sheet_id),
-        )
-        conn.execute(
-            """
-            DELETE FROM unit_extra_values
-            WHERE unit_id IN (
-                SELECT u.id
-                FROM units u
-                JOIN floors f ON f.id = u.floor_id
-                WHERE f.sheet_id = ?
-            )
-            AND field_key IN (SELECT field_key FROM extra_fields WHERE sheet_id = ?)
-            """,
-            (sheet_id, sheet_id),
-        )
-    return jsonify({"ok": True, "grid": render_grid_payload(sheet_id)})
 
 
 @app.route("/api/progress", methods=["POST"])
