@@ -10,19 +10,20 @@ def _app_state():
 
 
 def available_sheets(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute("SELECT * FROM sheets ORDER BY sort_order, id").fetchall()
+    app = _app_state()
+    return app.list_sheets()
 
 
 def resolve_sheet_id(conn: sqlite3.Connection, sheet_id: int | None = None) -> int:
     app = _app_state()
 
     if sheet_id:
-        row = conn.execute("SELECT id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+        row = app.get_sheet(sheet_id)
         if row:
             return row["id"]
-    row = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
-    if row:
-        return row["id"]
+    sheets = app.list_sheets()
+    if sheets:
+        return sheets[0]["id"]
     cur = conn.execute("INSERT INTO sheets (name, sort_order) VALUES (?, ?)", (app.get_setting(conn, "tab_title"), 1))
     return cur.lastrowid
 
@@ -54,31 +55,19 @@ def load_grid(sheet_id: int | None = None) -> dict:
         current_sheet_id = resolve_sheet_id(conn, sheet_id)
         settings = app.get_settings(conn)
         sheets = available_sheets(conn)
-        current_sheet = conn.execute("SELECT * FROM sheets WHERE id = ?", (current_sheet_id,)).fetchone()
-        tasks = conn.execute("SELECT * FROM tasks WHERE sheet_id = ? ORDER BY col_index", (current_sheet_id,)).fetchall()
-        floors = conn.execute("SELECT * FROM floors WHERE sheet_id = ? ORDER BY sort_order", (current_sheet_id,)).fetchall()
+        current_sheet = app.get_sheet(current_sheet_id)
+        tasks = app.list_tasks_for_sheet(current_sheet_id)
+        floors = app.list_floors_for_sheet(current_sheet_id)
         units_by_floor = {
-            floor["id"]: conn.execute(
-                "SELECT * FROM units WHERE floor_id = ? ORDER BY sort_order", (floor["id"],)
-            ).fetchall()
+            floor["id"]: app.list_units_for_floor(floor["id"])
             for floor in floors
         }
-        progress_rows = conn.execute("SELECT unit_id, task_id, value FROM progress").fetchall()
-        extra_rows = conn.execute("SELECT * FROM unit_extra").fetchall()
-        extra_fields = conn.execute(
-            "SELECT * FROM extra_fields WHERE sheet_id = ? AND active = 1 ORDER BY sort_order, id",
-            (current_sheet_id,),
-        ).fetchall()
-        extra_value_rows = conn.execute(
-            """
-            SELECT v.unit_id, v.field_key, v.value
-            FROM unit_extra_values v
-            JOIN units u ON u.id = v.unit_id
-            JOIN floors f ON f.id = u.floor_id
-            WHERE f.sheet_id = ?
-            """,
-            (current_sheet_id,),
-        ).fetchall()
+        progress_rows = app.list_progress()
+        extra_rows = app.list_unit_extra()
+        extra_fields = [
+            field for field in app.list_extra_fields_for_sheet(current_sheet_id) if field["active"] == 1
+        ]
+        extra_value_rows = app.list_unit_extra_values_for_sheet(current_sheet_id)
 
     progress = {(row["unit_id"], row["task_id"]): row["value"] for row in progress_rows}
     extras = {row["unit_id"]: dict(row) for row in extra_rows}

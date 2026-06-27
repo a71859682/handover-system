@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.5.0 - Dual Database Runtime Foundation
+日期：2026-06-27
+
+- 新增 `USE_SQLALCHEMY_READS` / `USE_SQLALCHEMY_WRITES`
+- 新增 `config.py`
+- 新增 runtime flag 檢查工具
+- `settings` / `users` / `sheets` / `progress` read path 可透過 flag 切 ORM
+- staging 已驗證 `USE_SQLALCHEMY_READS=true`
+- 寫入仍保持 sqlite3
+
 ## v2.3.1 - Quality & CI
 日期：2026-06-27
 

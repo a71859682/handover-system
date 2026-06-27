@@ -5,10 +5,11 @@ import sqlite3
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask
+from flask import Flask, has_app_context
 from openpyxl import load_workbook
 from werkzeug.security import generate_password_hash
 
+from config import APP_DB_PATH, DATABASE_URL, USE_SQLALCHEMY_READS
 from database import init_database
 from db_compat import IntegrityError, connect_db
 from routes.admin import admin_bp
@@ -16,12 +17,27 @@ from routes.api import api_bp
 from routes.auth import admin_required as auth_admin_required, auth_bp, login_required as auth_login_required
 from routes.sheet import sheet_bp
 from services.progress_service import reset_sheet, update_progress, update_unit_extra
+from services.progress_orm_service import (
+    list_extra_fields_for_sheet_orm,
+    list_progress_orm,
+    list_unit_extra_orm,
+    list_unit_extra_values_for_sheet_orm,
+)
+from services.settings_orm_service import get_setting_orm, get_settings_orm
 from services.sheet_service import available_sheets, load_grid, render_grid_payload, resolve_sheet_id
+from services.sheets_orm_service import (
+    get_sheet_orm,
+    list_floors_for_sheet_orm,
+    list_sheets_orm,
+    list_tasks_for_sheet_orm,
+    list_units_for_floor_orm,
+)
+from services.users_orm_service import get_user_by_id_orm, get_user_by_username_orm, list_users_orm
 from tools.import_seed import import_seed_into_conn
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = Path(os.environ.get("APP_DB_PATH", BASE_DIR / "site.db"))
+DB_PATH = APP_DB_PATH
 SEED_PATH = BASE_DIR / "seeds" / "default_seed.json"
 SOURCE_XLSX = BASE_DIR / "source.xlsx"
 MAX_WORK_COL = 60  # D:BH
@@ -49,12 +65,23 @@ DEFAULT_SETTINGS = {
 }
 
 ASSET_VERSION = "20260627-010"
+
+
+def normalize_sqlalchemy_database_url(database_url: str) -> str:
+    if database_url.startswith("postgresql+psycopg://"):
+        return database_url
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if database_url.startswith("postgres://"):
+        return database_url.replace("postgres://", "postgresql+psycopg://", 1)
+    return database_url
+
+
 def create_app():
     app = Flask(__name__)
     app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
-    database_url = os.environ.get("DATABASE_URL")
-    if database_url:
-        app.config["SQLALCHEMY_DATABASE_URI"] = database_url
+    if DATABASE_URL:
+        app.config["SQLALCHEMY_DATABASE_URI"] = normalize_sqlalchemy_database_url(DATABASE_URL)
     else:
         app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH.resolve().as_posix()}"
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -81,6 +108,280 @@ def db():
 def query_one(sql: str, params: tuple = ()) -> sqlite3.Row | None:
     with db() as conn:
         return conn.execute(sql, params).fetchone()
+
+
+def _user_to_payload(row, include_password_hash: bool = True) -> dict[str, object] | None:
+    if row is None:
+        return None
+
+    payload = {
+        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
+        "username": row["username"] if isinstance(row, sqlite3.Row) else row.username,
+        "display_name": row["display_name"] if isinstance(row, sqlite3.Row) else row.display_name,
+        "role": row["role"] if isinstance(row, sqlite3.Row) else row.role,
+        "created_at": row["created_at"] if isinstance(row, sqlite3.Row) else row.created_at,
+    }
+    if include_password_hash:
+        payload["password_hash"] = (
+            row["password_hash"] if isinstance(row, sqlite3.Row) else row.password_hash
+        )
+    return payload
+
+
+def _sheet_to_payload(row) -> dict[str, object] | None:
+    if row is None:
+        return None
+    return {
+        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
+        "name": row["name"] if isinstance(row, sqlite3.Row) else row.name,
+        "sort_order": row["sort_order"] if isinstance(row, sqlite3.Row) else row.sort_order,
+        "created_at": row["created_at"] if isinstance(row, sqlite3.Row) else row.created_at,
+    }
+
+
+def _task_to_payload(row) -> dict[str, object]:
+    return {
+        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
+        "sheet_id": row["sheet_id"] if isinstance(row, sqlite3.Row) else row.sheet_id,
+        "col_index": row["col_index"] if isinstance(row, sqlite3.Row) else row.col_index,
+        "vendor": row["vendor"] if isinstance(row, sqlite3.Row) else row.vendor,
+        "location": row["location"] if isinstance(row, sqlite3.Row) else row.location,
+        "name": row["name"] if isinstance(row, sqlite3.Row) else row.name,
+    }
+
+
+def _floor_to_payload(row) -> dict[str, object]:
+    return {
+        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
+        "sheet_id": row["sheet_id"] if isinstance(row, sqlite3.Row) else row.sheet_id,
+        "sort_order": row["sort_order"] if isinstance(row, sqlite3.Row) else row.sort_order,
+        "name": row["name"] if isinstance(row, sqlite3.Row) else row.name,
+        "block_name": row["block_name"] if isinstance(row, sqlite3.Row) else row.block_name,
+        "unit_count": row["unit_count"] if isinstance(row, sqlite3.Row) else row.unit_count,
+    }
+
+
+def _unit_to_payload(row) -> dict[str, object]:
+    return {
+        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
+        "floor_id": row["floor_id"] if isinstance(row, sqlite3.Row) else row.floor_id,
+        "sort_order": row["sort_order"] if isinstance(row, sqlite3.Row) else row.sort_order,
+        "name": row["name"] if isinstance(row, sqlite3.Row) else row.name,
+    }
+
+
+def _progress_to_payload(row) -> dict[str, object]:
+    return {
+        "unit_id": row["unit_id"] if isinstance(row, sqlite3.Row) else row.unit_id,
+        "task_id": row["task_id"] if isinstance(row, sqlite3.Row) else row.task_id,
+        "value": row["value"] if isinstance(row, sqlite3.Row) else row.value,
+        "updated_by": row["updated_by"] if isinstance(row, sqlite3.Row) else row.updated_by,
+        "updated_at": row["updated_at"] if isinstance(row, sqlite3.Row) else row.updated_at,
+    }
+
+
+def _unit_extra_to_payload(row) -> dict[str, object]:
+    return {
+        "unit_id": row["unit_id"] if isinstance(row, sqlite3.Row) else row.unit_id,
+        "initial_check": row["initial_check"] if isinstance(row, sqlite3.Row) else row.initial_check,
+        "recheck_1": row["recheck_1"] if isinstance(row, sqlite3.Row) else row.recheck_1,
+        "recheck_2": row["recheck_2"] if isinstance(row, sqlite3.Row) else row.recheck_2,
+        "handover": row["handover"] if isinstance(row, sqlite3.Row) else row.handover,
+        "updated_by": row["updated_by"] if isinstance(row, sqlite3.Row) else row.updated_by,
+        "updated_at": row["updated_at"] if isinstance(row, sqlite3.Row) else row.updated_at,
+    }
+
+
+def _extra_field_to_payload(row) -> dict[str, object]:
+    return {
+        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
+        "sheet_id": row["sheet_id"] if isinstance(row, sqlite3.Row) else row.sheet_id,
+        "field_key": row["field_key"] if isinstance(row, sqlite3.Row) else row.field_key,
+        "name": row["name"] if isinstance(row, sqlite3.Row) else row.name,
+        "field_type": row["field_type"] if isinstance(row, sqlite3.Row) else row.field_type,
+        "sort_order": row["sort_order"] if isinstance(row, sqlite3.Row) else row.sort_order,
+        "is_builtin": row["is_builtin"] if isinstance(row, sqlite3.Row) else row.is_builtin,
+        "active": row["active"] if isinstance(row, sqlite3.Row) else row.active,
+    }
+
+
+def _unit_extra_value_to_payload(row) -> dict[str, object]:
+    return {
+        "unit_id": row["unit_id"] if isinstance(row, sqlite3.Row) else row.unit_id,
+        "field_key": row["field_key"] if isinstance(row, sqlite3.Row) else row.field_key,
+        "value": row["value"] if isinstance(row, sqlite3.Row) else row.value,
+        "updated_by": row["updated_by"] if isinstance(row, sqlite3.Row) else row.updated_by,
+        "updated_at": row["updated_at"] if isinstance(row, sqlite3.Row) else row.updated_at,
+    }
+
+
+def get_user_by_username(username: str) -> dict[str, object] | None:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return _user_to_payload(get_user_by_username_orm(username))
+        with app.app_context():
+            return _user_to_payload(get_user_by_username_orm(username))
+
+    return _user_to_payload(query_one("SELECT * FROM users WHERE username = ?", (username,)))
+
+
+def get_user_by_id(user_id: int) -> dict[str, object] | None:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return _user_to_payload(get_user_by_id_orm(user_id))
+        with app.app_context():
+            return _user_to_payload(get_user_by_id_orm(user_id))
+
+    return _user_to_payload(query_one("SELECT * FROM users WHERE id = ?", (user_id,)))
+
+
+def list_users() -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_user_to_payload(user, include_password_hash=False) for user in list_users_orm()]
+        with app.app_context():
+            return [_user_to_payload(user, include_password_hash=False) for user in list_users_orm()]
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, username, display_name, role, created_at FROM users ORDER BY id"
+        ).fetchall()
+    return [_user_to_payload(row, include_password_hash=False) for row in rows]
+
+
+def list_sheets() -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_sheet_to_payload(sheet) for sheet in list_sheets_orm()]
+        with app.app_context():
+            return [_sheet_to_payload(sheet) for sheet in list_sheets_orm()]
+
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM sheets ORDER BY sort_order, id").fetchall()
+    return [_sheet_to_payload(row) for row in rows]
+
+
+def get_sheet(sheet_id: int) -> dict[str, object] | None:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return _sheet_to_payload(get_sheet_orm(sheet_id))
+        with app.app_context():
+            return _sheet_to_payload(get_sheet_orm(sheet_id))
+
+    with db() as conn:
+        row = conn.execute("SELECT * FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+    return _sheet_to_payload(row)
+
+
+def list_tasks_for_sheet(sheet_id: int) -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_task_to_payload(task) for task in list_tasks_for_sheet_orm(sheet_id)]
+        with app.app_context():
+            return [_task_to_payload(task) for task in list_tasks_for_sheet_orm(sheet_id)]
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE sheet_id = ? ORDER BY col_index", (sheet_id,)
+        ).fetchall()
+    return [_task_to_payload(row) for row in rows]
+
+
+def list_floors_for_sheet(sheet_id: int) -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_floor_to_payload(floor) for floor in list_floors_for_sheet_orm(sheet_id)]
+        with app.app_context():
+            return [_floor_to_payload(floor) for floor in list_floors_for_sheet_orm(sheet_id)]
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM floors WHERE sheet_id = ? ORDER BY sort_order", (sheet_id,)
+        ).fetchall()
+    return [_floor_to_payload(row) for row in rows]
+
+
+def list_units_for_floor(floor_id: int) -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_unit_to_payload(unit) for unit in list_units_for_floor_orm(floor_id)]
+        with app.app_context():
+            return [_unit_to_payload(unit) for unit in list_units_for_floor_orm(floor_id)]
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM units WHERE floor_id = ? ORDER BY sort_order", (floor_id,)
+        ).fetchall()
+    return [_unit_to_payload(row) for row in rows]
+
+
+def list_progress() -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_progress_to_payload(row) for row in list_progress_orm()]
+        with app.app_context():
+            return [_progress_to_payload(row) for row in list_progress_orm()]
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM progress ORDER BY unit_id, task_id"
+        ).fetchall()
+    return [_progress_to_payload(row) for row in rows]
+
+
+def list_unit_extra() -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_unit_extra_to_payload(row) for row in list_unit_extra_orm()]
+        with app.app_context():
+            return [_unit_extra_to_payload(row) for row in list_unit_extra_orm()]
+
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM unit_extra ORDER BY unit_id").fetchall()
+    return [_unit_extra_to_payload(row) for row in rows]
+
+
+def list_extra_fields_for_sheet(sheet_id: int) -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [_extra_field_to_payload(row) for row in list_extra_fields_for_sheet_orm(sheet_id)]
+        with app.app_context():
+            return [_extra_field_to_payload(row) for row in list_extra_fields_for_sheet_orm(sheet_id)]
+
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM extra_fields WHERE sheet_id = ? ORDER BY sort_order, id",
+            (sheet_id,),
+        ).fetchall()
+    return [_extra_field_to_payload(row) for row in rows]
+
+
+def list_unit_extra_values_for_sheet(sheet_id: int) -> list[dict[str, object]]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return [
+                _unit_extra_value_to_payload(row)
+                for row in list_unit_extra_values_for_sheet_orm(sheet_id)
+            ]
+        with app.app_context():
+            return [
+                _unit_extra_value_to_payload(row)
+                for row in list_unit_extra_values_for_sheet_orm(sheet_id)
+            ]
+
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT v.*
+            FROM unit_extra_values v
+            JOIN units u ON u.id = v.unit_id
+            JOIN floors f ON f.id = u.floor_id
+            WHERE f.sheet_id = ?
+            ORDER BY v.unit_id, v.field_key
+            """,
+            (sheet_id,),
+        ).fetchall()
+    return [_unit_extra_value_to_payload(row) for row in rows]
 
 
 def login_required(fn):
@@ -222,11 +523,23 @@ def seed_admin(conn: sqlite3.Connection) -> None:
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return get_setting_orm(key, DEFAULT_SETTINGS[key])
+        with app.app_context():
+            return get_setting_orm(key, DEFAULT_SETTINGS[key])
+
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else DEFAULT_SETTINGS[key]
 
 
 def get_settings(conn: sqlite3.Connection) -> dict[str, str]:
+    if USE_SQLALCHEMY_READS:
+        if has_app_context():
+            return get_settings_orm(DEFAULT_SETTINGS)
+        with app.app_context():
+            return get_settings_orm(DEFAULT_SETTINGS)
+
     settings = DEFAULT_SETTINGS.copy()
     rows = conn.execute("SELECT key, value FROM meta").fetchall()
     for row in rows:
