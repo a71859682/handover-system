@@ -1,5 +1,8 @@
+import importlib
+import logging
 import os
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 
@@ -80,6 +83,93 @@ def test_logout_redirects():
     assert response.status_code == 302
 
 
+def load_write_service(dual_write_dry_run: bool):
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true" if dual_write_dry_run else "false"
+    import config
+    import services.write_service as write_service
+
+    importlib.reload(config)
+    return importlib.reload(write_service)
+
+
+def test_create_user_sqlite_with_sqlite_connection():
+    write_service = load_write_service(dual_write_dry_run=False)
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            display_name TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL
+        )
+        """
+    )
+
+    created_id = write_service.create_user_sqlite(
+        conn,
+        username="sqlite_user",
+        display_name="SQLite User",
+        password_hash="hash",
+        role="member",
+    )
+
+    row = conn.execute("SELECT id, username FROM users WHERE username = ?", ("sqlite_user",)).fetchone()
+    assert created_id == row[0]
+    assert row[1] == "sqlite_user"
+
+
+def test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log():
+    write_service = load_write_service(dual_write_dry_run=True)
+    logger = logging.getLogger("dual_write")
+    logger.setLevel(logging.INFO)
+    messages: list[str] = []
+
+    class CollectHandler(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+
+    handler = CollectHandler(level=logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    class FakeCursor:
+        def __init__(self, lastrowid):
+            self.lastrowid = lastrowid
+
+    class FakePostgresRuntimeConnection:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, sql, params=()):
+            self.calls.append((sql, params))
+            assert "last_insert_rowid()" not in sql
+            assert "INSERT INTO users" in sql
+            return FakeCursor(lastrowid=321)
+
+    try:
+        conn = FakePostgresRuntimeConnection()
+        created_id = write_service.create_user_sqlite(
+            conn,
+            username="pg_user",
+            display_name="PG User",
+            password_hash="hash",
+            role="member",
+        )
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    log_output = "\n".join(messages)
+
+    assert created_id == 321
+    assert len(conn.calls) == 1
+    assert "last_insert_rowid()" not in log_output
+    assert "DUAL_WRITE_DRY_RUN operation=insert table=users" in log_output
+    assert "dry_run=true" in log_output
+
+
 def run():
     test_app_imports()
     test_login_route_smoke()
@@ -87,6 +177,8 @@ def run():
     test_admin_login_redirects_to_sheet()
     test_sheet_route_after_login()
     test_logout_redirects()
+    test_create_user_sqlite_with_sqlite_connection()
+    test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log()
 
 
 if __name__ == "__main__":
