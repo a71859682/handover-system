@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.3.0 - SQLAlchemy Foundation
+日期：2026-06-27
+
+- 新增 SQLAlchemy / Flask-Migrate / Alembic 基礎架構
+- 新增 database.py 與 models.py
+- 初始化 SQLAlchemy extension，但正式資料流仍維持 sqlite3
+- 新增 read-only ORM services
+- 新增 ORM/schema 比對工具
+- 新增 Alembic baseline migration
+- 鎖定 ORM / migration 套件版本
+- 正式站驗證通過
+
 ## v2.2.0 - Modular Refactor & Seeded DB
 日期：2026-06-27
 
