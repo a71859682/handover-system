@@ -14,7 +14,23 @@ Current boundary:
 - Runtime reads can be switched by `USE_SQLALCHEMY_READS`
 - Runtime writes still use SQLite only
 - No production write path is currently controlled by `USE_SQLALCHEMY_WRITES`
+- `DUAL_WRITE_DRY_RUN=true` only emits dry-run logs for future dual-write entry points
 - ORM write flow is not enabled
+
+## Dry-Run Mode
+
+- Purpose:
+  capture future dual-write payloads without changing the real write target
+- Enable:
+  set `DUAL_WRITE_DRY_RUN=true`
+- Validation:
+  run `python tools/check_dual_write_dry_run.py`
+- Behavior:
+  production writes still go to SQLite only
+- Safety boundary:
+  dry-run does not perform any PostgreSQL `INSERT`, `UPDATE`, or `DELETE`
+- Logged fields:
+  `operation`, `table`, `key`, `fields`, `timestamp`, `dry_run=true`
 
 ## Write Entry Inventory
 
