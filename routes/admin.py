@@ -242,9 +242,9 @@ def table_admin():
 
         settings = app.get_settings(conn)
         sheets = app.available_sheets(conn)
-        current_sheet = conn.execute("SELECT * FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
-        tasks = conn.execute("SELECT * FROM tasks WHERE sheet_id = ? ORDER BY col_index", (sheet_id,)).fetchall()
+        current_sheet = app.get_sheet(sheet_id)
+        tasks = app.list_tasks_for_sheet(sheet_id)
         extra_fields = conn.execute("SELECT * FROM extra_fields WHERE sheet_id = ? AND active = 1 ORDER BY sort_order, id", (sheet_id,)).fetchall()
-        floors = conn.execute("SELECT * FROM floors WHERE sheet_id = ? ORDER BY sort_order", (sheet_id,)).fetchall()
-        units = {floor["id"]: conn.execute("SELECT * FROM units WHERE floor_id = ? ORDER BY sort_order", (floor["id"],)).fetchall() for floor in floors}
+        floors = app.list_floors_for_sheet(sheet_id)
+        units = {floor["id"]: app.list_units_for_floor(floor["id"]) for floor in floors}
     return render_template("table_admin.html", settings=settings, sheets=sheets, current_sheet=current_sheet, tasks=tasks, extra_fields=extra_fields, floors=floors, units=units)
