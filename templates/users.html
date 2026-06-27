@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}&#25104;&#21729;&#31649;&#29702; - {{ settings.site_title }}{% endblock %}
+{% block content %}
+<section class="section-header">
+  <h1>&#25104;&#21729;&#31649;&#29702;</h1>
+</section>
+
+<form method="post" class="user-form">
+  <input type="hidden" name="action" value="create_user">
+  <label>
+    &#24115;&#34399;
+    <input name="username" required>
+  </label>
+  <label>
+    &#25104;&#21729;&#21517;&#31281;
+    <input name="display_name" required>
+  </label>
+  <label>
+    &#23494;&#30908;
+    <input name="password" type="password" required>
+  </label>
+  <label>
+    &#35282;&#33394;
+    <select name="role">
+      <option value="member">&#25104;&#21729;</option>
+      <option value="admin">&#31649;&#29702;&#21729;</option>
+    </select>
+  </label>
+  <button type="submit">&#26032;&#22686;&#25104;&#21729;</button>
+</form>
+
+<table class="users-table">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>&#24115;&#34399;</th>
+      <th>&#25104;&#21729;&#21517;&#31281;</th>
+      <th>&#23494;&#30908;</th>
+      <th>&#35282;&#33394;</th>
+      <th>&#24314;&#31435;&#26178;&#38291;</th>
+      <th>&#25805;&#20316;</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for user in users %}
+    <tr>
+      <td>
+        <form id="edit-user-{{ user.id }}" method="post"></form>
+        <input form="edit-user-{{ user.id }}" type="hidden" name="action" value="update_user:{{ user.id }}">
+        {{ user.id }}
+      </td>
+      <td><input form="edit-user-{{ user.id }}" name="username" value="{{ user.username }}" required></td>
+      <td><input form="edit-user-{{ user.id }}" name="display_name" value="{{ user.display_name or user.username }}"></td>
+      <td><input form="edit-user-{{ user.id }}" name="password" type="password" placeholder="&#30041;&#31354;&#19981;&#35722;"></td>
+      <td>
+        <select form="edit-user-{{ user.id }}" name="role">
+          <option value="member" {{ 'selected' if user.role == 'member' else '' }}>&#25104;&#21729;</option>
+          <option value="admin" {{ 'selected' if user.role == 'admin' else '' }}>&#31649;&#29702;&#21729;</option>
+        </select>
+      </td>
+      <td>{{ user.created_at }}</td>
+      <td><button form="edit-user-{{ user.id }}" type="submit">&#20786;&#23384;</button></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ settings.site_title if settings else "&#22823;&#33521;&#29151;&#36896;-&#26032;&#22484;&#27573;" }}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v=asset_version) }}">
+</head>
+<body>
+  {% if session.get("user_id") %}
+  <header class="topbar">
+    <div>
+      <div class="brand">{{ settings.site_title if settings else "&#22823;&#33521;&#29151;&#36896;-&#26032;&#22484;&#27573;" }}</div>
+      <div class="subtitle">&#21516;&#27493;&#31649;&#21046;&#34920;</div>
+    </div>
+    <nav class="nav">
+      <a href="{{ url_for('sheet') }}">&#31649;&#21046;&#34920;</a>
+      {% if session.get("role") == "admin" %}
+      <a href="{{ url_for('table_admin') }}">&#34920;&#26684;&#35373;&#23450;</a>
+      <a href="{{ url_for('users') }}">&#25104;&#21729;&#31649;&#29702;</a>
+      {% endif %}
+      <span class="user">{{ session.get("display_name") or session.get("username") }}</span>
+      <form method="post" action="{{ url_for('logout') }}">
+        <button type="submit" class="ghost">&#30331;&#20986;</button>
+      </form>
+    </nav>
+  </header>
+  {% endif %}
+
+  <main class="{% block main_class %}page{% endblock %}">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+      <div class="messages">
+        {% for category, message in messages %}
+        <div class="message {{ category }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

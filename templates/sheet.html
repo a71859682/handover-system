@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}{{ grid.settings.sheet_title }}｜{{ grid.settings.site_title }}{% endblock %}
+{% block content %}
+<section class="sheet-header">
+  <div>
+    <h1>{{ grid.settings.sheet_title }}</h1>
+    <p>{{ grid.settings.instruction_text }}</p>
+  </div>
+  <div class="sheet-actions">
+    <div class="sync-state" id="syncState">已同步</div>
+    <div class="action-buttons">
+      <button type="button" id="expandAllBtn">全部展開</button>
+      <button type="button" id="collapseAllBtn">全部收納</button>
+      <button type="button" id="showSelectedBtn">顯示選取工項/廠商</button>
+      {% if session.get("role") == "admin" %}
+      <button type="button" id="resetSheetBtn" data-sheet-id="{{ grid.current_sheet.id }}">回復預設</button>
+      {% endif %}
+      <button type="button" id="printBtn">列印</button>
+    </div>
+  </div>
+</section>
+
+<div class="print-meta">
+  <div class="print-date">列表日期：<span id="printDate"></span></div>
+  <div class="print-maker">製表人：{{ session.get("display_name") or session.get("username") }}</div>
+</div>
+
+<div class="tabs">
+  {% for sheet in grid.sheets %}
+  <a class="tab {{ 'active' if sheet.id == grid.current_sheet.id else '' }}" href="{{ url_for('sheet', sheet_id=sheet.id) }}">{{ sheet.name }}</a>
+  {% endfor %}
+</div>
+
+<section class="table-shell">
+  <table class="control-table" id="controlTable" data-sheet-id="{{ grid.current_sheet.id }}">
+    <thead>
+      <tr class="vendor-row">
+        <th class="meta" data-head-floor>{{ grid.settings.floor_header }}</th>
+        <th class="count">{{ grid.settings.count_header }}</th>
+        <th class="unit" data-head-unit>{{ grid.settings.unit_header }}</th>
+        {% for task in grid.tasks %}
+        <th class="selectable-head task-col task-col-{{ task.id }}" data-vendor-task="{{ task.id }}">{{ task.vendor }}</th>
+        {% endfor %}
+        {% for field in grid.extra_fields %}
+        <th class="extra-head" rowspan="2" data-extra-head="{{ field.field_key }}">{{ field.name }}</th>
+        {% endfor %}
+      </tr>
+      <tr class="task-row">
+        <th class="meta" data-head-task-label>{{ grid.settings.task_header }}</th>
+        <th class="count"></th>
+        <th class="unit"></th>
+        {% for task in grid.tasks %}
+        <th class="selectable-head task-col task-col-{{ task.id }}" data-task-id="{{ task.id }}" title="{{ task.name }}">{{ task.name }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody id="gridBody">
+      {% for item in grid.floor_rows %}
+      <tr class="floor-row" data-floor-id="{{ item.floor.id }}">
+        <td class="floor-cell" data-floor-label>
+          <button class="toggle" type="button" data-floor-id="{{ item.floor.id }}">+</button>
+          {{ item.floor.name }}
+        </td>
+        <td>{{ item.floor.unit_count }}</td>
+        <td>{{ item.floor.block_name }}</td>
+        {% for task in grid.tasks %}
+        {% set status = item.parent_status[task.id] %}
+        <td class="parent-status task-col task-col-{{ task.id }} {{ 'ok' if status == 'O' else 'bad' }}" data-parent-task="{{ task.id }}">{{ status }}</td>
+        {% endfor %}
+        {% for field in grid.extra_fields %}
+        <td class="parent-extra"></td>
+        {% endfor %}
+      </tr>
+      {% for unit in item.units %}
+      {% set extra = grid.extras.get(unit.id, {}) %}
+      <tr class="unit-row hidden" data-floor-id="{{ item.floor.id }}" data-unit-id="{{ unit.id }}">
+        <td></td>
+        <td>1</td>
+        <td data-unit-name>{{ unit.name }}</td>
+        {% for task in grid.tasks %}
+        {% set value = grid.progress.get((unit.id, task.id), 'X') %}
+        <td class="task-col task-col-{{ task.id }}">
+          <select class="progress-select" data-unit-id="{{ unit.id }}" data-task-id="{{ task.id }}">
+            <option value="X" {{ 'selected' if value == 'X' else '' }}>X</option>
+            <option value="O" {{ 'selected' if value == 'O' else '' }}>O</option>
+          </select>
+        </td>
+        {% endfor %}
+        {% for field in grid.extra_fields %}
+        <td>
+          {% if field.field_type == 'status' %}
+          <select class="extra-select" data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}">
+            <option value="X" {{ 'selected' if (extra.get(field.field_key) or 'X') == 'X' else '' }}>X</option>
+            <option value="O" {{ 'selected' if extra.get(field.field_key) == 'O' else '' }}>O</option>
+          </select>
+          {% else %}
+          <input class="extra-input" type="datetime-local" data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}" value="{{ extra.get(field.field_key) or '' }}">
+          {% endif %}
+        </td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr>
+        <th colspan="3">未完成戶數</th>
+        {% for task in grid.tasks %}
+        <td class="task-col task-col-{{ task.id }}" data-summary-open="{{ task.id }}">{{ grid.summary[task.id].total - grid.summary[task.id].done }}</td>
+        {% endfor %}
+        {% for field in grid.extra_fields %}
+        <td data-extra-summary-open="{{ field.field_key }}">{{ grid.extra_summary[field.field_key].total - grid.extra_summary[field.field_key].done }}</td>
+        {% endfor %}
+      </tr>
+      <tr>
+        <th colspan="3">已完成戶數</th>
+        {% for task in grid.tasks %}
+        <td class="task-col task-col-{{ task.id }}" data-summary-done="{{ task.id }}">{{ grid.summary[task.id].done }}</td>
+        {% endfor %}
+        {% for field in grid.extra_fields %}
+        <td data-extra-summary-done="{{ field.field_key }}">{{ grid.extra_summary[field.field_key].done }}</td>
+        {% endfor %}
+      </tr>
+      <tr>
+        <th colspan="3">總戶數</th>
+        {% for task in grid.tasks %}
+        <td class="task-col task-col-{{ task.id }}" data-summary-total="{{ task.id }}">{{ grid.summary[task.id].total }}</td>
+        {% endfor %}
+        {% for field in grid.extra_fields %}
+        <td data-extra-summary-total="{{ field.field_key }}">{{ grid.extra_summary[field.field_key].total }}</td>
+        {% endfor %}
+      </tr>
+    </tfoot>
+  </table>
+</section>
+
+<div class="date-popover hidden" id="datePopover">
+  <button type="button" id="dateClearBtn">清除</button>
+  <button type="button" id="dateConfirmBtn">確定</button>
+</div>
+
+<style id="columnFilterStyle"></style>
+<script src="{{ url_for('static', filename='app.js', v=asset_version) }}"></script>
+{% endblock %}
