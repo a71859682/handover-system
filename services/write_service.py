@@ -5,10 +5,22 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Mapping
 
-from config import DUAL_WRITE_DRY_RUN
+from config import (
+    DATABASE_URL,
+    DUAL_WRITE_DRY_RUN,
+    DUAL_WRITE_ENABLED,
+    DUAL_WRITE_STRICT,
+    DUAL_WRITE_TABLES,
+)
+
+try:
+    import psycopg
+except Exception:
+    psycopg = None
 
 
 LOGGER = logging.getLogger("dual_write")
+ALLOWED_CONTROLLED_DUAL_WRITE_TABLES = frozenset({"meta"})
 
 
 def _ensure_dual_write_logger() -> logging.Logger:
@@ -33,6 +45,30 @@ def _normalize_log_fields(payload: Mapping[str, object]) -> dict[str, object]:
         else:
             normalized[key] = value
     return normalized
+
+
+def _normalize_table_name(table: str) -> str:
+    normalized = table.strip().lower()
+    if normalized == "settings":
+        return "meta"
+    return normalized
+
+
+def _controlled_dual_write_tables() -> set[str]:
+    return {_normalize_table_name(table) for table in DUAL_WRITE_TABLES}
+
+
+def _is_sqlite_primary_connection(conn) -> bool:
+    return isinstance(conn, sqlite3.Connection)
+
+
+def _is_controlled_dual_write_enabled_for(table: str) -> bool:
+    normalized = _normalize_table_name(table)
+    return (
+        DUAL_WRITE_ENABLED
+        and normalized in ALLOWED_CONTROLLED_DUAL_WRITE_TABLES
+        and normalized in _controlled_dual_write_tables()
+    )
 
 
 def _log_dual_write_dry_run(
@@ -63,6 +99,83 @@ def _future_dual_write_placeholder(operation: str, payload: Mapping[str, object]
     _ = (operation, payload)
 
 
+def _log_controlled_dual_write(
+    *,
+    operation: str,
+    table: str,
+    key: Mapping[str, object],
+    sqlite_result: str,
+    postgres_result: str,
+    error: str | None,
+) -> None:
+    logger = _ensure_dual_write_logger()
+    logger.info(
+        "DUAL_WRITE operation=%s table=%s key=%r sqlite_result=%s postgres_result=%s error=%r timestamp=%s",
+        operation,
+        _normalize_table_name(table),
+        _normalize_log_fields(key),
+        sqlite_result,
+        postgres_result,
+        error,
+        datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _write_meta_to_postgres_secondary(*, key: str, value: str) -> tuple[str, str | None]:
+    if not DATABASE_URL:
+        return "skipped_no_database_url", "DATABASE_URL is not configured"
+    if psycopg is None:
+        return "skipped_no_psycopg", "psycopg is not installed"
+
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO meta (key, value) VALUES (%s, %s)
+                    ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
+                    """,
+                    (key, value),
+                )
+        return "success", None
+    except Exception as exc:
+        return "error", str(exc)
+
+
+def _maybe_controlled_dual_write_meta(
+    conn,
+    *,
+    operation: str,
+    key: str,
+    value: str,
+) -> None:
+    if not _is_controlled_dual_write_enabled_for("meta"):
+        return
+
+    if not _is_sqlite_primary_connection(conn):
+        _log_controlled_dual_write(
+            operation=operation,
+            table="meta",
+            key={"key": key},
+            sqlite_result="success",
+            postgres_result="skipped_non_sqlite_primary",
+            error=None,
+        )
+        return
+
+    postgres_result, error = _write_meta_to_postgres_secondary(key=key, value=value)
+    _log_controlled_dual_write(
+        operation=operation,
+        table="meta",
+        key={"key": key},
+        sqlite_result="success",
+        postgres_result=postgres_result,
+        error=error,
+    )
+    if postgres_result == "error" and DUAL_WRITE_STRICT:
+        raise RuntimeError(f"Controlled dual write failed for meta key '{key}': {error}")
+
+
 def _require_lastrowid(cursor, *, table: str) -> int:
     created_id = getattr(cursor, "lastrowid", None)
     if created_id is None:
@@ -83,6 +196,12 @@ def upsert_setting_sqlite(conn: sqlite3.Connection, key: str, value: str) -> Non
         table="meta",
         key={"key": key},
         fields={"value": value},
+    )
+    _maybe_controlled_dual_write_meta(
+        conn,
+        operation="upsert",
+        key=key,
+        value=value,
     )
     _future_dual_write_placeholder("upsert_setting", {"key": key, "value": value})
 
@@ -118,7 +237,6 @@ def create_user_sqlite(
             "role": role,
         },
     )
-    return created_id
     _future_dual_write_placeholder(
         "create_user",
         {
@@ -129,6 +247,7 @@ def create_user_sqlite(
             "role": role,
         },
     )
+    return created_id
 
 
 def update_user_sqlite(

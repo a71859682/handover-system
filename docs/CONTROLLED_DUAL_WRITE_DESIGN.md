@@ -43,6 +43,27 @@ Reasoning:
 - `progress` has the highest operational write frequency
 - `unit_extra` and related tables have the broadest branching and relationship surface
 
+## v2.7.1 Scope
+
+The first controlled dual write implementation is limited to `meta` / settings only.
+
+Current v2.7.1 rules:
+
+- `DUAL_WRITE_ENABLED=false` by default
+- `DUAL_WRITE_TABLES=meta` by default
+- `DUAL_WRITE_STRICT=false` by default
+- SQLite remains the primary write path
+- PostgreSQL is only eligible as a secondary write for `meta`
+- `users`, `sheets`, `progress`, `unit_extra`, `extra_fields`, and `unit_extra_values` must not perform real PostgreSQL writes in this phase
+
+v2.7.1 validation:
+
+- run `python tools/check_runtime_flags.py`
+- run `python tools/check_dual_write_dry_run.py`
+- run `python tools/check_controlled_dual_write.py`
+- run `python tests/smoke_test.py`
+- inspect Render logs for both `DUAL_WRITE_DRY_RUN` and `DUAL_WRITE` lines when `meta` dual write is enabled in a safe environment
+
 ## Per-Table Risk Analysis
 
 ### `meta`
