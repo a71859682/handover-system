@@ -45,19 +45,23 @@ DEFAULT_SETTINGS = {
     "task_header": "工項",
 }
 
-
-app = Flask(__name__)
-app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
 ASSET_VERSION = "20260627-010"
-app.register_blueprint(admin_bp)
-app.register_blueprint(api_bp)
-app.register_blueprint(auth_bp)
-app.register_blueprint(sheet_bp)
+def create_app():
+    app = Flask(__name__)
+    app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
+
+    @app.context_processor
+    def inject_asset_version():
+        return {"asset_version": ASSET_VERSION}
+
+    app.register_blueprint(admin_bp)
+    app.register_blueprint(api_bp)
+    app.register_blueprint(auth_bp)
+    app.register_blueprint(sheet_bp)
+    return app
 
 
-@app.context_processor
-def inject_asset_version():
-    return {"asset_version": ASSET_VERSION}
+app = create_app()
 
 
 def db():
