@@ -15,6 +15,7 @@ from services.write_service import (
     update_floor_fields_sqlite,
     update_extra_field_sqlite,
     update_sheet_name_sqlite,
+    update_task_fields_sqlite,
     update_unit_name_sqlite,
     update_user_sqlite,
 )
@@ -229,7 +230,13 @@ def table_admin():
                     app.set_setting(conn, key, request.form.get(key, "").strip())
             for task in conn.execute("SELECT id FROM tasks WHERE sheet_id = ?", (sheet_id,)):
                 task_id = task["id"]
-                conn.execute("UPDATE tasks SET vendor = ?, location = ?, name = ? WHERE id = ?", (request.form.get(f"task_vendor_{task_id}", "").strip(), request.form.get(f"task_location_{task_id}", "").strip(), request.form.get(f"task_name_{task_id}", "").strip(), task_id))
+                update_task_fields_sqlite(
+                    conn,
+                    task_id,
+                    vendor=request.form.get(f"task_vendor_{task_id}", "").strip(),
+                    location=request.form.get(f"task_location_{task_id}", "").strip(),
+                    name=request.form.get(f"task_name_{task_id}", "").strip(),
+                )
             for field in conn.execute("SELECT id FROM extra_fields WHERE sheet_id = ? AND active = 1", (sheet_id,)):
                 field_id = field["id"]
                 field_type = request.form.get(f"extra_type_{field_id}", "date")
