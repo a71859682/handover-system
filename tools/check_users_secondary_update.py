@@ -145,11 +145,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Limit comparison to a single user id.",
     )
+    parser.add_argument(
+        "--strict-presence",
+        action="store_true",
+        help="Treat users missing on either side as failures.",
+    )
     return parser.parse_args()
 
 
 def build_user_query(user_id: int | None) -> tuple[str, tuple]:
-    sql = "SELECT id, display_name FROM users"
+    sql = "SELECT id, username, display_name FROM users"
     params: tuple = ()
     if user_id is not None:
         sql += " WHERE id = ?"
@@ -159,7 +164,7 @@ def build_user_query(user_id: int | None) -> tuple[str, tuple]:
 
 
 def build_postgres_user_query(user_id: int | None) -> tuple[str, tuple]:
-    sql = "SELECT id, display_name FROM users"
+    sql = "SELECT id, username, display_name FROM users"
     params: tuple = ()
     if user_id is not None:
         sql += " WHERE id = %s"
@@ -185,21 +190,67 @@ def main() -> int:
 
     with connect_sqlite(sqlite_path) as sqlite_conn, connect_postgres(database_url) as pg_conn:
         sqlite_rows = {
-            row["id"]: row["display_name"]
+            row["id"]: {
+                "username": row["username"],
+                "display_name": row["display_name"],
+            }
             for row in sqlite_conn.execute(sqlite_sql, sqlite_params).fetchall()
         }
         with pg_conn.cursor() as cur:
             cur.execute(postgres_sql, postgres_params)
-            postgres_rows = {row[0]: row[1] for row in cur.fetchall()}
+            postgres_rows = {
+                row[0]: {
+                    "username": row[1],
+                    "display_name": row[2],
+                }
+                for row in cur.fetchall()
+            }
 
     has_failure = False
     all_ids = sorted(set(sqlite_rows) | set(postgres_rows))
     for user_id in all_ids:
-        sqlite_value = sqlite_rows.get(user_id)
-        postgres_value = postgres_rows.get(user_id)
+        sqlite_row = sqlite_rows.get(user_id)
+        postgres_row = postgres_rows.get(user_id)
+
+        if sqlite_row is None and postgres_row is not None:
+            status = "FAIL" if args.strict_presence else "SKIP"
+            print(
+                f"{status} users id={user_id}: username={postgres_row['username']} reason=missing_in_sqlite"
+            )
+            if status == "FAIL":
+                has_failure = True
+            continue
+
+        if sqlite_row is not None and postgres_row is None:
+            status = "FAIL" if args.strict_presence else "SKIP"
+            print(
+                f"{status} users id={user_id}: username={sqlite_row['username']} reason=missing_in_postgres"
+            )
+            if status == "FAIL":
+                has_failure = True
+            continue
+
+        assert sqlite_row is not None
+        assert postgres_row is not None
+
+        sqlite_username = sqlite_row["username"]
+        postgres_username = postgres_row["username"]
+        if sqlite_username != postgres_username:
+            status = "FAIL" if args.strict_presence else "SKIP"
+            print(
+                f"{status} users id={user_id}: sqlite_username={sqlite_username!r} "
+                f"postgres_username={postgres_username!r} reason=username_mismatch"
+            )
+            if status == "FAIL":
+                has_failure = True
+            continue
+
+        sqlite_value = sqlite_row["display_name"]
+        postgres_value = postgres_row["display_name"]
         status = "PASS" if sqlite_value == postgres_value else "FAIL"
         print(
-            f"{status} users id={user_id}: sqlite={sqlite_value!r} postgres={postgres_value!r}"
+            f"{status} users id={user_id}: username={sqlite_username} "
+            f"sqlite={sqlite_value!r} postgres={postgres_value!r}"
         )
         if status == "FAIL":
             has_failure = True
