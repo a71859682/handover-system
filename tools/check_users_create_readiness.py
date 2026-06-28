@@ -216,8 +216,31 @@ def print_username_probe(
 def fetch_next_sqlite_user_id(sqlite_path: Path) -> int:
     sqlite_conn = connect_sqlite(sqlite_path)
     try:
-        row = sqlite_conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM users").fetchone()
-        return int(row[0])
+        create_sql_row = sqlite_conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+        ).fetchone()
+        create_sql = create_sql_row["sql"] if create_sql_row else None
+        has_autoincrement = bool(create_sql and "AUTOINCREMENT" in create_sql.upper())
+
+        sqlite_sequence_exists = sqlite_conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'"
+        ).fetchone() is not None
+
+        sqlite_sequence_value = None
+        if sqlite_sequence_exists:
+            sequence_row = sqlite_conn.execute(
+                "SELECT seq FROM sqlite_sequence WHERE name = 'users'"
+            ).fetchone()
+            sqlite_sequence_value = sequence_row["seq"] if sequence_row else None
+
+        row = sqlite_conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS max_user_id FROM users"
+        ).fetchone()
+        max_user_id = int(row["max_user_id"])
+
+        if has_autoincrement and sqlite_sequence_value is not None:
+            return max(max_user_id, int(sqlite_sequence_value)) + 1
+        return max_user_id + 1
     finally:
         sqlite_conn.close()
 

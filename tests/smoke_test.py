@@ -421,6 +421,66 @@ def run_users_create_readiness_guard_smoke(db_path: Path) -> None:
         raise AssertionError("Expected safe next sqlite collision reason.")
 
 
+def run_users_create_readiness_autoincrement_sequence_smoke() -> None:
+    from check_users_create_readiness import (
+        build_next_sqlite_collision_report,
+        fetch_next_sqlite_user_id,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "autoincrement-users.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.executescript(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO users (id, username, display_name, password_hash, role, created_at)
+            VALUES (1, 'admin', 'Admin', 'hash', 'admin', '2026-06-28T00:00:00');
+            UPDATE sqlite_sequence SET seq = 3 WHERE name = 'users';
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        next_sqlite_user_id = fetch_next_sqlite_user_id(db_path)
+        if next_sqlite_user_id != 4:
+            raise AssertionError(
+                "Expected AUTOINCREMENT sqlite sequence guard to return next user id 4, "
+                f"got {next_sqlite_user_id}."
+            )
+
+        postgres_rows = {
+            2: {
+                "id": 2,
+                "username": "zhong",
+                "display_name": "zhong",
+                "role": "admin",
+                "created_at": "2026-06-25T15:35:52",
+            },
+            3: {
+                "id": 3,
+                "username": "test",
+                "display_name": "test",
+                "role": "member",
+                "created_at": "2026-06-27T04:20:36",
+            },
+        }
+        collision_report = build_next_sqlite_collision_report(next_sqlite_user_id, postgres_rows)
+        if collision_report["status"] != "ok":
+            raise AssertionError("Expected bumped AUTOINCREMENT sqlite next id to avoid PostgreSQL collision.")
+        if collision_report["reason"] != "next_sqlite_user_id_not_present_in_postgres":
+            raise AssertionError("Expected bumped AUTOINCREMENT sqlite next id to report no collision.")
+        if collision_report["postgres_collision"] is not None:
+            raise AssertionError("Expected no PostgreSQL collision row for bumped AUTOINCREMENT sqlite next id.")
+
+
 def run_users_id_allocation_smoke(db_path: Path) -> None:
     from check_users_id_allocation import fetch_sqlite_users_schema
 
@@ -596,6 +656,7 @@ def main() -> int:
         run_user_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_role_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_users_create_readiness_guard_smoke(db_path)
+        run_users_create_readiness_autoincrement_sequence_smoke()
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
         run_users_sqlite_sequence_apply_guard_smoke()
