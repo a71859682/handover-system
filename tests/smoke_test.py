@@ -425,6 +425,7 @@ def main() -> int:
     run_help("check_controlled_dual_write.py")
     run_help("check_users_secondary_update.py")
     run_help("check_users_baseline_and_sequence.py")
+    run_help("fix_users_postgres_sequence.py")
     run_help("backfill_users_display_name_to_postgres.py")
 
     controlled_result = run_script("check_controlled_dual_write.py")
@@ -444,6 +445,9 @@ def main() -> int:
     baseline_result = run_script("check_users_baseline_and_sequence.py", env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in baseline_result.stdout or "PASS" not in baseline_result.stdout:
         raise AssertionError("check_users_baseline_and_sequence.py did not report expected PASS without DATABASE_URL.")
+    fix_sequence_result = run_script("fix_users_postgres_sequence.py", args=["--dry-run"], env={"DATABASE_URL": ""})
+    if "DATABASE_URL is not configured." not in fix_sequence_result.stdout or "PASS" not in fix_sequence_result.stdout:
+        raise AssertionError("fix_users_postgres_sequence.py --dry-run did not report expected PASS without DATABASE_URL.")
 
     backfill_result = subprocess.run(
         [
