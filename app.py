@@ -51,8 +51,11 @@ DUAL_WRITE_USERS_STRATEGY_LOG = (
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
+app.config.setdefault("SQLALCHEMY_DATABASE_URI", f"sqlite:///{DB_PATH.resolve().as_posix()}")
+app.config.setdefault("SQLALCHEMY_TRACK_MODIFICATIONS", False)
+init_database(app)
 ASSET_VERSION = "20260627-010"
-_USERS_READ_COMPARE_ORM_READY = False
+_USERS_READ_COMPARE_ORM_READY = True
 
 
 @app.context_processor
@@ -104,14 +107,8 @@ def users_read_compare_enabled() -> bool:
 
 
 def _ensure_users_read_compare_orm_ready() -> None:
-    global _USERS_READ_COMPARE_ORM_READY
-    if _USERS_READ_COMPARE_ORM_READY:
-        return
-
-    app.config.setdefault("SQLALCHEMY_DATABASE_URI", f"sqlite:///{DB_PATH.resolve().as_posix()}")
-    app.config.setdefault("SQLALCHEMY_TRACK_MODIFICATIONS", False)
-    init_database(app)
-    _USERS_READ_COMPARE_ORM_READY = True
+    if not _USERS_READ_COMPARE_ORM_READY:
+        raise RuntimeError("users_read_compare_orm_not_initialized")
 
 
 def _run_with_app_context(fn):
@@ -119,6 +116,13 @@ def _run_with_app_context(fn):
         return fn()
     with app.app_context():
         return fn()
+
+
+class UsersReadCompareError(RuntimeError):
+    def __init__(self, *, stage: str, exc: Exception):
+        super().__init__(f"users_read_compare_{stage}")
+        self.stage = stage
+        self.exc_class = type(exc).__name__
 
 
 def _user_row_payload(
@@ -191,22 +195,40 @@ def _sqlite_list_users() -> list[sqlite3.Row]:
 def _shadow_get_user_by_username(username: str):
     from services.users_orm_service import get_user_by_username_orm
 
-    _ensure_users_read_compare_orm_ready()
-    return _run_with_app_context(lambda: get_user_by_username_orm(username))
+    try:
+        _ensure_users_read_compare_orm_ready()
+    except Exception as exc:
+        raise UsersReadCompareError(stage="orm_init", exc=exc) from exc
+    try:
+        return _run_with_app_context(lambda: get_user_by_username_orm(username))
+    except Exception as exc:
+        raise UsersReadCompareError(stage="orm_read", exc=exc) from exc
 
 
 def _shadow_get_user_by_id(user_id: int):
     from services.users_orm_service import get_user_by_id_orm
 
-    _ensure_users_read_compare_orm_ready()
-    return _run_with_app_context(lambda: get_user_by_id_orm(user_id))
+    try:
+        _ensure_users_read_compare_orm_ready()
+    except Exception as exc:
+        raise UsersReadCompareError(stage="orm_init", exc=exc) from exc
+    try:
+        return _run_with_app_context(lambda: get_user_by_id_orm(user_id))
+    except Exception as exc:
+        raise UsersReadCompareError(stage="orm_read", exc=exc) from exc
 
 
 def _shadow_list_users():
     from services.users_orm_service import list_users_orm
 
-    _ensure_users_read_compare_orm_ready()
-    return _run_with_app_context(list_users_orm)
+    try:
+        _ensure_users_read_compare_orm_ready()
+    except Exception as exc:
+        raise UsersReadCompareError(stage="orm_init", exc=exc) from exc
+    try:
+        return _run_with_app_context(list_users_orm)
+    except Exception as exc:
+        raise UsersReadCompareError(stage="orm_read", exc=exc) from exc
 
 
 def _log_users_read_compare_match(*, helper: str, key: str | None = None) -> None:
@@ -217,11 +239,22 @@ def _log_users_read_compare_match(*, helper: str, key: str | None = None) -> Non
     dual_write_log(message)
 
 
-def _log_users_read_compare_mismatch(*, helper: str, fields: list[str], key: str | None = None) -> None:
+def _log_users_read_compare_mismatch(
+    *,
+    helper: str,
+    fields: list[str],
+    key: str | None = None,
+    error_class: str | None = None,
+    error_stage: str | None = None,
+) -> None:
     message = f"USERS_READ_COMPARE helper={helper}"
     if key:
         message += f" key={key}"
     message += f" status=mismatch fields={','.join(fields)}"
+    if error_class:
+        message += f" compare_error_class={error_class}"
+    if error_stage:
+        message += f" compare_error_stage={error_stage}"
     dual_write_log(message)
 
 
@@ -316,86 +349,112 @@ def _compare_list_users(*, primary_rows: list[sqlite3.Row], shadow_rows, log_res
     return result
 
 
+def _users_read_compare_error_result(
+    *,
+    helper: str,
+    key: str | None = None,
+    exc: Exception,
+    list_mode: bool = False,
+) -> dict[str, object]:
+    error_class = type(exc).__name__
+    error_stage = getattr(exc, "stage", "compare")
+    if list_mode:
+        return {
+            "helper": helper,
+            "status": "mismatch",
+            "row_count_match": "unknown",
+            "ordered_ids_match": "unknown",
+            "details": [{"id": -1, "fields": ["compare_error"]}],
+            "compare_error_class": error_class,
+            "compare_error_stage": error_stage,
+        }
+    return {
+        "helper": helper,
+        "key": key,
+        "status": "mismatch",
+        "fields": ["compare_error"],
+        "exists_match": False,
+        "password_hash_match": False,
+        "compare_error_class": error_class,
+        "compare_error_stage": error_stage,
+    }
+
+
 def run_users_read_compare_by_username(username: str, *, log_result: bool = False) -> dict[str, object]:
     primary_row = _sqlite_get_user_by_username(username)
     try:
         shadow_row = _shadow_get_user_by_username(username)
-    except Exception:
-        result = {
-            "helper": "get_user_by_username",
-            "key": f"username:{username}",
-            "status": "mismatch",
-            "fields": ["compare_error"],
-            "exists_match": False,
-            "password_hash_match": False,
-        }
+        return _compare_user_lookup(
+            helper="get_user_by_username",
+            key=f"username:{username}",
+            primary_row=primary_row,
+            shadow_row=shadow_row,
+            log_result=log_result,
+        )
+    except Exception as exc:
+        result = _users_read_compare_error_result(
+            helper="get_user_by_username",
+            key=f"username:{username}",
+            exc=exc,
+        )
         if log_result:
             _log_users_read_compare_mismatch(
                 helper="get_user_by_username",
                 key=f"username:{username}",
                 fields=["compare_error"],
+                error_class=result["compare_error_class"],
+                error_stage=result["compare_error_stage"],
             )
         return result
-    return _compare_user_lookup(
-        helper="get_user_by_username",
-        key=f"username:{username}",
-        primary_row=primary_row,
-        shadow_row=shadow_row,
-        log_result=log_result,
-    )
 
 
 def run_users_read_compare_by_id(user_id: int, *, log_result: bool = False) -> dict[str, object]:
     primary_row = _sqlite_get_user_by_id(user_id)
     try:
         shadow_row = _shadow_get_user_by_id(user_id)
-    except Exception:
-        result = {
-            "helper": "get_user_by_id",
-            "key": f"id:{user_id}",
-            "status": "mismatch",
-            "fields": ["compare_error"],
-            "exists_match": False,
-            "password_hash_match": False,
-        }
+        return _compare_user_lookup(
+            helper="get_user_by_id",
+            key=f"id:{user_id}",
+            primary_row=primary_row,
+            shadow_row=shadow_row,
+            log_result=log_result,
+        )
+    except Exception as exc:
+        result = _users_read_compare_error_result(
+            helper="get_user_by_id",
+            key=f"id:{user_id}",
+            exc=exc,
+        )
         if log_result:
             _log_users_read_compare_mismatch(
                 helper="get_user_by_id",
                 key=f"id:{user_id}",
                 fields=["compare_error"],
+                error_class=result["compare_error_class"],
+                error_stage=result["compare_error_stage"],
             )
         return result
-    return _compare_user_lookup(
-        helper="get_user_by_id",
-        key=f"id:{user_id}",
-        primary_row=primary_row,
-        shadow_row=shadow_row,
-        log_result=log_result,
-    )
 
 
 def run_users_list_compare(*, log_result: bool = False) -> dict[str, object]:
     primary_rows = _sqlite_list_users()
     try:
         shadow_rows = _shadow_list_users()
-    except Exception:
-        result = {
-            "helper": "list_users",
-            "status": "mismatch",
-            "row_count_match": False,
-            "ordered_ids_match": False,
-            "details": [{"id": -1, "fields": ["compare_error"]}],
-        }
+        return _compare_list_users(primary_rows=primary_rows, shadow_rows=shadow_rows, log_result=log_result)
+    except Exception as exc:
+        result = _users_read_compare_error_result(helper="list_users", exc=exc, list_mode=True)
         if log_result:
             dual_write_log(
                 "USERS_READ_COMPARE helper=list_users status=mismatch "
-                "row_count_match=false ordered_ids_match=false"
+                f"row_count_match={result['row_count_match']} "
+                f"ordered_ids_match={result['ordered_ids_match']} "
+                f"compare_error_class={result['compare_error_class']} "
+                f"compare_error_stage={result['compare_error_stage']}"
             )
             dual_write_log(
                 "USERS_READ_COMPARE_DETAIL helper=list_users id=-1 status=mismatch fields=compare_error"
             )
         return result
-    return _compare_list_users(primary_rows=primary_rows, shadow_rows=shadow_rows, log_result=log_result)
 
 
 def get_primary_postgres_connection() -> psycopg.Connection:

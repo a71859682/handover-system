@@ -936,6 +936,9 @@ if not any(row["username"] == "admin" for row in listed_users):
 
 compare_logs = []
 module.dual_write_log = lambda message: compare_logs.append(message)
+original_shadow_get_user_by_username = module._shadow_get_user_by_username
+original_shadow_get_user_by_id = module._shadow_get_user_by_id
+original_shadow_list_users = module._shadow_list_users
 
 module.get_user_by_username("admin")
 module.get_user_by_id(1)
@@ -1014,7 +1017,40 @@ if not any(
 ):
     raise SystemExit("list_users mismatch detail log missing")
 
+def _raise_compare_error():
+    raise RuntimeError("synthetic compare failure")
+
+module._shadow_get_user_by_id = lambda user_id: _raise_compare_error()
+compare_logs.clear()
+result_by_id_error = module.get_user_by_id(1)
+if result_by_id_error["id"] != admin_by_id["id"]:
+    raise SystemExit("compare error should not change primary get_user_by_id result")
+expected_id_error_log = (
+    "USERS_READ_COMPARE helper=get_user_by_id key=id:1 status=mismatch "
+    "fields=compare_error compare_error_class=RuntimeError compare_error_stage=compare"
+)
+if not any(expected_id_error_log in message for message in compare_logs):
+    raise SystemExit("get_user_by_id compare error diagnostic log missing")
+
+module._shadow_list_users = lambda: _raise_compare_error()
+compare_logs.clear()
+result_list_error = module.list_users()
+if len(result_list_error) != len(listed_users):
+    raise SystemExit("compare error should not change primary list_users result")
+expected_list_error_log = (
+    "USERS_READ_COMPARE helper=list_users status=mismatch "
+    "row_count_match=unknown ordered_ids_match=unknown "
+    "compare_error_class=RuntimeError compare_error_stage=compare"
+)
+if not any(expected_list_error_log in message for message in compare_logs):
+    raise SystemExit("list_users compare error diagnostic log missing")
+
+module._shadow_get_user_by_username = original_shadow_get_user_by_username
+module._shadow_get_user_by_id = original_shadow_get_user_by_id
+module._shadow_list_users = original_shadow_list_users
+
 with module.app.test_client() as client:
+    compare_logs.clear()
     login_response = client.post(
         "/login",
         data={"username": "admin", "display_name": "Admin", "password": "admin"},
@@ -1039,6 +1075,19 @@ with module.app.test_client() as client:
     )
     if reset_response.status_code != 200:
         raise SystemExit("/api/reset-sheet smoke failed")
+
+request_compare_snippets = [
+    "USERS_READ_COMPARE helper=get_user_by_username key=username:admin status=match",
+    "USERS_READ_COMPARE helper=list_users status=match",
+    "USERS_READ_COMPARE helper=get_user_by_id key=id:1 status=match",
+]
+for snippet in request_compare_snippets:
+    if not any(snippet in message for message in compare_logs):
+        raise SystemExit(f"request-path compare log missing: {snippet}")
+if any("compare_error" in message for message in compare_logs):
+    raise SystemExit("request-path compare should not emit compare_error after ORM init fix")
+if any("hash$" in message or "hash-created-once" in message for message in compare_logs):
+    raise SystemExit("request-path compare logs should not leak password hash values")
 
 print("users read helper smoke PASS")
 """
