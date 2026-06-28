@@ -25,7 +25,7 @@ except Exception:
 
 
 LOGGER = logging.getLogger("dual_write")
-ALLOWED_CONTROLLED_DUAL_WRITE_TABLES = frozenset({"meta", "sheets", "extra_fields", "units"})
+ALLOWED_CONTROLLED_DUAL_WRITE_TABLES = frozenset({"meta", "sheets", "extra_fields", "units", "floors"})
 POSTGRES_CONNECT_TIMEOUT_SECONDS = 3
 POSTGRES_STATEMENT_TIMEOUT_MS = 3000
 
@@ -203,6 +203,27 @@ def _log_units_secondary_event(
         strategy,
         event,
         unit_id,
+        elapsed_ms,
+        step_elapsed_ms,
+        error,
+    )
+
+
+def _log_floors_secondary_event(
+    *,
+    strategy: str,
+    event: str,
+    floor_id: int,
+    elapsed_ms: int,
+    step_elapsed_ms: int | None = None,
+    error: str | None = None,
+) -> None:
+    logger = _ensure_dual_write_logger()
+    logger.info(
+        "DUAL_WRITE_FLOORS_SECONDARY table=floors strategy=%s event=%s floor_id=%s elapsed_ms=%s step_elapsed_ms=%s error=%r",
+        strategy,
+        event,
+        floor_id,
         elapsed_ms,
         step_elapsed_ms,
         error,
@@ -1338,6 +1359,414 @@ def _write_unit_name_to_postgres_secondary(conn=None, *, unit_id: int, name: str
     return _write_unit_name_with_raw_psycopg(unit_id=unit_id, name=name)
 
 
+def _write_floor_fields_with_existing_psycopg_connection(
+    raw_conn,
+    *,
+    floor_id: int,
+    name: str,
+    block_name: str,
+) -> tuple[str, str | None, dict[str, object]]:
+    strategy = "reuse_primary_postgres_connection"
+    started = time.perf_counter()
+    cur = None
+    details: dict[str, object] = {"strategy": strategy}
+    savepoint_name = "dual_write_floors_secondary"
+    try:
+        _log_floors_secondary_event(strategy=strategy, event="BEGIN_TX", floor_id=floor_id, elapsed_ms=0)
+        cursor_started = time.perf_counter()
+        cur = raw_conn.cursor()
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="CURSOR_OK",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(cursor_started),
+        )
+        savepoint_started = time.perf_counter()
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="SAVEPOINT_START",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+        cur.execute(f"SAVEPOINT {savepoint_name}")
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="SAVEPOINT_OK",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(savepoint_started),
+        )
+        execute_started = time.perf_counter()
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_START",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+        cur.execute(
+            """
+            UPDATE floors
+            SET name = %s, block_name = %s
+            WHERE id = %s
+            """,
+            (name, block_name, floor_id),
+        )
+        release_started = time.perf_counter()
+        cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["execute_step_elapsed_ms"] = _step_elapsed_ms(execute_started)
+        details["release_savepoint_step_elapsed_ms"] = _step_elapsed_ms(release_started)
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_OK",
+            floor_id=floor_id,
+            elapsed_ms=elapsed_ms,
+            step_elapsed_ms=details["execute_step_elapsed_ms"],
+        )
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="RELEASE_SAVEPOINT_OK",
+            floor_id=floor_id,
+            elapsed_ms=elapsed_ms,
+            step_elapsed_ms=details["release_savepoint_step_elapsed_ms"],
+        )
+        return "success", None, details
+    except BaseException as exc:
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            raise
+        if cur is not None:
+            try:
+                rollback_started = time.perf_counter()
+                cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                _log_floors_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK",
+                    floor_id=floor_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    step_elapsed_ms=_step_elapsed_ms(rollback_started),
+                    error=str(exc),
+                )
+            except Exception as rollback_exc:
+                _log_floors_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK_FAILED",
+                    floor_id=floor_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    error=str(rollback_exc),
+                )
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["exception_type"] = type(exc).__name__
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_FAILED",
+            floor_id=floor_id,
+            elapsed_ms=elapsed_ms,
+            error=str(exc),
+        )
+        return "failed", str(exc), details
+    finally:
+        if cur is not None:
+            try:
+                close_started = time.perf_counter()
+                cur.close()
+                _log_floors_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE",
+                    floor_id=floor_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    step_elapsed_ms=_step_elapsed_ms(close_started),
+                )
+            except Exception as exc:
+                _log_floors_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE_FAILED",
+                    floor_id=floor_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    error=str(exc),
+                )
+
+
+def _write_floor_fields_with_sqlalchemy_engine(
+    *,
+    floor_id: int,
+    name: str,
+    block_name: str,
+) -> tuple[str, str | None, dict[str, object]]:
+    strategy = "sqlalchemy_engine"
+    started = time.perf_counter()
+    details: dict[str, object] = {"strategy": strategy}
+    _log_floors_secondary_event(strategy=strategy, event="CONNECT_START", floor_id=floor_id, elapsed_ms=0)
+    try:
+        connect_started = time.perf_counter()
+        engine = db.engine
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="CONNECT_OK",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(connect_started),
+        )
+        with engine.begin() as sql_conn:
+            _log_floors_secondary_event(
+                strategy=strategy,
+                event="BEGIN_TX",
+                floor_id=floor_id,
+                elapsed_ms=_elapsed_ms(started),
+            )
+            timeout_started = time.perf_counter()
+            sql_conn.exec_driver_sql(
+                "SET LOCAL statement_timeout = %s",
+                (str(POSTGRES_STATEMENT_TIMEOUT_MS),),
+            )
+            _log_floors_secondary_event(
+                strategy=strategy,
+                event="SET_TIMEOUT_OK",
+                floor_id=floor_id,
+                elapsed_ms=_elapsed_ms(started),
+                step_elapsed_ms=_step_elapsed_ms(timeout_started),
+            )
+            execute_started = time.perf_counter()
+            _log_floors_secondary_event(
+                strategy=strategy,
+                event="EXECUTE_SQL_START",
+                floor_id=floor_id,
+                elapsed_ms=_elapsed_ms(started),
+            )
+            sql_conn.exec_driver_sql(
+                """
+                UPDATE floors
+                SET name = %s, block_name = %s
+                WHERE id = %s
+                """,
+                (name, block_name, floor_id),
+            )
+            _log_floors_secondary_event(
+                strategy=strategy,
+                event="EXECUTE_SQL_OK",
+                floor_id=floor_id,
+                elapsed_ms=_elapsed_ms(started),
+                step_elapsed_ms=_step_elapsed_ms(execute_started),
+            )
+            commit_started = time.perf_counter()
+            _log_floors_secondary_event(
+                strategy=strategy,
+                event="COMMIT_START",
+                floor_id=floor_id,
+                elapsed_ms=_elapsed_ms(started),
+            )
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["commit_step_elapsed_ms"] = _step_elapsed_ms(commit_started)
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="COMMIT_OK",
+            floor_id=floor_id,
+            elapsed_ms=elapsed_ms,
+            step_elapsed_ms=details["commit_step_elapsed_ms"],
+        )
+        return "success", None, details
+    except BaseException as exc:
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            raise
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["exception_type"] = type(exc).__name__
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="ROLLBACK",
+            floor_id=floor_id,
+            elapsed_ms=elapsed_ms,
+            error=str(exc),
+        )
+        return "failed", str(exc), details
+    finally:
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="CLOSE",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+
+
+def _write_floor_fields_with_raw_psycopg(
+    *,
+    floor_id: int,
+    name: str,
+    block_name: str,
+) -> tuple[str, str | None, dict[str, object]]:
+    strategy = "raw_psycopg"
+    started = time.perf_counter()
+    conn = None
+    cur = None
+    details: dict[str, object] = {"strategy": strategy}
+    try:
+        _log_floors_secondary_event(strategy=strategy, event="CONNECT_START", floor_id=floor_id, elapsed_ms=0)
+        connect_started = time.perf_counter()
+        conn = psycopg.connect(
+            DATABASE_URL,
+            connect_timeout=POSTGRES_CONNECT_TIMEOUT_SECONDS,
+            options=f"-c statement_timeout={POSTGRES_STATEMENT_TIMEOUT_MS}",
+        )
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="CONNECT_OK",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(connect_started),
+        )
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="BEGIN_TX",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+        cursor_started = time.perf_counter()
+        cur = conn.cursor()
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="CURSOR_OK",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(cursor_started),
+        )
+        execute_started = time.perf_counter()
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_START",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+        cur.execute(
+            """
+            UPDATE floors
+            SET name = %s, block_name = %s
+            WHERE id = %s
+            """,
+            (name, block_name, floor_id),
+        )
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_OK",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(execute_started),
+        )
+        commit_started = time.perf_counter()
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="COMMIT_START",
+            floor_id=floor_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+        conn.commit()
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["connect_step_elapsed_ms"] = _step_elapsed_ms(connect_started)
+        details["execute_step_elapsed_ms"] = _step_elapsed_ms(execute_started)
+        details["commit_step_elapsed_ms"] = _step_elapsed_ms(commit_started)
+        _log_floors_secondary_event(
+            strategy=strategy,
+            event="COMMIT_OK",
+            floor_id=floor_id,
+            elapsed_ms=elapsed_ms,
+            step_elapsed_ms=details["commit_step_elapsed_ms"],
+        )
+        return "success", None, details
+    except BaseException as exc:
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            raise
+        if conn is not None:
+            try:
+                rollback_started = time.perf_counter()
+                conn.rollback()
+                _log_floors_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK",
+                    floor_id=floor_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    step_elapsed_ms=_step_elapsed_ms(rollback_started),
+                    error=str(exc),
+                )
+            except Exception as rollback_exc:
+                _log_floors_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK_FAILED",
+                    floor_id=floor_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    error=str(rollback_exc),
+                )
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["exception_type"] = type(exc).__name__
+        return "failed", str(exc), details
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception as exc:
+                _log_floors_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE_CURSOR_FAILED",
+                    floor_id=floor_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    error=str(exc),
+                )
+        if conn is not None:
+            try:
+                close_started = time.perf_counter()
+                conn.close()
+                _log_floors_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE",
+                    floor_id=floor_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    step_elapsed_ms=_step_elapsed_ms(close_started),
+                )
+            except Exception as exc:
+                _log_floors_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE_FAILED",
+                    floor_id=floor_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    error=str(exc),
+                )
+
+
+def _write_floor_fields_to_postgres_secondary(
+    conn=None,
+    *,
+    floor_id: int,
+    name: str,
+    block_name: str,
+) -> tuple[str, str | None, dict[str, object]]:
+    if not DATABASE_URL:
+        return "skipped_no_database_url", "DATABASE_URL is not configured", {"strategy": "none"}
+    if psycopg is None:
+        return "skipped_no_psycopg", "psycopg is not installed", {"strategy": "none"}
+    if _is_postgres_compat_primary_connection(conn):
+        return _write_floor_fields_with_existing_psycopg_connection(
+            conn._conn,
+            floor_id=floor_id,
+            name=name,
+            block_name=block_name,
+        )
+    if has_app_context():
+        return _write_floor_fields_with_sqlalchemy_engine(
+            floor_id=floor_id,
+            name=name,
+            block_name=block_name,
+        )
+    return _write_floor_fields_with_raw_psycopg(
+        floor_id=floor_id,
+        name=name,
+        block_name=block_name,
+    )
+
+
 def _write_extra_field_update_with_existing_psycopg_connection(
     raw_conn,
     *,
@@ -1887,6 +2316,35 @@ def _maybe_controlled_dual_write_unit_name(
         raise RuntimeError(f"Controlled dual write failed for units id '{unit_id}': {error}")
 
 
+def _maybe_controlled_dual_write_floor_fields(
+    conn,
+    *,
+    operation: str,
+    floor_id: int,
+    name: str,
+    block_name: str,
+) -> None:
+    if not _is_controlled_dual_write_enabled_for("floors"):
+        return
+
+    postgres_result, error, _details = _write_floor_fields_to_postgres_secondary(
+        conn,
+        floor_id=floor_id,
+        name=name,
+        block_name=block_name,
+    )
+    _log_controlled_dual_write(
+        operation=operation,
+        table="floors",
+        key={"id": floor_id},
+        sqlite_result="success",
+        postgres_result=postgres_result,
+        error=error,
+    )
+    if postgres_result == "failed" and DUAL_WRITE_STRICT:
+        raise RuntimeError(f"Controlled dual write failed for floors id '{floor_id}': {error}")
+
+
 def _maybe_controlled_dual_write_extra_field_update(
     conn,
     *,
@@ -2190,6 +2648,33 @@ def update_unit_name_sqlite(conn: sqlite3.Connection, *, unit_id: int, name: str
         name=name,
     )
     _future_dual_write_placeholder("update_unit_name", {"unit_id": unit_id, "name": name})
+
+
+def update_floor_fields_sqlite(
+    conn: sqlite3.Connection,
+    *,
+    floor_id: int,
+    name: str,
+    block_name: str,
+) -> None:
+    conn.execute("UPDATE floors SET name = ?, block_name = ? WHERE id = ?", (name, block_name, floor_id))
+    _log_dual_write_dry_run(
+        operation="update",
+        table="floors",
+        key={"id": floor_id},
+        fields={"name": name, "block_name": block_name},
+    )
+    _maybe_controlled_dual_write_floor_fields(
+        conn,
+        operation="update",
+        floor_id=floor_id,
+        name=name,
+        block_name=block_name,
+    )
+    _future_dual_write_placeholder(
+        "update_floor_fields",
+        {"floor_id": floor_id, "name": name, "block_name": block_name},
+    )
 
 
 def upsert_progress_sqlite(

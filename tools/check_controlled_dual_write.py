@@ -102,13 +102,31 @@ def _make_sqlite_units_conn() -> sqlite3.Connection:
     return conn
 
 
+def _make_sqlite_floors_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE floors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sheet_id INTEGER,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            name TEXT NOT NULL,
+            block_name TEXT,
+            unit_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    return conn
+
+
 def main() -> int:
     temp_dir = Path(tempfile.mkdtemp(prefix="controlled-dual-write-"))
     os.environ["APP_DB_PATH"] = str(temp_dir / "site.db")
 
     config, write_service = _load_modules(
         dual_write_enabled=True,
-        dual_write_tables="meta,sheets,extra_fields,units",
+        dual_write_tables="meta,sheets,extra_fields,units,floors",
         dual_write_strict=False,
         dual_write_dry_run=True,
     )
@@ -225,6 +243,15 @@ def main() -> int:
         updated_unit = units_conn.execute("SELECT name FROM units WHERE id = 1").fetchone()
         unit_calls_added = len(postgres_calls) > before_unit_calls
 
+        floors_conn = _make_sqlite_floors_conn()
+        floors_conn.execute(
+            "INSERT INTO floors (id, sheet_id, sort_order, name, block_name, unit_count) VALUES (1, 1, 1, '1F', 'A', 3)"
+        )
+        before_floor_calls = len(postgres_calls)
+        write_service.update_floor_fields_sqlite(floors_conn, floor_id=1, name="1F-new", block_name="B")
+        updated_floor = floors_conn.execute("SELECT name, block_name, unit_count FROM floors WHERE id = 1").fetchone()
+        floor_calls_added = len(postgres_calls) > before_floor_calls
+
         before_non_sqlite_calls = len(postgres_calls)
         write_service._maybe_controlled_dual_write_meta(  # type: ignore[attr-defined]
             NonSqlitePrimaryConnection(),
@@ -277,38 +304,57 @@ def main() -> int:
         write_service.update_unit_name_sqlite(units_conn_before_failure, unit_id=2, name="After unit failure")
         unit_after_failure = units_conn_before_failure.execute("SELECT name FROM units WHERE id = 2").fetchone()
 
+        floors_conn_before_failure = _make_sqlite_floors_conn()
+        floors_conn_before_failure.execute(
+            "INSERT INTO floors (id, sheet_id, sort_order, name, block_name, unit_count) VALUES (2, 1, 2, 'Before floor failure', 'A', 5)"
+        )
+        write_service.update_floor_fields_sqlite(
+            floors_conn_before_failure,
+            floor_id=2,
+            name="After floor failure",
+            block_name="C",
+        )
+        floor_after_failure = floors_conn_before_failure.execute(
+            "SELECT name, block_name, unit_count FROM floors WHERE id = 2"
+        ).fetchone()
+
         log_output = stream.getvalue()
 
         allowed_tables = write_service._controlled_dual_write_tables()  # type: ignore[attr-defined]
         checks = [
             ("USE_SQLALCHEMY_WRITES disabled", config.USE_SQLALCHEMY_WRITES is False),
             ("DUAL_WRITE_ENABLED enabled", config.DUAL_WRITE_ENABLED is True),
-            ("DUAL_WRITE_TABLES limited to meta, sheets, extra_fields, and units", allowed_tables == {"meta", "sheets", "extra_fields", "units"}),
+            ("DUAL_WRITE_TABLES limited to meta, sheets, extra_fields, units, and floors", allowed_tables == {"meta", "sheets", "extra_fields", "units", "floors"}),
             ("Meta dual write is gated on", write_service._is_controlled_dual_write_enabled_for("meta") is True),  # type: ignore[attr-defined]
             ("Sheets dual write is gated on", write_service._is_controlled_dual_write_enabled_for("sheets") is True),  # type: ignore[attr-defined]
             ("Extra fields dual write is gated on", write_service._is_controlled_dual_write_enabled_for("extra_fields") is True),  # type: ignore[attr-defined]
             ("Units dual write is gated on", write_service._is_controlled_dual_write_enabled_for("units") is True),  # type: ignore[attr-defined]
+            ("Floors dual write is gated on", write_service._is_controlled_dual_write_enabled_for("floors") is True),  # type: ignore[attr-defined]
             ("Users do not dual write to PostgreSQL", non_meta_calls_unchanged),
             ("Non-SQLite runtime still attempts PostgreSQL secondary", non_sqlite_primary_attempted),
             ("Meta primary SQLite write still works", sqlite_value == "Controlled Dual Write"),
             ("Sheets primary SQLite write still works", sheet_value == "New name"),
             ("Extra fields primary SQLite update still works", updated_extra_field["name"] == "New field" and updated_extra_field["field_type"] == "status" and updated_extra_field["active"] == 1),
             ("Units primary SQLite update still works", updated_unit["name"] == "Unit 101A"),
+            ("Floors primary SQLite update still works", updated_floor["name"] == "1F-new" and updated_floor["block_name"] == "B" and updated_floor["unit_count"] == 3),
             ("Meta primary write survives failed secondary in non-strict mode", sqlite_value_after_failure == "Primary survives secondary failure"),
             ("Sheets primary write survives failed secondary in non-strict mode", sheet_value_after_failure == "After failure"),
             ("Extra fields primary write survives failed secondary in non-strict mode", extra_field_after_failure["name"] == "After failure" and extra_field_after_failure["field_type"] == "date"),
             ("Units primary write survives failed secondary in non-strict mode", unit_after_failure["name"] == "After unit failure"),
+            ("Floors primary write survives failed secondary in non-strict mode", floor_after_failure["name"] == "After floor failure" and floor_after_failure["block_name"] == "C" and floor_after_failure["unit_count"] == 5),
             ("Extra fields deactivate still updates SQLite primary", extra_field_after_deactivate["active"] == 0),
             ("Meta PostgreSQL secondary write can be attempted", any(call[0] == "CONNECT" for call in postgres_calls)),
             ("Sheets PostgreSQL secondary write can be attempted", sheet_calls_added),
             ("Extra fields PostgreSQL secondary write can be attempted", extra_field_calls_added),
             ("Units PostgreSQL secondary write can be attempted", unit_calls_added),
+            ("Floors PostgreSQL secondary write can be attempted", floor_calls_added),
             ("Controlled dual write log emitted", "DUAL_WRITE operation=upsert table=meta" in log_output),
             ("Controlled dual write log reports success", "postgres_result=success" in log_output),
             ("Controlled dual write reports failed on non-strict secondary error", "postgres_result=failed" in log_output),
             ("Sheets controlled dual write log emitted", "DUAL_WRITE operation=update table=sheets" in log_output),
             ("Extra fields controlled dual write log emitted", "DUAL_WRITE operation=update table=extra_fields" in log_output),
             ("Units controlled dual write log emitted", "DUAL_WRITE operation=update table=units" in log_output),
+            ("Floors controlled dual write log emitted", "DUAL_WRITE operation=update table=floors" in log_output),
             ("Controlled dual write no longer reports skipped_non_sqlite_primary", "skipped_non_sqlite_primary" not in log_output),
             ("Secondary debug log includes connect step", "DUAL_WRITE_META_SECONDARY strategy=raw_psycopg event=CONNECT_START" in log_output),
             ("Secondary debug log includes execute step", "DUAL_WRITE_META_SECONDARY strategy=raw_psycopg event=EXECUTE_SQL_START" in log_output),
@@ -319,10 +365,13 @@ def main() -> int:
             ("Extra fields secondary debug log includes rollback step", "DUAL_WRITE_EXTRA_FIELDS_SECONDARY table=extra_fields strategy=raw_psycopg event=ROLLBACK" in log_output),
             ("Units secondary debug log includes execute step", "DUAL_WRITE_UNITS_SECONDARY table=units strategy=raw_psycopg event=EXECUTE_SQL_START" in log_output),
             ("Units secondary debug log includes rollback step", "DUAL_WRITE_UNITS_SECONDARY table=units strategy=raw_psycopg event=ROLLBACK" in log_output),
+            ("Floors secondary debug log includes execute step", "DUAL_WRITE_FLOORS_SECONDARY table=floors strategy=raw_psycopg event=EXECUTE_SQL_START" in log_output),
+            ("Floors secondary debug log includes rollback step", "DUAL_WRITE_FLOORS_SECONDARY table=floors strategy=raw_psycopg event=ROLLBACK" in log_output),
             ("Dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=upsert table=meta" in log_output),
             ("Sheets dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=update table=sheets" in log_output),
             ("Extra fields dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=update table=extra_fields" in log_output),
             ("Units dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=update table=units" in log_output),
+            ("Floors dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=update table=floors" in log_output),
         ]
 
         failed = [label for label, ok in checks if not ok]

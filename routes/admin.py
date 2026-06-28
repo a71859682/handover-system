@@ -12,6 +12,7 @@ from services.write_service import (
     create_sheet_sqlite,
     create_user_sqlite,
     deactivate_extra_field_sqlite,
+    update_floor_fields_sqlite,
     update_extra_field_sqlite,
     update_sheet_name_sqlite,
     update_unit_name_sqlite,
@@ -243,7 +244,12 @@ def table_admin():
                 )
             for floor in conn.execute("SELECT id FROM floors WHERE sheet_id = ?", (sheet_id,)):
                 floor_id = floor["id"]
-                conn.execute("UPDATE floors SET name = ?, block_name = ? WHERE id = ?", (request.form.get(f"floor_name_{floor_id}", "").strip(), request.form.get(f"floor_block_{floor_id}", "").strip(), floor_id))
+                update_floor_fields_sqlite(
+                    conn,
+                    floor_id=floor_id,
+                    name=request.form.get(f"floor_name_{floor_id}", "").strip(),
+                    block_name=request.form.get(f"floor_block_{floor_id}", "").strip(),
+                )
             for unit in conn.execute("SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ?", (sheet_id,)):
                 unit_id = unit["id"]
                 update_unit_name_sqlite(
