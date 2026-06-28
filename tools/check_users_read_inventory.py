@@ -19,6 +19,11 @@ TARGET_RULES = {
     "/api/reset-sheet": "users password verification before reset",
 }
 HELPER_NAMES = ("get_user_by_username", "get_user_by_id", "list_users", "reset_sheet")
+COMPARE_HELPER_NAMES = (
+    "run_users_read_compare_by_username",
+    "run_users_read_compare_by_id",
+    "run_users_list_compare",
+)
 ACTIVE_INLINE_EXPECTATIONS = {
     "login": "get_user_by_username",
     "api_reset_sheet": "get_user_by_id",
@@ -220,6 +225,14 @@ def main() -> int:
         print(f"- {helper_name}: {origin}")
         if helper_name != "reset_sheet" and origin == "missing_on_app_module":
             ambiguities.append(f"missing_helper_{helper_name}")
+
+    print("Users read compare inventory:")
+    print(f"- USERS_READ_COMPARE enabled={str(app_module.users_read_compare_enabled()).lower()}")
+    for helper_name in COMPARE_HELPER_NAMES:
+        origin = helper_origin(app_module, helper_name)
+        print(f"- {helper_name}: {origin}")
+        if origin == "missing_on_app_module":
+            ambiguities.append(f"missing_compare_helper_{helper_name}")
 
     print("Cross-module helper usage:")
     print("- routes.auth.login uses: app.get_user_by_username")

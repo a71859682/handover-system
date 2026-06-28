@@ -880,6 +880,10 @@ def run_users_read_inventory_smoke() -> None:
         "- get_user_by_username: ",
         "- get_user_by_id: ",
         "- list_users: ",
+        "- USERS_READ_COMPARE enabled=",
+        "- run_users_read_compare_by_username: ",
+        "- run_users_read_compare_by_id: ",
+        "- run_users_list_compare: ",
         "active_endpoint=login",
         "active_endpoint=users",
         "active_endpoint=api_reset_sheet",
@@ -905,6 +909,7 @@ spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_di
 module = importlib.util.module_from_spec(spec)
 import os
 os.environ["APP_DB_PATH"] = app_db_path
+os.environ["USERS_READ_COMPARE"] = "false"
 spec.loader.exec_module(module)
 module.app.testing = True
 
@@ -928,6 +933,86 @@ if "password_hash" in first_payload:
     raise SystemExit("list_users should not expose password_hash")
 if not any(row["username"] == "admin" for row in listed_users):
     raise SystemExit("list_users smoke missing admin user")
+
+compare_logs = []
+module.dual_write_log = lambda message: compare_logs.append(message)
+
+module.get_user_by_username("admin")
+module.get_user_by_id(1)
+module.list_users()
+if any("USERS_READ_COMPARE" in message for message in compare_logs):
+    raise SystemExit("compare logs should be silent when USERS_READ_COMPARE=false")
+
+module.users_read_compare_enabled = lambda: True
+compare_logs.clear()
+module.get_user_by_username("admin")
+module.get_user_by_id(1)
+module.list_users()
+expected_compare_snippets = [
+    "USERS_READ_COMPARE helper=get_user_by_username key=username:admin status=match",
+    "USERS_READ_COMPARE helper=get_user_by_id key=id:1 status=match",
+    "USERS_READ_COMPARE helper=list_users status=match",
+]
+for snippet in expected_compare_snippets:
+    if not any(snippet in message for message in compare_logs):
+        raise SystemExit(f"missing compare log: {snippet}")
+if any("hash$" in message or "hash-created-once" in message for message in compare_logs):
+    raise SystemExit("compare logs should not leak password hash values")
+
+class FakeShadowUser:
+    id = 1
+    username = "admin"
+    display_name = "Admin Shadow Drift"
+    role = "admin"
+    created_at = admin_user["created_at"]
+    password_hash = admin_user["password_hash"]
+
+module._shadow_get_user_by_username = lambda username: FakeShadowUser()
+compare_logs.clear()
+result_user = module.get_user_by_username("admin")
+if result_user["display_name"] != admin_user["display_name"]:
+    raise SystemExit("compare mismatch should not change primary helper result")
+if not any(
+    "USERS_READ_COMPARE helper=get_user_by_username key=username:admin status=mismatch fields=display_name"
+    in message
+    for message in compare_logs
+):
+    raise SystemExit("compare mismatch log missing for get_user_by_username")
+
+class FakeShadowListUser:
+    def __init__(self, user_id, username, display_name, role, created_at):
+        self.id = user_id
+        self.username = username
+        self.display_name = display_name
+        self.role = role
+        self.created_at = created_at
+
+module._shadow_list_users = lambda: [
+    FakeShadowListUser(
+        row["id"],
+        row["username"],
+        "Admin Shadow Drift" if row["id"] == 1 else row["display_name"],
+        row["role"],
+        row["created_at"],
+    )
+    for row in listed_users
+]
+compare_logs.clear()
+listed_again = module.list_users()
+if listed_again[0]["display_name"] != listed_users[0]["display_name"]:
+    raise SystemExit("list_users compare mismatch should not change primary rows")
+if not any(
+    "USERS_READ_COMPARE helper=list_users status=mismatch row_count_match=true ordered_ids_match=true"
+    in message
+    for message in compare_logs
+):
+    raise SystemExit("list_users mismatch summary log missing")
+if not any(
+    "USERS_READ_COMPARE_DETAIL helper=list_users id=1 status=mismatch fields=display_name"
+    in message
+    for message in compare_logs
+):
+    raise SystemExit("list_users mismatch detail log missing")
 
 with module.app.test_client() as client:
     login_response = client.post(
@@ -972,6 +1057,32 @@ print("users read helper smoke PASS")
     )
     if "users read helper smoke PASS" not in result.stdout:
         raise AssertionError("users read helper smoke subprocess did not report PASS.")
+
+
+def run_users_read_compare_readiness_smoke(app_db_path: Path) -> None:
+    result = run_script(
+        "check_users_read_compare_readiness.py",
+        env={"APP_DB_PATH": str(app_db_path), "USERS_READ_COMPARE": "true"},
+    )
+    output = result.stdout
+    if result.returncode != 0:
+        raise AssertionError(f"check_users_read_compare_readiness.py failed:\n{output}")
+    required_snippets = [
+        "USERS_READ_COMPARE: true",
+        "sqlite_admin_exists: true",
+        "shadow_admin_exists: true",
+        "compare get_user_by_username('admin'): status=match fields=none password_hash_match=true",
+        "compare get_user_by_id(1): status=match fields=none password_hash_match=true",
+        "compare list_users: status=match row_count_match=true ordered_ids_match=true",
+        "PASS users read compare readiness check passed.",
+    ]
+    for snippet in required_snippets:
+        if snippet not in output:
+            raise AssertionError(
+                f"check_users_read_compare_readiness.py missing expected snippet: {snippet}"
+            )
+    if "password_hash=" in output or "password_hash:" in output:
+        raise AssertionError("check_users_read_compare_readiness.py output should not include password_hash values.")
 
 
 def run_users_id_allocation_smoke(db_path: Path) -> None:
@@ -1183,6 +1294,7 @@ def main() -> int:
         run_users_delete_submit_verifier_smoke(db_path)
         run_users_read_inventory_smoke()
         run_users_read_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
+        run_users_read_compare_readiness_smoke(Path(tmpdir) / "app-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
         run_users_sqlite_sequence_apply_guard_smoke()
@@ -1201,6 +1313,7 @@ def main() -> int:
     run_help("check_users_delete_readiness.py")
     run_help("check_users_delete_submit.py")
     run_help("check_users_read_inventory.py")
+    run_help("check_users_read_compare_readiness.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")

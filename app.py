@@ -8,9 +8,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import psycopg
-from flask import Flask, flash, g, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, flash, g, has_app_context, jsonify, redirect, render_template, request, session, url_for
 from openpyxl import load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
+from database import init_database
 from sqlite_db_path import get_sqlite_db_path
 
 
@@ -51,6 +52,7 @@ DUAL_WRITE_USERS_STRATEGY_LOG = (
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
 ASSET_VERSION = "20260627-010"
+_USERS_READ_COMPARE_ORM_READY = False
 
 
 @app.context_processor
@@ -95,6 +97,305 @@ def dual_write_strict_enabled() -> bool:
 
 def dual_write_log(message: str) -> None:
     print(message, flush=True)
+
+
+def users_read_compare_enabled() -> bool:
+    return env_flag("USERS_READ_COMPARE")
+
+
+def _ensure_users_read_compare_orm_ready() -> None:
+    global _USERS_READ_COMPARE_ORM_READY
+    if _USERS_READ_COMPARE_ORM_READY:
+        return
+
+    app.config.setdefault("SQLALCHEMY_DATABASE_URI", f"sqlite:///{DB_PATH.resolve().as_posix()}")
+    app.config.setdefault("SQLALCHEMY_TRACK_MODIFICATIONS", False)
+    init_database(app)
+    _USERS_READ_COMPARE_ORM_READY = True
+
+
+def _run_with_app_context(fn):
+    if has_app_context():
+        return fn()
+    with app.app_context():
+        return fn()
+
+
+def _user_row_payload(
+    row: sqlite3.Row | object | None,
+    *,
+    include_password_hash: bool,
+) -> dict[str, object] | None:
+    if row is None:
+        return None
+
+    is_mapping = isinstance(row, sqlite3.Row) or isinstance(row, dict)
+    payload = {
+        "id": row["id"] if is_mapping else row.id,
+        "username": row["username"] if is_mapping else row.username,
+        "display_name": row["display_name"] if is_mapping else row.display_name,
+        "role": row["role"] if is_mapping else row.role,
+        "created_at": row["created_at"] if is_mapping else row.created_at,
+    }
+    if include_password_hash:
+        payload["password_hash"] = row["password_hash"] if is_mapping else row.password_hash
+    return payload
+
+
+def _list_user_row_payload(row: sqlite3.Row | object) -> dict[str, object]:
+    is_mapping = isinstance(row, sqlite3.Row) or isinstance(row, dict)
+    return {
+        "id": row["id"] if is_mapping else row.id,
+        "username": row["username"] if is_mapping else row.username,
+        "display_name": row["display_name"] if is_mapping else row.display_name,
+        "role": row["role"] if is_mapping else row.role,
+        "created_at": row["created_at"] if is_mapping else row.created_at,
+    }
+
+
+def _sqlite_get_user_by_username(username: str) -> sqlite3.Row | None:
+    with db() as conn:
+        return conn.execute(
+            """
+            SELECT id, username, display_name, password_hash, role, created_at
+            FROM users
+            WHERE username = ?
+            """,
+            (username,),
+        ).fetchone()
+
+
+def _sqlite_get_user_by_id(user_id: int) -> sqlite3.Row | None:
+    with db() as conn:
+        return conn.execute(
+            """
+            SELECT id, username, display_name, password_hash, role, created_at
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+
+def _sqlite_list_users() -> list[sqlite3.Row]:
+    with db() as conn:
+        return conn.execute(
+            """
+            SELECT id, username, display_name, role, created_at
+            FROM users
+            ORDER BY id
+            """
+        ).fetchall()
+
+
+def _shadow_get_user_by_username(username: str):
+    from services.users_orm_service import get_user_by_username_orm
+
+    _ensure_users_read_compare_orm_ready()
+    return _run_with_app_context(lambda: get_user_by_username_orm(username))
+
+
+def _shadow_get_user_by_id(user_id: int):
+    from services.users_orm_service import get_user_by_id_orm
+
+    _ensure_users_read_compare_orm_ready()
+    return _run_with_app_context(lambda: get_user_by_id_orm(user_id))
+
+
+def _shadow_list_users():
+    from services.users_orm_service import list_users_orm
+
+    _ensure_users_read_compare_orm_ready()
+    return _run_with_app_context(list_users_orm)
+
+
+def _log_users_read_compare_match(*, helper: str, key: str | None = None) -> None:
+    message = f"USERS_READ_COMPARE helper={helper}"
+    if key:
+        message += f" key={key}"
+    message += " status=match"
+    dual_write_log(message)
+
+
+def _log_users_read_compare_mismatch(*, helper: str, fields: list[str], key: str | None = None) -> None:
+    message = f"USERS_READ_COMPARE helper={helper}"
+    if key:
+        message += f" key={key}"
+    message += f" status=mismatch fields={','.join(fields)}"
+    dual_write_log(message)
+
+
+def _compare_user_lookup(
+    *,
+    helper: str,
+    key: str,
+    primary_row: sqlite3.Row | None,
+    shadow_row,
+    log_result: bool,
+) -> dict[str, object]:
+    primary_payload = _user_row_payload(primary_row, include_password_hash=True)
+    shadow_payload = _user_row_payload(shadow_row, include_password_hash=True)
+    mismatch_fields: list[str] = []
+
+    if (primary_payload is None) != (shadow_payload is None):
+        mismatch_fields.append("exists")
+    elif primary_payload and shadow_payload:
+        for field_name in ("id", "username", "display_name", "role", "created_at"):
+            if primary_payload[field_name] != shadow_payload[field_name]:
+                mismatch_fields.append(field_name)
+        if primary_payload["password_hash"] != shadow_payload["password_hash"]:
+            mismatch_fields.append("password_hash_match")
+
+    result = {
+        "helper": helper,
+        "key": key,
+        "status": "match" if not mismatch_fields else "mismatch",
+        "fields": mismatch_fields,
+        "exists_match": (primary_payload is None) == (shadow_payload is None),
+        "password_hash_match": "password_hash_match" not in mismatch_fields,
+    }
+    if log_result:
+        if mismatch_fields:
+            _log_users_read_compare_mismatch(helper=helper, key=key, fields=mismatch_fields)
+        else:
+            _log_users_read_compare_match(helper=helper, key=key)
+    return result
+
+
+def _compare_list_users(*, primary_rows: list[sqlite3.Row], shadow_rows, log_result: bool) -> dict[str, object]:
+    primary_payloads = [_list_user_row_payload(row) for row in primary_rows]
+    shadow_payloads = [_list_user_row_payload(row) for row in shadow_rows]
+    row_count_match = len(primary_payloads) == len(shadow_payloads)
+    primary_ids = [row["id"] for row in primary_payloads]
+    shadow_ids = [row["id"] for row in shadow_payloads]
+    ordered_ids_match = primary_ids == shadow_ids
+    detail_mismatches: list[dict[str, object]] = []
+
+    shadow_by_id = {row["id"]: row for row in shadow_payloads}
+    for primary_row in primary_payloads:
+        row_id = primary_row["id"]
+        shadow_row = shadow_by_id.get(row_id)
+        mismatch_fields: list[str] = []
+        if shadow_row is None:
+            mismatch_fields.append("missing_in_shadow")
+        else:
+            for field_name in ("username", "display_name", "role", "created_at"):
+                if primary_row[field_name] != shadow_row[field_name]:
+                    mismatch_fields.append(field_name)
+        if mismatch_fields:
+            detail_mismatches.append({"id": row_id, "fields": mismatch_fields})
+
+    primary_id_set = set(primary_ids)
+    for shadow_row in shadow_payloads:
+        if shadow_row["id"] not in primary_id_set:
+            detail_mismatches.append({"id": shadow_row["id"], "fields": ["missing_in_primary"]})
+
+    status = "match" if row_count_match and ordered_ids_match and not detail_mismatches else "mismatch"
+    result = {
+        "helper": "list_users",
+        "status": status,
+        "row_count_match": row_count_match,
+        "ordered_ids_match": ordered_ids_match,
+        "details": detail_mismatches,
+    }
+
+    if log_result:
+        if status == "match":
+            dual_write_log("USERS_READ_COMPARE helper=list_users status=match")
+        else:
+            dual_write_log(
+                "USERS_READ_COMPARE helper=list_users "
+                f"status=mismatch row_count_match={str(row_count_match).lower()} "
+                f"ordered_ids_match={str(ordered_ids_match).lower()}"
+            )
+            for detail in detail_mismatches:
+                dual_write_log(
+                    "USERS_READ_COMPARE_DETAIL helper=list_users "
+                    f"id={detail['id']} status=mismatch fields={','.join(detail['fields'])}"
+                )
+    return result
+
+
+def run_users_read_compare_by_username(username: str, *, log_result: bool = False) -> dict[str, object]:
+    primary_row = _sqlite_get_user_by_username(username)
+    try:
+        shadow_row = _shadow_get_user_by_username(username)
+    except Exception:
+        result = {
+            "helper": "get_user_by_username",
+            "key": f"username:{username}",
+            "status": "mismatch",
+            "fields": ["compare_error"],
+            "exists_match": False,
+            "password_hash_match": False,
+        }
+        if log_result:
+            _log_users_read_compare_mismatch(
+                helper="get_user_by_username",
+                key=f"username:{username}",
+                fields=["compare_error"],
+            )
+        return result
+    return _compare_user_lookup(
+        helper="get_user_by_username",
+        key=f"username:{username}",
+        primary_row=primary_row,
+        shadow_row=shadow_row,
+        log_result=log_result,
+    )
+
+
+def run_users_read_compare_by_id(user_id: int, *, log_result: bool = False) -> dict[str, object]:
+    primary_row = _sqlite_get_user_by_id(user_id)
+    try:
+        shadow_row = _shadow_get_user_by_id(user_id)
+    except Exception:
+        result = {
+            "helper": "get_user_by_id",
+            "key": f"id:{user_id}",
+            "status": "mismatch",
+            "fields": ["compare_error"],
+            "exists_match": False,
+            "password_hash_match": False,
+        }
+        if log_result:
+            _log_users_read_compare_mismatch(
+                helper="get_user_by_id",
+                key=f"id:{user_id}",
+                fields=["compare_error"],
+            )
+        return result
+    return _compare_user_lookup(
+        helper="get_user_by_id",
+        key=f"id:{user_id}",
+        primary_row=primary_row,
+        shadow_row=shadow_row,
+        log_result=log_result,
+    )
+
+
+def run_users_list_compare(*, log_result: bool = False) -> dict[str, object]:
+    primary_rows = _sqlite_list_users()
+    try:
+        shadow_rows = _shadow_list_users()
+    except Exception:
+        result = {
+            "helper": "list_users",
+            "status": "mismatch",
+            "row_count_match": False,
+            "ordered_ids_match": False,
+            "details": [{"id": -1, "fields": ["compare_error"]}],
+        }
+        if log_result:
+            dual_write_log(
+                "USERS_READ_COMPARE helper=list_users status=mismatch "
+                "row_count_match=false ordered_ids_match=false"
+            )
+            dual_write_log(
+                "USERS_READ_COMPARE_DETAIL helper=list_users id=-1 status=mismatch fields=compare_error"
+            )
+        return result
+    return _compare_list_users(primary_rows=primary_rows, shadow_rows=shadow_rows, log_result=log_result)
 
 
 def get_primary_postgres_connection() -> psycopg.Connection:
@@ -681,38 +982,24 @@ def query_one(sql: str, params: tuple = ()) -> sqlite3.Row | None:
 
 
 def get_user_by_username(username: str) -> sqlite3.Row | None:
-    with db() as conn:
-        return conn.execute(
-            """
-            SELECT id, username, display_name, password_hash, role, created_at
-            FROM users
-            WHERE username = ?
-            """,
-            (username,),
-        ).fetchone()
+    row = _sqlite_get_user_by_username(username)
+    if users_read_compare_enabled():
+        run_users_read_compare_by_username(username, log_result=True)
+    return row
 
 
 def get_user_by_id(user_id: int) -> sqlite3.Row | None:
-    with db() as conn:
-        return conn.execute(
-            """
-            SELECT id, username, display_name, password_hash, role, created_at
-            FROM users
-            WHERE id = ?
-            """,
-            (user_id,),
-        ).fetchone()
+    row = _sqlite_get_user_by_id(user_id)
+    if users_read_compare_enabled():
+        run_users_read_compare_by_id(user_id, log_result=True)
+    return row
 
 
 def list_users() -> list[sqlite3.Row]:
-    with db() as conn:
-        return conn.execute(
-            """
-            SELECT id, username, display_name, role, created_at
-            FROM users
-            ORDER BY id
-            """
-        ).fetchall()
+    rows = _sqlite_list_users()
+    if users_read_compare_enabled():
+        run_users_list_compare(log_result=True)
+    return rows
 
 
 def login_required(fn):
