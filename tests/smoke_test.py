@@ -421,6 +421,24 @@ def run_users_create_readiness_guard_smoke(db_path: Path) -> None:
         raise AssertionError("Expected safe next sqlite collision reason.")
 
 
+def run_users_id_allocation_smoke(db_path: Path) -> None:
+    from check_users_id_allocation import fetch_sqlite_users_schema
+
+    report = fetch_sqlite_users_schema(db_path)
+    if report["has_autoincrement"]:
+        raise AssertionError("Sample SQLite users table should not use AUTOINCREMENT.")
+    if report["sqlite_sequence_exists"] and report["sqlite_sequence_value"] is not None:
+        raise AssertionError("Sample SQLite users table should not have a sqlite_sequence row.")
+    if report["user_count"] != 2:
+        raise AssertionError(f"Unexpected sample SQLite user_count: {report['user_count']}")
+    if report["max_user_id"] != 2:
+        raise AssertionError(f"Unexpected sample SQLite max_user_id: {report['max_user_id']}")
+    if report["next_sqlite_user_id"] != 3:
+        raise AssertionError(f"Unexpected sample SQLite next user id: {report['next_sqlite_user_id']}")
+    if "CREATE TABLE users" not in str(report["create_sql"]):
+        raise AssertionError("Expected users schema SQL to be present.")
+
+
 def run_admin_user_role_update_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -509,6 +527,7 @@ def main() -> int:
         run_user_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_role_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_users_create_readiness_guard_smoke(db_path)
+        run_users_id_allocation_smoke(db_path)
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 
@@ -519,6 +538,7 @@ def main() -> int:
     run_help("check_users_secondary_update.py")
     run_help("check_users_baseline_and_sequence.py")
     run_help("check_users_create_readiness.py")
+    run_help("check_users_id_allocation.py")
     run_help("fix_users_postgres_sequence.py")
     run_help("backfill_users_display_name_to_postgres.py")
 
@@ -551,6 +571,9 @@ def main() -> int:
         raise AssertionError(
             "check_users_create_readiness.py --username dw_test_create_probe did not report expected PASS without DATABASE_URL."
         )
+    allocation_result = run_script("check_users_id_allocation.py", env={"DATABASE_URL": ""})
+    if "DATABASE_URL is not configured." not in allocation_result.stdout or "PASS" not in allocation_result.stdout:
+        raise AssertionError("check_users_id_allocation.py did not report expected PASS without DATABASE_URL.")
     fix_sequence_result = run_script("fix_users_postgres_sequence.py", args=["--dry-run"], env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in fix_sequence_result.stdout or "PASS" not in fix_sequence_result.stdout:
         raise AssertionError("fix_users_postgres_sequence.py --dry-run did not report expected PASS without DATABASE_URL.")
