@@ -364,6 +364,175 @@ def test_controlled_dual_write_sheet_update_strict_false_logs_postgres_error_wit
     assert failing_connections and failing_connections[0].rolled_back is True
 
 
+def test_controlled_dual_write_extra_fields_update_reuses_postgres_compat_primary_connection():
+    os.environ["DUAL_WRITE_ENABLED"] = "true"
+    os.environ["DUAL_WRITE_TABLES"] = "meta,sheets,extra_fields"
+    os.environ["DUAL_WRITE_STRICT"] = "false"
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+    os.environ["DATABASE_URL"] = "postgresql://example.test/app"
+
+    import config
+    import services.write_service as write_service
+
+    config = importlib.reload(config)
+    write_service = importlib.reload(write_service)
+
+    logger = logging.getLogger("dual_write")
+    logger.setLevel(logging.INFO)
+    messages: list[str] = []
+
+    class CollectHandler(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+
+    handler = CollectHandler(level=logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    raw_calls: list[tuple[str, tuple[object, ...] | None]] = []
+
+    class FakeCursor:
+        def execute(self, sql, params=None):
+            raw_calls.append((sql.strip(), params))
+
+        def close(self):
+            return None
+
+    class FakeRawConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    compat_conn = object.__new__(PostgresCompatConnection)
+    compat_conn._conn = FakeRawConnection()
+    compat_conn.execute = lambda sql, params=(): None  # type: ignore[attr-defined]
+
+    try:
+        write_service.update_extra_field_sqlite(
+            compat_conn,
+            field_id=7,
+            sheet_id=3,
+            name="Updated field",
+            field_type="status",
+        )
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    log_output = "\n".join(messages)
+    assert any("SAVEPOINT dual_write_extra_fields_secondary" in call[0] for call in raw_calls if isinstance(call[0], str))
+    assert any("UPDATE extra_fields" in call[0] for call in raw_calls if isinstance(call[0], str))
+    assert "DUAL_WRITE operation=update table=extra_fields" in log_output
+    assert "postgres_result=success" in log_output
+    assert "DUAL_WRITE_DRY_RUN operation=update table=extra_fields" in log_output
+    assert "DUAL_WRITE_EXTRA_FIELDS_SECONDARY table=extra_fields strategy=reuse_primary_postgres_connection event=SAVEPOINT_START" in log_output
+    assert "DUAL_WRITE_EXTRA_FIELDS_SECONDARY table=extra_fields strategy=reuse_primary_postgres_connection event=EXECUTE_SQL_OK" in log_output
+
+
+def test_controlled_dual_write_extra_fields_update_strict_false_logs_postgres_error_without_blocking_primary():
+    os.environ["DUAL_WRITE_ENABLED"] = "true"
+    os.environ["DUAL_WRITE_TABLES"] = "meta,sheets,extra_fields"
+    os.environ["DUAL_WRITE_STRICT"] = "false"
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+    os.environ["DATABASE_URL"] = "postgresql://example.test/app"
+
+    import config
+    import services.write_service as write_service
+
+    config = importlib.reload(config)
+    write_service = importlib.reload(write_service)
+
+    logger = logging.getLogger("dual_write")
+    logger.setLevel(logging.INFO)
+    messages: list[str] = []
+
+    class CollectHandler(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+
+    handler = CollectHandler(level=logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    class FailingCursor:
+        def execute(self, sql, params=None):
+            raise RuntimeError("forced extra_fields secondary failure")
+
+        def close(self):
+            return None
+
+    class FailingPostgresConnection:
+        def __init__(self):
+            self.rolled_back = False
+
+        def cursor(self):
+            return FailingCursor()
+
+        def commit(self):
+            raise AssertionError("commit should not be called on failed secondary write")
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            return None
+
+    failing_connections: list[FailingPostgresConnection] = []
+
+    class FailingPsycopg:
+        def connect(self, url, **kwargs):
+            conn = FailingPostgresConnection()
+            failing_connections.append(conn)
+            return conn
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE extra_fields (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sheet_id INTEGER NOT NULL,
+            field_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            field_type TEXT NOT NULL DEFAULT 'date',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_builtin INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO extra_fields (id, sheet_id, field_key, name, field_type, sort_order, is_builtin, active) VALUES (1, 1, 'handover', 'Before', 'status', 1, 1, 1)"
+    )
+    write_service.psycopg = FailingPsycopg()
+
+    try:
+        write_service.update_extra_field_sqlite(
+            conn,
+            field_id=1,
+            sheet_id=1,
+            name="After",
+            field_type="date",
+        )
+        write_service.deactivate_extra_field_sqlite(
+            conn,
+            field_id=1,
+            sheet_id=1,
+        )
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    log_output = "\n".join(messages)
+    stored_row = conn.execute("SELECT name, field_type, active FROM extra_fields WHERE id = 1 AND sheet_id = 1").fetchone()
+    assert stored_row["name"] == "After"
+    assert stored_row["field_type"] == "date"
+    assert stored_row["active"] == 0
+    assert "DUAL_WRITE operation=update table=extra_fields" in log_output
+    assert "postgres_result=failed" in log_output
+    assert "DUAL_WRITE_DRY_RUN operation=update table=extra_fields" in log_output
+    assert failing_connections and failing_connections[0].rolled_back is True
+
+
 def test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_write():
     os.environ["DUAL_WRITE_ENABLED"] = "true"
     os.environ["DUAL_WRITE_TABLES"] = "meta"
@@ -714,6 +883,8 @@ def run():
     test_controlled_dual_write_meta_strict_false_logs_postgres_error_without_blocking_primary()
     test_controlled_dual_write_meta_strict_true_raises_after_primary_write()
     test_controlled_dual_write_sheet_update_strict_false_logs_postgres_error_without_blocking_primary()
+    test_controlled_dual_write_extra_fields_update_reuses_postgres_compat_primary_connection()
+    test_controlled_dual_write_extra_fields_update_strict_false_logs_postgres_error_without_blocking_primary()
     test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log()
 
 

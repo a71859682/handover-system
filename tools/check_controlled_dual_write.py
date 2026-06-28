@@ -66,13 +66,33 @@ def _make_sqlite_sheets_conn() -> sqlite3.Connection:
     return conn
 
 
+def _make_sqlite_extra_fields_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE extra_fields (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sheet_id INTEGER NOT NULL,
+            field_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            field_type TEXT NOT NULL DEFAULT 'date',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_builtin INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    return conn
+
+
 def main() -> int:
     temp_dir = Path(tempfile.mkdtemp(prefix="controlled-dual-write-"))
     os.environ["APP_DB_PATH"] = str(temp_dir / "site.db")
 
     config, write_service = _load_modules(
         dual_write_enabled=True,
-        dual_write_tables="meta,sheets",
+        dual_write_tables="meta,sheets,extra_fields",
         dual_write_strict=False,
         dual_write_dry_run=True,
     )
@@ -165,6 +185,23 @@ def main() -> int:
         sheet_value = sheets_conn.execute("SELECT name FROM sheets WHERE id = 1").fetchone()[0]
         sheet_calls_added = len(postgres_calls) > before_sheet_calls
 
+        extra_fields_conn = _make_sqlite_extra_fields_conn()
+        extra_fields_conn.execute(
+            "INSERT INTO extra_fields (id, sheet_id, field_key, name, field_type, sort_order, is_builtin, active) VALUES (1, 1, 'initial_check', 'Old field', 'date', 1, 1, 1)"
+        )
+        before_extra_field_calls = len(postgres_calls)
+        write_service.update_extra_field_sqlite(
+            extra_fields_conn,
+            field_id=1,
+            sheet_id=1,
+            name="New field",
+            field_type="status",
+        )
+        updated_extra_field = extra_fields_conn.execute(
+            "SELECT name, field_type, active FROM extra_fields WHERE id = 1 AND sheet_id = 1"
+        ).fetchone()
+        extra_field_calls_added = len(postgres_calls) > before_extra_field_calls
+
         before_non_sqlite_calls = len(postgres_calls)
         write_service._maybe_controlled_dual_write_meta(  # type: ignore[attr-defined]
             NonSqlitePrimaryConnection(),
@@ -189,35 +226,67 @@ def main() -> int:
             "SELECT name FROM sheets WHERE id = 2"
         ).fetchone()[0]
 
+        extra_fields_conn_before_failure = _make_sqlite_extra_fields_conn()
+        extra_fields_conn_before_failure.execute(
+            "INSERT INTO extra_fields (id, sheet_id, field_key, name, field_type, sort_order, is_builtin, active) VALUES (2, 1, 'handover', 'Before failure', 'status', 2, 1, 1)"
+        )
+        write_service.update_extra_field_sqlite(
+            extra_fields_conn_before_failure,
+            field_id=2,
+            sheet_id=1,
+            name="After failure",
+            field_type="date",
+        )
+        extra_field_after_failure = extra_fields_conn_before_failure.execute(
+            "SELECT name, field_type, active FROM extra_fields WHERE id = 2 AND sheet_id = 1"
+        ).fetchone()
+        write_service.deactivate_extra_field_sqlite(
+            extra_fields_conn_before_failure,
+            field_id=2,
+            sheet_id=1,
+        )
+        extra_field_after_deactivate = extra_fields_conn_before_failure.execute(
+            "SELECT name, field_type, active FROM extra_fields WHERE id = 2 AND sheet_id = 1"
+        ).fetchone()
+
         log_output = stream.getvalue()
 
         allowed_tables = write_service._controlled_dual_write_tables()  # type: ignore[attr-defined]
         checks = [
             ("USE_SQLALCHEMY_WRITES disabled", config.USE_SQLALCHEMY_WRITES is False),
             ("DUAL_WRITE_ENABLED enabled", config.DUAL_WRITE_ENABLED is True),
-            ("DUAL_WRITE_TABLES limited to meta and sheets", allowed_tables == {"meta", "sheets"}),
+            ("DUAL_WRITE_TABLES limited to meta, sheets, and extra_fields", allowed_tables == {"meta", "sheets", "extra_fields"}),
             ("Meta dual write is gated on", write_service._is_controlled_dual_write_enabled_for("meta") is True),  # type: ignore[attr-defined]
             ("Sheets dual write is gated on", write_service._is_controlled_dual_write_enabled_for("sheets") is True),  # type: ignore[attr-defined]
+            ("Extra fields dual write is gated on", write_service._is_controlled_dual_write_enabled_for("extra_fields") is True),  # type: ignore[attr-defined]
             ("Users do not dual write to PostgreSQL", non_meta_calls_unchanged),
             ("Non-SQLite runtime still attempts PostgreSQL secondary", non_sqlite_primary_attempted),
             ("Meta primary SQLite write still works", sqlite_value == "Controlled Dual Write"),
             ("Sheets primary SQLite write still works", sheet_value == "New name"),
+            ("Extra fields primary SQLite update still works", updated_extra_field["name"] == "New field" and updated_extra_field["field_type"] == "status" and updated_extra_field["active"] == 1),
             ("Meta primary write survives failed secondary in non-strict mode", sqlite_value_after_failure == "Primary survives secondary failure"),
             ("Sheets primary write survives failed secondary in non-strict mode", sheet_value_after_failure == "After failure"),
+            ("Extra fields primary write survives failed secondary in non-strict mode", extra_field_after_failure["name"] == "After failure" and extra_field_after_failure["field_type"] == "date"),
+            ("Extra fields deactivate still updates SQLite primary", extra_field_after_deactivate["active"] == 0),
             ("Meta PostgreSQL secondary write can be attempted", any(call[0] == "CONNECT" for call in postgres_calls)),
             ("Sheets PostgreSQL secondary write can be attempted", sheet_calls_added),
+            ("Extra fields PostgreSQL secondary write can be attempted", extra_field_calls_added),
             ("Controlled dual write log emitted", "DUAL_WRITE operation=upsert table=meta" in log_output),
             ("Controlled dual write log reports success", "postgres_result=success" in log_output),
             ("Controlled dual write reports failed on non-strict secondary error", "postgres_result=failed" in log_output),
             ("Sheets controlled dual write log emitted", "DUAL_WRITE operation=update table=sheets" in log_output),
+            ("Extra fields controlled dual write log emitted", "DUAL_WRITE operation=update table=extra_fields" in log_output),
             ("Controlled dual write no longer reports skipped_non_sqlite_primary", "skipped_non_sqlite_primary" not in log_output),
             ("Secondary debug log includes connect step", "DUAL_WRITE_META_SECONDARY strategy=raw_psycopg event=CONNECT_START" in log_output),
             ("Secondary debug log includes execute step", "DUAL_WRITE_META_SECONDARY strategy=raw_psycopg event=EXECUTE_SQL_START" in log_output),
             ("Secondary debug log includes rollback step on failure", "DUAL_WRITE_META_SECONDARY strategy=raw_psycopg event=ROLLBACK" in log_output),
             ("Sheets secondary debug log includes savepoint step", "DUAL_WRITE_SHEETS_SECONDARY table=sheets strategy=raw_psycopg event=EXECUTE_SQL_START" in log_output),
             ("Sheets secondary debug log includes release savepoint step", "DUAL_WRITE_SHEETS_SECONDARY table=sheets strategy=raw_psycopg event=ROLLBACK" in log_output or "DUAL_WRITE_SHEETS_SECONDARY table=sheets strategy=raw_psycopg event=COMMIT_OK" in log_output),
+            ("Extra fields secondary debug log includes execute step", "DUAL_WRITE_EXTRA_FIELDS_SECONDARY table=extra_fields strategy=raw_psycopg event=EXECUTE_SQL_START" in log_output),
+            ("Extra fields secondary debug log includes rollback step", "DUAL_WRITE_EXTRA_FIELDS_SECONDARY table=extra_fields strategy=raw_psycopg event=ROLLBACK" in log_output),
             ("Dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=upsert table=meta" in log_output),
             ("Sheets dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=update table=sheets" in log_output),
+            ("Extra fields dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=update table=extra_fields" in log_output),
         ]
 
         failed = [label for label, ok in checks if not ok]

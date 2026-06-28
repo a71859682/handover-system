@@ -25,7 +25,7 @@ except Exception:
 
 
 LOGGER = logging.getLogger("dual_write")
-ALLOWED_CONTROLLED_DUAL_WRITE_TABLES = frozenset({"meta", "sheets"})
+ALLOWED_CONTROLLED_DUAL_WRITE_TABLES = frozenset({"meta", "sheets", "extra_fields"})
 POSTGRES_CONNECT_TIMEOUT_SECONDS = 3
 POSTGRES_STATEMENT_TIMEOUT_MS = 3000
 
@@ -158,6 +158,29 @@ def _log_sheets_secondary_event(
         "DUAL_WRITE_SHEETS_SECONDARY table=sheets strategy=%s event=%s sheet_id=%s elapsed_ms=%s step_elapsed_ms=%s error=%r",
         strategy,
         event,
+        sheet_id,
+        elapsed_ms,
+        step_elapsed_ms,
+        error,
+    )
+
+
+def _log_extra_fields_secondary_event(
+    *,
+    strategy: str,
+    event: str,
+    field_id: int,
+    sheet_id: int,
+    elapsed_ms: int,
+    step_elapsed_ms: int | None = None,
+    error: str | None = None,
+) -> None:
+    logger = _ensure_dual_write_logger()
+    logger.info(
+        "DUAL_WRITE_EXTRA_FIELDS_SECONDARY table=extra_fields strategy=%s event=%s field_id=%s sheet_id=%s elapsed_ms=%s step_elapsed_ms=%s error=%r",
+        strategy,
+        event,
+        field_id,
         sheet_id,
         elapsed_ms,
         step_elapsed_ms,
@@ -908,6 +931,478 @@ def _write_sheet_name_to_postgres_secondary(conn=None, *, sheet_id: int, name: s
     return _write_sheet_name_with_raw_psycopg(sheet_id=sheet_id, name=name)
 
 
+def _write_extra_field_update_with_existing_psycopg_connection(
+    raw_conn,
+    *,
+    field_id: int,
+    sheet_id: int,
+    name: str,
+    field_type: str,
+    active: int,
+) -> tuple[str, str | None, dict[str, object]]:
+    strategy = "reuse_primary_postgres_connection"
+    started = time.perf_counter()
+    cur = None
+    details: dict[str, object] = {"strategy": strategy}
+    savepoint_name = "dual_write_extra_fields_secondary"
+    try:
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="BEGIN_TX",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=0,
+        )
+        cursor_started = time.perf_counter()
+        cur = raw_conn.cursor()
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="CURSOR_OK",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(cursor_started),
+        )
+        savepoint_started = time.perf_counter()
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="SAVEPOINT_START",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+        cur.execute(f"SAVEPOINT {savepoint_name}")
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="SAVEPOINT_OK",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(savepoint_started),
+        )
+        execute_started = time.perf_counter()
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_START",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+        cur.execute(
+            """
+            UPDATE extra_fields
+            SET name = %s, field_type = %s, active = %s
+            WHERE id = %s AND sheet_id = %s
+            """,
+            (name, field_type, active, field_id, sheet_id),
+        )
+        release_started = time.perf_counter()
+        cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["execute_step_elapsed_ms"] = _step_elapsed_ms(execute_started)
+        details["release_savepoint_step_elapsed_ms"] = _step_elapsed_ms(release_started)
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_OK",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=elapsed_ms,
+            step_elapsed_ms=details["execute_step_elapsed_ms"],
+        )
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="RELEASE_SAVEPOINT_OK",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=elapsed_ms,
+            step_elapsed_ms=details["release_savepoint_step_elapsed_ms"],
+        )
+        return "success", None, details
+    except BaseException as exc:
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            raise
+        if cur is not None:
+            try:
+                rollback_started = time.perf_counter()
+                cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                _log_extra_fields_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK",
+                    field_id=field_id,
+                    sheet_id=sheet_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    step_elapsed_ms=_step_elapsed_ms(rollback_started),
+                    error=str(exc),
+                )
+            except Exception as rollback_exc:
+                _log_extra_fields_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK_FAILED",
+                    field_id=field_id,
+                    sheet_id=sheet_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    error=str(rollback_exc),
+                )
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["exception_type"] = type(exc).__name__
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_FAILED",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=elapsed_ms,
+            error=str(exc),
+        )
+        return "failed", str(exc), details
+    finally:
+        if cur is not None:
+            try:
+                close_started = time.perf_counter()
+                cur.close()
+                _log_extra_fields_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE",
+                    field_id=field_id,
+                    sheet_id=sheet_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    step_elapsed_ms=_step_elapsed_ms(close_started),
+                )
+            except Exception as exc:
+                _log_extra_fields_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE_FAILED",
+                    field_id=field_id,
+                    sheet_id=sheet_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    error=str(exc),
+                )
+
+
+def _write_extra_field_update_with_sqlalchemy_engine(
+    *,
+    field_id: int,
+    sheet_id: int,
+    name: str,
+    field_type: str,
+    active: int,
+) -> tuple[str, str | None, dict[str, object]]:
+    strategy = "sqlalchemy_engine"
+    started = time.perf_counter()
+    details: dict[str, object] = {"strategy": strategy}
+    _log_extra_fields_secondary_event(
+        strategy=strategy,
+        event="CONNECT_START",
+        field_id=field_id,
+        sheet_id=sheet_id,
+        elapsed_ms=0,
+    )
+    try:
+        connect_started = time.perf_counter()
+        engine = db.engine
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="CONNECT_OK",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(connect_started),
+        )
+        with engine.begin() as sql_conn:
+            _log_extra_fields_secondary_event(
+                strategy=strategy,
+                event="BEGIN_TX",
+                field_id=field_id,
+                sheet_id=sheet_id,
+                elapsed_ms=_elapsed_ms(started),
+            )
+            timeout_started = time.perf_counter()
+            sql_conn.exec_driver_sql(
+                "SET LOCAL statement_timeout = %s",
+                (str(POSTGRES_STATEMENT_TIMEOUT_MS),),
+            )
+            _log_extra_fields_secondary_event(
+                strategy=strategy,
+                event="SET_TIMEOUT_OK",
+                field_id=field_id,
+                sheet_id=sheet_id,
+                elapsed_ms=_elapsed_ms(started),
+                step_elapsed_ms=_step_elapsed_ms(timeout_started),
+            )
+            execute_started = time.perf_counter()
+            _log_extra_fields_secondary_event(
+                strategy=strategy,
+                event="EXECUTE_SQL_START",
+                field_id=field_id,
+                sheet_id=sheet_id,
+                elapsed_ms=_elapsed_ms(started),
+            )
+            sql_conn.exec_driver_sql(
+                """
+                UPDATE extra_fields
+                SET name = %s, field_type = %s, active = %s
+                WHERE id = %s AND sheet_id = %s
+                """,
+                (name, field_type, active, field_id, sheet_id),
+            )
+            _log_extra_fields_secondary_event(
+                strategy=strategy,
+                event="EXECUTE_SQL_OK",
+                field_id=field_id,
+                sheet_id=sheet_id,
+                elapsed_ms=_elapsed_ms(started),
+                step_elapsed_ms=_step_elapsed_ms(execute_started),
+            )
+            commit_started = time.perf_counter()
+            _log_extra_fields_secondary_event(
+                strategy=strategy,
+                event="COMMIT_START",
+                field_id=field_id,
+                sheet_id=sheet_id,
+                elapsed_ms=_elapsed_ms(started),
+            )
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["commit_step_elapsed_ms"] = _step_elapsed_ms(commit_started)
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="COMMIT_OK",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=elapsed_ms,
+            step_elapsed_ms=details["commit_step_elapsed_ms"],
+        )
+        return "success", None, details
+    except BaseException as exc:
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            raise
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["exception_type"] = type(exc).__name__
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="ROLLBACK",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=elapsed_ms,
+            error=str(exc),
+        )
+        return "failed", str(exc), details
+    finally:
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="CLOSE",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+
+
+def _write_extra_field_update_with_raw_psycopg(
+    *,
+    field_id: int,
+    sheet_id: int,
+    name: str,
+    field_type: str,
+    active: int,
+) -> tuple[str, str | None, dict[str, object]]:
+    strategy = "raw_psycopg"
+    started = time.perf_counter()
+    conn = None
+    cur = None
+    details: dict[str, object] = {"strategy": strategy}
+    try:
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="CONNECT_START",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=0,
+        )
+        connect_started = time.perf_counter()
+        conn = psycopg.connect(
+            DATABASE_URL,
+            connect_timeout=POSTGRES_CONNECT_TIMEOUT_SECONDS,
+            options=f"-c statement_timeout={POSTGRES_STATEMENT_TIMEOUT_MS}",
+        )
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="CONNECT_OK",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(connect_started),
+        )
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="BEGIN_TX",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+        cursor_started = time.perf_counter()
+        cur = conn.cursor()
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="CURSOR_OK",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(cursor_started),
+        )
+        execute_started = time.perf_counter()
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_START",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+        cur.execute(
+            """
+            UPDATE extra_fields
+            SET name = %s, field_type = %s, active = %s
+            WHERE id = %s AND sheet_id = %s
+            """,
+            (name, field_type, active, field_id, sheet_id),
+        )
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="EXECUTE_SQL_OK",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+            step_elapsed_ms=_step_elapsed_ms(execute_started),
+        )
+        commit_started = time.perf_counter()
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="COMMIT_START",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=_elapsed_ms(started),
+        )
+        conn.commit()
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["connect_step_elapsed_ms"] = _step_elapsed_ms(connect_started)
+        details["execute_step_elapsed_ms"] = _step_elapsed_ms(execute_started)
+        details["commit_step_elapsed_ms"] = _step_elapsed_ms(commit_started)
+        _log_extra_fields_secondary_event(
+            strategy=strategy,
+            event="COMMIT_OK",
+            field_id=field_id,
+            sheet_id=sheet_id,
+            elapsed_ms=elapsed_ms,
+            step_elapsed_ms=details["commit_step_elapsed_ms"],
+        )
+        return "success", None, details
+    except BaseException as exc:
+        if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+            raise
+        if conn is not None:
+            try:
+                rollback_started = time.perf_counter()
+                conn.rollback()
+                _log_extra_fields_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK",
+                    field_id=field_id,
+                    sheet_id=sheet_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    step_elapsed_ms=_step_elapsed_ms(rollback_started),
+                    error=str(exc),
+                )
+            except Exception as rollback_exc:
+                _log_extra_fields_secondary_event(
+                    strategy=strategy,
+                    event="ROLLBACK_FAILED",
+                    field_id=field_id,
+                    sheet_id=sheet_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    error=str(rollback_exc),
+                )
+        elapsed_ms = _elapsed_ms(started)
+        details["elapsed_ms"] = elapsed_ms
+        details["exception_type"] = type(exc).__name__
+        return "failed", str(exc), details
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception as exc:
+                _log_extra_fields_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE_CURSOR_FAILED",
+                    field_id=field_id,
+                    sheet_id=sheet_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    error=str(exc),
+                )
+        if conn is not None:
+            try:
+                close_started = time.perf_counter()
+                conn.close()
+                _log_extra_fields_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE",
+                    field_id=field_id,
+                    sheet_id=sheet_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    step_elapsed_ms=_step_elapsed_ms(close_started),
+                )
+            except Exception as exc:
+                _log_extra_fields_secondary_event(
+                    strategy=strategy,
+                    event="CLOSE_FAILED",
+                    field_id=field_id,
+                    sheet_id=sheet_id,
+                    elapsed_ms=_elapsed_ms(started),
+                    error=str(exc),
+                )
+
+
+def _write_extra_field_update_to_postgres_secondary(
+    conn=None,
+    *,
+    field_id: int,
+    sheet_id: int,
+    name: str,
+    field_type: str,
+    active: int,
+) -> tuple[str, str | None, dict[str, object]]:
+    if not DATABASE_URL:
+        return "skipped_no_database_url", "DATABASE_URL is not configured", {"strategy": "none"}
+    if psycopg is None:
+        return "skipped_no_psycopg", "psycopg is not installed", {"strategy": "none"}
+    if _is_postgres_compat_primary_connection(conn):
+        return _write_extra_field_update_with_existing_psycopg_connection(
+            conn._conn,
+            field_id=field_id,
+            sheet_id=sheet_id,
+            name=name,
+            field_type=field_type,
+            active=active,
+        )
+    if has_app_context():
+        return _write_extra_field_update_with_sqlalchemy_engine(
+            field_id=field_id,
+            sheet_id=sheet_id,
+            name=name,
+            field_type=field_type,
+            active=active,
+        )
+    return _write_extra_field_update_with_raw_psycopg(
+        field_id=field_id,
+        sheet_id=sheet_id,
+        name=name,
+        field_type=field_type,
+        active=active,
+    )
+
+
 def _maybe_controlled_dual_write_meta(
     conn,
     *,
@@ -956,6 +1451,39 @@ def _maybe_controlled_dual_write_sheet_name(
     )
     if postgres_result == "failed" and DUAL_WRITE_STRICT:
         raise RuntimeError(f"Controlled dual write failed for sheets id '{sheet_id}': {error}")
+
+
+def _maybe_controlled_dual_write_extra_field_update(
+    conn,
+    *,
+    operation: str,
+    field_id: int,
+    sheet_id: int,
+    name: str,
+    field_type: str,
+    active: int,
+) -> None:
+    if not _is_controlled_dual_write_enabled_for("extra_fields"):
+        return
+
+    postgres_result, error, _details = _write_extra_field_update_to_postgres_secondary(
+        conn,
+        field_id=field_id,
+        sheet_id=sheet_id,
+        name=name,
+        field_type=field_type,
+        active=active,
+    )
+    _log_controlled_dual_write(
+        operation=operation,
+        table="extra_fields",
+        key={"id": field_id, "sheet_id": sheet_id},
+        sqlite_result="success",
+        postgres_result=postgres_result,
+        error=error,
+    )
+    if postgres_result == "failed" and DUAL_WRITE_STRICT:
+        raise RuntimeError(f"Controlled dual write failed for extra_fields id '{field_id}': {error}")
 
 
 def _require_lastrowid(cursor, *, table: str) -> int:
@@ -1126,6 +1654,73 @@ def create_builtin_extra_fields_sqlite(
     _future_dual_write_placeholder(
         "create_builtin_extra_fields",
         {"sheet_id": sheet_id, "field_keys": tuple(builtin_fields)},
+    )
+
+
+def update_extra_field_sqlite(
+    conn: sqlite3.Connection,
+    *,
+    field_id: int,
+    sheet_id: int,
+    name: str,
+    field_type: str,
+) -> None:
+    conn.execute(
+        "UPDATE extra_fields SET name = ?, field_type = ? WHERE id = ? AND sheet_id = ?",
+        (name, field_type, field_id, sheet_id),
+    )
+    _log_dual_write_dry_run(
+        operation="update",
+        table="extra_fields",
+        key={"id": field_id, "sheet_id": sheet_id},
+        fields={"name": name, "field_type": field_type, "active": 1},
+    )
+    _maybe_controlled_dual_write_extra_field_update(
+        conn,
+        operation="update",
+        field_id=field_id,
+        sheet_id=sheet_id,
+        name=name,
+        field_type=field_type,
+        active=1,
+    )
+    _future_dual_write_placeholder(
+        "update_extra_field",
+        {"field_id": field_id, "sheet_id": sheet_id, "name": name, "field_type": field_type, "active": 1},
+    )
+
+
+def deactivate_extra_field_sqlite(
+    conn: sqlite3.Connection,
+    *,
+    field_id: int,
+    sheet_id: int,
+) -> None:
+    row = conn.execute(
+        "SELECT name, field_type FROM extra_fields WHERE id = ? AND sheet_id = ?",
+        (field_id, sheet_id),
+    ).fetchone()
+    if row is None:
+        return
+    conn.execute("UPDATE extra_fields SET active = 0 WHERE id = ? AND sheet_id = ?", (field_id, sheet_id))
+    _log_dual_write_dry_run(
+        operation="update",
+        table="extra_fields",
+        key={"id": field_id, "sheet_id": sheet_id},
+        fields={"name": row["name"], "field_type": row["field_type"], "active": 0},
+    )
+    _maybe_controlled_dual_write_extra_field_update(
+        conn,
+        operation="update",
+        field_id=field_id,
+        sheet_id=sheet_id,
+        name=row["name"],
+        field_type=row["field_type"],
+        active=0,
+    )
+    _future_dual_write_placeholder(
+        "deactivate_extra_field",
+        {"field_id": field_id, "sheet_id": sheet_id, "name": row["name"], "field_type": row["field_type"], "active": 0},
     )
 
 
