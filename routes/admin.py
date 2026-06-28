@@ -14,6 +14,7 @@ from services.write_service import (
     deactivate_extra_field_sqlite,
     update_extra_field_sqlite,
     update_sheet_name_sqlite,
+    update_unit_name_sqlite,
     update_user_sqlite,
 )
 
@@ -245,7 +246,11 @@ def table_admin():
                 conn.execute("UPDATE floors SET name = ?, block_name = ? WHERE id = ?", (request.form.get(f"floor_name_{floor_id}", "").strip(), request.form.get(f"floor_block_{floor_id}", "").strip(), floor_id))
             for unit in conn.execute("SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ?", (sheet_id,)):
                 unit_id = unit["id"]
-                conn.execute("UPDATE units SET name = ? WHERE id = ?", (request.form.get(f"unit_name_{unit_id}", "").strip(), unit_id))
+                update_unit_name_sqlite(
+                    conn,
+                    unit_id=unit_id,
+                    name=request.form.get(f"unit_name_{unit_id}", "").strip(),
+                )
             flash("設定已更新。", "success")
             return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
 

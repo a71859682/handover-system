@@ -533,6 +533,158 @@ def test_controlled_dual_write_extra_fields_update_strict_false_logs_postgres_er
     assert failing_connections and failing_connections[0].rolled_back is True
 
 
+def test_controlled_dual_write_units_update_reuses_postgres_compat_primary_connection():
+    os.environ["DUAL_WRITE_ENABLED"] = "true"
+    os.environ["DUAL_WRITE_TABLES"] = "meta,sheets,extra_fields,units"
+    os.environ["DUAL_WRITE_STRICT"] = "false"
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+    os.environ["DATABASE_URL"] = "postgresql://example.test/app"
+
+    import config
+    import services.write_service as write_service
+
+    config = importlib.reload(config)
+    write_service = importlib.reload(write_service)
+
+    logger = logging.getLogger("dual_write")
+    logger.setLevel(logging.INFO)
+    messages: list[str] = []
+
+    class CollectHandler(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+
+    handler = CollectHandler(level=logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    raw_calls: list[tuple[str, tuple[object, ...] | None]] = []
+
+    class FakeCursor:
+        def execute(self, sql, params=None):
+            raw_calls.append((sql.strip(), params))
+
+        def close(self):
+            return None
+
+    class FakeRawConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    compat_conn = object.__new__(PostgresCompatConnection)
+    compat_conn._conn = FakeRawConnection()
+    compat_conn.execute = lambda sql, params=(): None  # type: ignore[attr-defined]
+
+    try:
+        write_service.update_unit_name_sqlite(
+            compat_conn,
+            unit_id=11,
+            name="Unit 11A",
+        )
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    log_output = "\n".join(messages)
+    assert any("SAVEPOINT dual_write_units_secondary" in call[0] for call in raw_calls if isinstance(call[0], str))
+    assert any("UPDATE units" in call[0] for call in raw_calls if isinstance(call[0], str))
+    assert "DUAL_WRITE operation=update table=units" in log_output
+    assert "postgres_result=success" in log_output
+    assert "DUAL_WRITE_DRY_RUN operation=update table=units" in log_output
+    assert "DUAL_WRITE_UNITS_SECONDARY table=units strategy=reuse_primary_postgres_connection event=SAVEPOINT_START" in log_output
+    assert "DUAL_WRITE_UNITS_SECONDARY table=units strategy=reuse_primary_postgres_connection event=EXECUTE_SQL_OK" in log_output
+
+
+def test_controlled_dual_write_units_update_strict_false_logs_postgres_error_without_blocking_primary():
+    os.environ["DUAL_WRITE_ENABLED"] = "true"
+    os.environ["DUAL_WRITE_TABLES"] = "meta,sheets,extra_fields,units"
+    os.environ["DUAL_WRITE_STRICT"] = "false"
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+    os.environ["DATABASE_URL"] = "postgresql://example.test/app"
+
+    import config
+    import services.write_service as write_service
+
+    config = importlib.reload(config)
+    write_service = importlib.reload(write_service)
+
+    logger = logging.getLogger("dual_write")
+    logger.setLevel(logging.INFO)
+    messages: list[str] = []
+
+    class CollectHandler(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+
+    handler = CollectHandler(level=logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    class FailingCursor:
+        def execute(self, sql, params=None):
+            raise RuntimeError("forced units secondary failure")
+
+        def close(self):
+            return None
+
+    class FailingPostgresConnection:
+        def __init__(self):
+            self.rolled_back = False
+
+        def cursor(self):
+            return FailingCursor()
+
+        def commit(self):
+            raise AssertionError("commit should not be called on failed secondary write")
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            return None
+
+    failing_connections: list[FailingPostgresConnection] = []
+
+    class FailingPsycopg:
+        def connect(self, url, **kwargs):
+            conn = FailingPostgresConnection()
+            failing_connections.append(conn)
+            return conn
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE units (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            floor_id INTEGER NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            name TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("INSERT INTO units (id, floor_id, sort_order, name) VALUES (1, 1, 1, 'Before')")
+    write_service.psycopg = FailingPsycopg()
+
+    try:
+        write_service.update_unit_name_sqlite(
+            conn,
+            unit_id=1,
+            name="After",
+        )
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    log_output = "\n".join(messages)
+    stored_row = conn.execute("SELECT name FROM units WHERE id = 1").fetchone()
+    assert stored_row["name"] == "After"
+    assert "DUAL_WRITE operation=update table=units" in log_output
+    assert "postgres_result=failed" in log_output
+    assert "DUAL_WRITE_DRY_RUN operation=update table=units" in log_output
+    assert failing_connections and failing_connections[0].rolled_back is True
+
+
 def test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_write():
     os.environ["DUAL_WRITE_ENABLED"] = "true"
     os.environ["DUAL_WRITE_TABLES"] = "meta"
@@ -885,6 +1037,8 @@ def run():
     test_controlled_dual_write_sheet_update_strict_false_logs_postgres_error_without_blocking_primary()
     test_controlled_dual_write_extra_fields_update_reuses_postgres_compat_primary_connection()
     test_controlled_dual_write_extra_fields_update_strict_false_logs_postgres_error_without_blocking_primary()
+    test_controlled_dual_write_units_update_reuses_postgres_compat_primary_connection()
+    test_controlled_dual_write_units_update_strict_false_logs_postgres_error_without_blocking_primary()
     test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log()
 
 
