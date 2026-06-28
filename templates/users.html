@@ -59,7 +59,15 @@
         </select>
       </td>
       <td>{{ user.created_at }}</td>
-      <td><button form="edit-user-{{ user.id }}" type="submit">&#20786;&#23384;</button></td>
+      <td>
+        <button form="edit-user-{{ user.id }}" type="submit">&#20786;&#23384;</button>
+        {% if user.id != 1 and user.username != 'admin' and user.role != 'admin' and user.username.startswith('dw_test_') %}
+        <form method="post" class="inline-form" onsubmit="return confirm('&#30906;&#23450;&#35201;&#21034;&#38500;&#36889;&#20491;&#28204;&#35430;&#25104;&#21729;&#21966;&#65311;&#27492;&#25805;&#20316;&#26371;&#36208; users delete dual-write &#27969;&#31243;&#12290;');">
+          <input type="hidden" name="action" value="delete_user:{{ user.id }}">
+          <button type="submit" class="link-danger">&#21034;&#38500;</button>
+        </form>
+        {% endif %}
+      </td>
     </tr>
     {% endfor %}
   </tbody>

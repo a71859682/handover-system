@@ -210,6 +210,25 @@ def run_script(
     )
 
 
+def run_users_template_delete_ui_smoke() -> None:
+    template_path = ROOT_DIR / "templates" / "users.html"
+    template = template_path.read_text(encoding="utf-8")
+    required_snippets = [
+        "delete_user:{{ user.id }}",
+        "user.username.startswith('dw_test_')",
+        "user.id != 1",
+        "user.username != 'admin'",
+        "user.role != 'admin'",
+        "users delete dual-write",
+        "&#21034;&#38500;",
+    ]
+    for snippet in required_snippets:
+        if snippet not in template:
+            raise AssertionError(f"users.html missing delete UI snippet: {snippet}")
+    if "password_hash" in template:
+        raise AssertionError("users.html delete UI should not include password_hash.")
+
+
 def run_floor_helper_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -915,6 +934,7 @@ def main() -> int:
         run_users_sqlite_sequence_bump_plan_smoke()
         run_users_sqlite_sequence_apply_guard_smoke()
         run_sqlite_db_path_resolver_smoke()
+        run_users_template_delete_ui_smoke()
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 
