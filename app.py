@@ -680,6 +680,41 @@ def query_one(sql: str, params: tuple = ()) -> sqlite3.Row | None:
         return conn.execute(sql, params).fetchone()
 
 
+def get_user_by_username(username: str) -> sqlite3.Row | None:
+    with db() as conn:
+        return conn.execute(
+            """
+            SELECT id, username, display_name, password_hash, role, created_at
+            FROM users
+            WHERE username = ?
+            """,
+            (username,),
+        ).fetchone()
+
+
+def get_user_by_id(user_id: int) -> sqlite3.Row | None:
+    with db() as conn:
+        return conn.execute(
+            """
+            SELECT id, username, display_name, password_hash, role, created_at
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+
+def list_users() -> list[sqlite3.Row]:
+    with db() as conn:
+        return conn.execute(
+            """
+            SELECT id, username, display_name, role, created_at
+            FROM users
+            ORDER BY id
+            """
+        ).fetchall()
+
+
 def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -1220,7 +1255,7 @@ def login():
         username = request.form.get("username", "").strip()
         display_name = request.form.get("display_name", "").strip() or username
         password = request.form.get("password", "")
-        user = query_one("SELECT * FROM users WHERE username = ?", (username,))
+        user = get_user_by_username(username)
         if user and check_password_hash(user["password_hash"], password):
             session.clear()
             session["user_id"] = user["id"]
@@ -1355,7 +1390,7 @@ def api_unit_extra():
 def api_reset_sheet():
     data = request.get_json(force=True)
     password = data.get("password", "")
-    user = query_one("SELECT * FROM users WHERE id = ?", (session["user_id"],))
+    user = get_user_by_id(session["user_id"])
     if not user or not check_password_hash(user["password_hash"], password):
         return jsonify({"ok": False, "message": "管理員密碼錯誤。"}), 403
 
@@ -1465,8 +1500,8 @@ def users():
 
         return redirect(url_for("users"))
 
+    all_users = list_users()
     with db() as conn:
-        all_users = conn.execute("SELECT id, username, display_name, role, created_at FROM users ORDER BY id").fetchall()
         settings = get_settings(conn)
     return render_template("users.html", users=all_users, settings=settings)
 

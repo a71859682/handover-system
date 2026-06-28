@@ -870,6 +870,110 @@ print("users delete submit verifier smoke PASS")
         raise AssertionError("users delete submit verifier smoke subprocess did not report PASS.")
 
 
+def run_users_read_inventory_smoke() -> None:
+    result = run_script("check_users_read_inventory.py")
+    output = result.stdout
+    if result.returncode != 0:
+        raise AssertionError(f"check_users_read_inventory.py failed:\n{output}")
+    required_snippets = [
+        "Users read route inventory:",
+        "- get_user_by_username: ",
+        "- get_user_by_id: ",
+        "- list_users: ",
+        "active_endpoint=login",
+        "active_endpoint=users",
+        "active_endpoint=api_reset_sheet",
+        "- login: helper=get_user_by_username helper_used=true direct_users_select=false",
+        "- api_reset_sheet: helper=get_user_by_id helper_used=true direct_users_select=false",
+        "- users: helper=list_users helper_used=true direct_users_select=false",
+        "PASS users read inventory completed.",
+    ]
+    for snippet in required_snippets:
+        if snippet not in output:
+            raise AssertionError(f"check_users_read_inventory.py missing expected snippet: {snippet}")
+
+
+def run_users_read_helper_smoke(db_path: Path, app_db_path: Path) -> None:
+    script = """
+import importlib.util
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+import os
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+for helper_name in ("get_user_by_username", "get_user_by_id", "list_users"):
+    if not hasattr(module, helper_name):
+        raise SystemExit(f"missing helper: {helper_name}")
+
+admin_user = module.get_user_by_username("admin")
+if admin_user is None or admin_user["username"] != "admin":
+    raise SystemExit("get_user_by_username smoke failed")
+
+admin_by_id = module.get_user_by_id(1)
+if admin_by_id is None or admin_by_id["id"] != 1:
+    raise SystemExit("get_user_by_id smoke failed")
+
+listed_users = module.list_users()
+if not listed_users:
+    raise SystemExit("list_users smoke returned no users")
+first_payload = dict(listed_users[0])
+if "password_hash" in first_payload:
+    raise SystemExit("list_users should not expose password_hash")
+if not any(row["username"] == "admin" for row in listed_users):
+    raise SystemExit("list_users smoke missing admin user")
+
+with module.app.test_client() as client:
+    login_response = client.post(
+        "/login",
+        data={"username": "admin", "display_name": "Admin", "password": "admin"},
+        follow_redirects=False,
+    )
+    if login_response.status_code != 302:
+        raise SystemExit("login route smoke failed")
+
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "Admin"
+        session["role"] = "admin"
+
+    users_response = client.get("/admin/users")
+    if users_response.status_code != 200:
+        raise SystemExit("/admin/users GET smoke failed")
+
+    reset_response = client.post(
+        "/api/reset-sheet",
+        json={"sheet_id": 1, "password": "admin"},
+    )
+    if reset_response.status_code != 200:
+        raise SystemExit("/api/reset-sheet smoke failed")
+
+print("users read helper smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "users read helper smoke PASS" not in result.stdout:
+        raise AssertionError("users read helper smoke subprocess did not report PASS.")
+
+
 def run_users_id_allocation_smoke(db_path: Path) -> None:
     from check_users_id_allocation import fetch_sqlite_users_schema
 
@@ -1077,6 +1181,8 @@ def main() -> int:
         run_users_create_readiness_autoincrement_sequence_smoke()
         run_users_delete_readiness_guard_smoke(db_path)
         run_users_delete_submit_verifier_smoke(db_path)
+        run_users_read_inventory_smoke()
+        run_users_read_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
         run_users_sqlite_sequence_apply_guard_smoke()
@@ -1094,6 +1200,7 @@ def main() -> int:
     run_help("check_users_create_readiness.py")
     run_help("check_users_delete_readiness.py")
     run_help("check_users_delete_submit.py")
+    run_help("check_users_read_inventory.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")
