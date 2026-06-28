@@ -724,6 +724,152 @@ print("users delete readiness smoke PASS")
         raise AssertionError("users delete readiness smoke subprocess did not report PASS.")
 
 
+def run_users_delete_submit_verifier_smoke(db_path: Path) -> None:
+    script = """
+import contextlib
+import copy
+import importlib.util
+import io
+import sys
+from pathlib import Path
+
+root_dir, sample_db_path = sys.argv[1:3]
+tool_path = Path(root_dir) / "tools" / "check_users_delete_submit.py"
+spec = importlib.util.spec_from_file_location("check_users_delete_submit_under_test", str(tool_path))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+module.DUAL_WRITE_ENABLED = True
+module.DUAL_WRITE_DRY_RUN = False
+module.DUAL_WRITE_STRICT = False
+module.USE_SQLALCHEMY_WRITES = False
+module.DUAL_WRITE_TABLES = ("meta", "sheets", "extra_fields", "units", "floors", "tasks", "users")
+module.DATABASE_URL = "postgresql://user:secret@localhost:5432/demo"
+module.resolve_sqlite_source_path = lambda: Path(sample_db_path)
+
+initial_state = {
+    "sqlite": {
+        1: {
+            "id": 1,
+            "username": "admin",
+            "display_name": "Admin",
+            "role": "admin",
+            "created_at": "2026-06-28T00:00:00",
+        },
+        2: {
+            "id": 2,
+            "username": "member",
+            "display_name": "Member",
+            "role": "member",
+            "created_at": "2026-06-28T00:05:00",
+        },
+        3: {
+            "id": 3,
+            "username": "dw_test_delete_real_20260628",
+            "display_name": "Delete Real",
+            "role": "member",
+            "created_at": "2026-06-28T00:10:00",
+        },
+    },
+    "postgres": {
+        1: {
+            "id": 1,
+            "username": "admin",
+            "display_name": "Admin",
+            "role": "admin",
+            "created_at": "2026-06-28T00:00:00",
+        },
+        2: {
+            "id": 2,
+            "username": "member",
+            "display_name": "Member",
+            "role": "member",
+            "created_at": "2026-06-28T00:05:00",
+        },
+        3: {
+            "id": 3,
+            "username": "dw_test_delete_real_20260628",
+            "display_name": "Delete Real",
+            "role": "member",
+            "created_at": "2026-06-28T00:10:00",
+        },
+    },
+}
+state = copy.deepcopy(initial_state)
+submit_calls = []
+
+def fake_load_target_rows(username, sqlite_path, database_url):
+    sqlite_row = next((row for row in state["sqlite"].values() if row["username"] == username), None)
+    postgres_row = next((row for row in state["postgres"].values() if row["username"] == username), None)
+    return sqlite_row, postgres_row
+
+def fake_submit_delete_post(sqlite_path, target_id):
+    submit_calls.append((str(sqlite_path), target_id))
+    state["sqlite"].pop(target_id, None)
+    state["postgres"].pop(target_id, None)
+    return {"status_code": 200, "body": "ok"}
+
+module.load_target_rows = fake_load_target_rows
+module.submit_delete_post = fake_submit_delete_post
+
+def run_main(args):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = module.main(args)
+    return rc, buf.getvalue()
+
+rc, output = run_main(["--username", "dw_test_delete_real_20260628"])
+if rc != 0 or "PASS users delete submit verifier inspect completed." not in output:
+    raise SystemExit("delete submit verifier inspect smoke failed")
+if submit_calls:
+    raise SystemExit("inspect mode should not submit delete POST")
+if 3 not in state["sqlite"] or 3 not in state["postgres"]:
+    raise SystemExit("inspect mode should not delete any rows")
+
+rc, output = run_main(["--username", "admin"])
+if rc == 0 or "protected_user" not in output:
+    raise SystemExit("delete submit verifier admin guard smoke failed")
+if len(submit_calls) != 0:
+    raise SystemExit("admin guard should not submit delete POST")
+
+rc, output = run_main(["--username", "member"])
+if rc == 0 or "target_user_not_allowed_for_stage_4a" not in output:
+    raise SystemExit("delete submit verifier non-test-user guard smoke failed")
+if len(submit_calls) != 0:
+    raise SystemExit("non-test-user guard should not submit delete POST")
+
+state = copy.deepcopy(initial_state)
+submit_calls.clear()
+module.load_target_rows = fake_load_target_rows
+module.submit_delete_post = fake_submit_delete_post
+
+rc, output = run_main(["--username", "dw_test_delete_real_20260628", "--execute"])
+if rc != 0 or "PASS users delete submit verifier passed." not in output:
+    raise SystemExit("delete submit verifier execute smoke failed")
+if len(submit_calls) != 1:
+    raise SystemExit("execute mode should submit exactly one delete POST")
+if "password_hash" in output:
+    raise SystemExit("delete submit verifier output leaked password_hash")
+
+print("users delete submit verifier smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(ROOT_DIR),
+            str(db_path),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "users delete submit verifier smoke PASS" not in result.stdout:
+        raise AssertionError("users delete submit verifier smoke subprocess did not report PASS.")
+
+
 def run_users_id_allocation_smoke(db_path: Path) -> None:
     from check_users_id_allocation import fetch_sqlite_users_schema
 
@@ -930,6 +1076,7 @@ def main() -> int:
         run_users_create_readiness_guard_smoke(db_path)
         run_users_create_readiness_autoincrement_sequence_smoke()
         run_users_delete_readiness_guard_smoke(db_path)
+        run_users_delete_submit_verifier_smoke(db_path)
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
         run_users_sqlite_sequence_apply_guard_smoke()
@@ -946,6 +1093,7 @@ def main() -> int:
     run_help("check_users_baseline_and_sequence.py")
     run_help("check_users_create_readiness.py")
     run_help("check_users_delete_readiness.py")
+    run_help("check_users_delete_submit.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")
