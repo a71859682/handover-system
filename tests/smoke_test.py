@@ -424,6 +424,7 @@ def main() -> int:
 
     run_help("check_controlled_dual_write.py")
     run_help("check_users_secondary_update.py")
+    run_help("check_users_baseline_and_sequence.py")
     run_help("backfill_users_display_name_to_postgres.py")
 
     controlled_result = run_script("check_controlled_dual_write.py")
@@ -440,6 +441,9 @@ def main() -> int:
     users_role_result = run_script("check_users_secondary_update.py", args=["--field", "role"], env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in users_role_result.stdout or "PASS" not in users_role_result.stdout:
         raise AssertionError("check_users_secondary_update.py --field role did not report expected PASS without DATABASE_URL.")
+    baseline_result = run_script("check_users_baseline_and_sequence.py", env={"DATABASE_URL": ""})
+    if "DATABASE_URL is not configured." not in baseline_result.stdout or "PASS" not in baseline_result.stdout:
+        raise AssertionError("check_users_baseline_and_sequence.py did not report expected PASS without DATABASE_URL.")
 
     backfill_result = subprocess.run(
         [
