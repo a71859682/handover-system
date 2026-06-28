@@ -116,21 +116,30 @@ def query_one(sql: str, params: tuple = ()) -> sqlite3.Row | None:
         return conn.execute(sql, params).fetchone()
 
 
+def _row_value(row, key: str):
+    if isinstance(row, sqlite3.Row):
+        return row[key]
+    if isinstance(row, dict):
+        return row[key]
+    try:
+        return row[key]
+    except (KeyError, TypeError, IndexError):
+        return getattr(row, key)
+
+
 def _user_to_payload(row, include_password_hash: bool = True) -> dict[str, object] | None:
     if row is None:
         return None
 
     payload = {
-        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
-        "username": row["username"] if isinstance(row, sqlite3.Row) else row.username,
-        "display_name": row["display_name"] if isinstance(row, sqlite3.Row) else row.display_name,
-        "role": row["role"] if isinstance(row, sqlite3.Row) else row.role,
-        "created_at": row["created_at"] if isinstance(row, sqlite3.Row) else row.created_at,
+        "id": _row_value(row, "id"),
+        "username": _row_value(row, "username"),
+        "display_name": _row_value(row, "display_name"),
+        "role": _row_value(row, "role"),
+        "created_at": _row_value(row, "created_at"),
     }
     if include_password_hash:
-        payload["password_hash"] = (
-            row["password_hash"] if isinstance(row, sqlite3.Row) else row.password_hash
-        )
+        payload["password_hash"] = _row_value(row, "password_hash")
     return payload
 
 
@@ -138,86 +147,86 @@ def _sheet_to_payload(row) -> dict[str, object] | None:
     if row is None:
         return None
     return {
-        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
-        "name": row["name"] if isinstance(row, sqlite3.Row) else row.name,
-        "sort_order": row["sort_order"] if isinstance(row, sqlite3.Row) else row.sort_order,
-        "created_at": row["created_at"] if isinstance(row, sqlite3.Row) else row.created_at,
+        "id": _row_value(row, "id"),
+        "name": _row_value(row, "name"),
+        "sort_order": _row_value(row, "sort_order"),
+        "created_at": _row_value(row, "created_at"),
     }
 
 
 def _task_to_payload(row) -> dict[str, object]:
     return {
-        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
-        "sheet_id": row["sheet_id"] if isinstance(row, sqlite3.Row) else row.sheet_id,
-        "col_index": row["col_index"] if isinstance(row, sqlite3.Row) else row.col_index,
-        "vendor": row["vendor"] if isinstance(row, sqlite3.Row) else row.vendor,
-        "location": row["location"] if isinstance(row, sqlite3.Row) else row.location,
-        "name": row["name"] if isinstance(row, sqlite3.Row) else row.name,
+        "id": _row_value(row, "id"),
+        "sheet_id": _row_value(row, "sheet_id"),
+        "col_index": _row_value(row, "col_index"),
+        "vendor": _row_value(row, "vendor"),
+        "location": _row_value(row, "location"),
+        "name": _row_value(row, "name"),
     }
 
 
 def _floor_to_payload(row) -> dict[str, object]:
     return {
-        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
-        "sheet_id": row["sheet_id"] if isinstance(row, sqlite3.Row) else row.sheet_id,
-        "sort_order": row["sort_order"] if isinstance(row, sqlite3.Row) else row.sort_order,
-        "name": row["name"] if isinstance(row, sqlite3.Row) else row.name,
-        "block_name": row["block_name"] if isinstance(row, sqlite3.Row) else row.block_name,
-        "unit_count": row["unit_count"] if isinstance(row, sqlite3.Row) else row.unit_count,
+        "id": _row_value(row, "id"),
+        "sheet_id": _row_value(row, "sheet_id"),
+        "sort_order": _row_value(row, "sort_order"),
+        "name": _row_value(row, "name"),
+        "block_name": _row_value(row, "block_name"),
+        "unit_count": _row_value(row, "unit_count"),
     }
 
 
 def _unit_to_payload(row) -> dict[str, object]:
     return {
-        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
-        "floor_id": row["floor_id"] if isinstance(row, sqlite3.Row) else row.floor_id,
-        "sort_order": row["sort_order"] if isinstance(row, sqlite3.Row) else row.sort_order,
-        "name": row["name"] if isinstance(row, sqlite3.Row) else row.name,
+        "id": _row_value(row, "id"),
+        "floor_id": _row_value(row, "floor_id"),
+        "sort_order": _row_value(row, "sort_order"),
+        "name": _row_value(row, "name"),
     }
 
 
 def _progress_to_payload(row) -> dict[str, object]:
     return {
-        "unit_id": row["unit_id"] if isinstance(row, sqlite3.Row) else row.unit_id,
-        "task_id": row["task_id"] if isinstance(row, sqlite3.Row) else row.task_id,
-        "value": row["value"] if isinstance(row, sqlite3.Row) else row.value,
-        "updated_by": row["updated_by"] if isinstance(row, sqlite3.Row) else row.updated_by,
-        "updated_at": row["updated_at"] if isinstance(row, sqlite3.Row) else row.updated_at,
+        "unit_id": _row_value(row, "unit_id"),
+        "task_id": _row_value(row, "task_id"),
+        "value": _row_value(row, "value"),
+        "updated_by": _row_value(row, "updated_by"),
+        "updated_at": _row_value(row, "updated_at"),
     }
 
 
 def _unit_extra_to_payload(row) -> dict[str, object]:
     return {
-        "unit_id": row["unit_id"] if isinstance(row, sqlite3.Row) else row.unit_id,
-        "initial_check": row["initial_check"] if isinstance(row, sqlite3.Row) else row.initial_check,
-        "recheck_1": row["recheck_1"] if isinstance(row, sqlite3.Row) else row.recheck_1,
-        "recheck_2": row["recheck_2"] if isinstance(row, sqlite3.Row) else row.recheck_2,
-        "handover": row["handover"] if isinstance(row, sqlite3.Row) else row.handover,
-        "updated_by": row["updated_by"] if isinstance(row, sqlite3.Row) else row.updated_by,
-        "updated_at": row["updated_at"] if isinstance(row, sqlite3.Row) else row.updated_at,
+        "unit_id": _row_value(row, "unit_id"),
+        "initial_check": _row_value(row, "initial_check"),
+        "recheck_1": _row_value(row, "recheck_1"),
+        "recheck_2": _row_value(row, "recheck_2"),
+        "handover": _row_value(row, "handover"),
+        "updated_by": _row_value(row, "updated_by"),
+        "updated_at": _row_value(row, "updated_at"),
     }
 
 
 def _extra_field_to_payload(row) -> dict[str, object]:
     return {
-        "id": row["id"] if isinstance(row, sqlite3.Row) else row.id,
-        "sheet_id": row["sheet_id"] if isinstance(row, sqlite3.Row) else row.sheet_id,
-        "field_key": row["field_key"] if isinstance(row, sqlite3.Row) else row.field_key,
-        "name": row["name"] if isinstance(row, sqlite3.Row) else row.name,
-        "field_type": row["field_type"] if isinstance(row, sqlite3.Row) else row.field_type,
-        "sort_order": row["sort_order"] if isinstance(row, sqlite3.Row) else row.sort_order,
-        "is_builtin": row["is_builtin"] if isinstance(row, sqlite3.Row) else row.is_builtin,
-        "active": row["active"] if isinstance(row, sqlite3.Row) else row.active,
+        "id": _row_value(row, "id"),
+        "sheet_id": _row_value(row, "sheet_id"),
+        "field_key": _row_value(row, "field_key"),
+        "name": _row_value(row, "name"),
+        "field_type": _row_value(row, "field_type"),
+        "sort_order": _row_value(row, "sort_order"),
+        "is_builtin": _row_value(row, "is_builtin"),
+        "active": _row_value(row, "active"),
     }
 
 
 def _unit_extra_value_to_payload(row) -> dict[str, object]:
     return {
-        "unit_id": row["unit_id"] if isinstance(row, sqlite3.Row) else row.unit_id,
-        "field_key": row["field_key"] if isinstance(row, sqlite3.Row) else row.field_key,
-        "value": row["value"] if isinstance(row, sqlite3.Row) else row.value,
-        "updated_by": row["updated_by"] if isinstance(row, sqlite3.Row) else row.updated_by,
-        "updated_at": row["updated_at"] if isinstance(row, sqlite3.Row) else row.updated_at,
+        "unit_id": _row_value(row, "unit_id"),
+        "field_key": _row_value(row, "field_key"),
+        "value": _row_value(row, "value"),
+        "updated_by": _row_value(row, "updated_by"),
+        "updated_at": _row_value(row, "updated_at"),
     }
 
 

@@ -1020,6 +1020,35 @@ def test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log():
     assert "dry_run=true" in log_output
 
 
+def test_sheet_payload_supports_mapping_rows_without_attributes():
+    import app
+
+    class MappingRow:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def __getitem__(self, key):
+            return self._payload[key]
+
+    payload = app._sheet_to_payload(  # type: ignore[attr-defined]
+        MappingRow(
+            {
+                "id": 1,
+                "name": "Sheet A",
+                "sort_order": 2,
+                "created_at": "2026-06-28T00:00:00+00:00",
+            }
+        )
+    )
+
+    assert payload == {
+        "id": 1,
+        "name": "Sheet A",
+        "sort_order": 2,
+        "created_at": "2026-06-28T00:00:00+00:00",
+    }
+
+
 def run():
     test_app_imports()
     test_login_route_smoke()
@@ -1038,6 +1067,7 @@ def run():
     test_controlled_dual_write_extra_fields_update_reuses_postgres_compat_primary_connection()
     test_controlled_dual_write_extra_fields_update_strict_false_logs_postgres_error_without_blocking_primary()
     test_controlled_dual_write_units_update_reuses_postgres_compat_primary_connection()
+    test_sheet_payload_supports_mapping_rows_without_attributes()
     test_controlled_dual_write_units_update_strict_false_logs_postgres_error_without_blocking_primary()
     test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log()
 
