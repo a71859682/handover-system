@@ -387,6 +387,161 @@ print("user create helper smoke PASS")
         raise AssertionError("user create helper smoke subprocess did not report PASS.")
 
 
+def run_user_delete_helper_smoke(db_path: Path, app_db_path: Path) -> None:
+    isolated_db_path = db_path.with_name(f"{db_path.stem}-delete{db_path.suffix}")
+    if isolated_db_path.exists():
+        isolated_db_path.unlink()
+    create_sample_sqlite(isolated_db_path)
+    script = """
+import importlib.util
+from pathlib import Path
+import sqlite3
+import sys
+
+app_db_path, sample_db_path, root_dir = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+import os
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+conn = sqlite3.connect(sample_db_path)
+conn.row_factory = sqlite3.Row
+deleted_user_row = module.delete_user_sqlite(conn, 2)
+conn.commit()
+row = conn.execute("SELECT COUNT(*) AS count FROM users WHERE id = 2").fetchone()
+conn.close()
+if row["count"] != 0:
+    raise SystemExit("user delete helper did not delete the target row")
+if "password_hash" in deleted_user_row:
+    raise SystemExit("user delete helper leaked password_hash")
+if deleted_user_row["username"] != "member" or deleted_user_row["role"] != "member":
+    raise SystemExit("user delete helper returned unexpected row")
+print("user delete helper smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(isolated_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "user delete helper smoke PASS" not in result.stdout:
+        raise AssertionError("user delete helper smoke subprocess did not report PASS.")
+    isolated_db_path.unlink(missing_ok=True)
+
+
+def run_protected_user_delete_guard_smoke(db_path: Path, app_db_path: Path) -> None:
+    script = """
+import importlib.util
+from pathlib import Path
+import sqlite3
+import sys
+
+app_db_path, sample_db_path, root_dir = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+import os
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+conn = sqlite3.connect(sample_db_path)
+conn.row_factory = sqlite3.Row
+try:
+    module.delete_user_sqlite(conn, 1)
+except ValueError:
+    pass
+else:
+    raise SystemExit("protected user delete guard did not reject admin")
+row = conn.execute("SELECT username, role FROM users WHERE id = 1").fetchone()
+conn.close()
+if row["username"] != "admin" or row["role"] != "admin":
+    raise SystemExit("protected user delete guard changed admin row")
+print("protected user delete guard smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "protected user delete guard smoke PASS" not in result.stdout:
+        raise AssertionError("protected user delete guard smoke subprocess did not report PASS.")
+
+
+def run_user_delete_dual_write_dry_run_smoke(db_path: Path, app_db_path: Path) -> None:
+    script = """
+import importlib.util
+from pathlib import Path
+import sys
+
+app_db_path, sample_db_path, root_dir = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+import os
+os.environ["APP_DB_PATH"] = app_db_path
+os.environ["DUAL_WRITE_ENABLED"] = "true"
+os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+os.environ["DUAL_WRITE_STRICT"] = "false"
+os.environ["USE_SQLALCHEMY_WRITES"] = "false"
+os.environ["DUAL_WRITE_TABLES"] = "meta,sheets,extra_fields,units,floors,tasks,users"
+spec.loader.exec_module(module)
+logs = []
+module.dual_write_log = logs.append
+
+def fail_connection():
+    raise RuntimeError("postgres connection should not be used in dry-run delete smoke")
+
+module.get_primary_postgres_connection = fail_connection
+module.maybe_dual_write_user_delete(
+    {
+        "id": 5,
+        "username": "dw_test_delete_real_20260628",
+        "display_name": "Delete Real",
+        "role": "member",
+        "created_at": "2026-06-28 15:17:02",
+    }
+)
+joined = "\\n".join(logs)
+if "DUAL_WRITE_DRY_RUN operation=delete table=users user_id=5 username='dw_test_delete_real_20260628'" not in joined:
+    raise SystemExit("delete dry-run log missing")
+if "dry_run=true postgres_result=success" not in joined:
+    raise SystemExit("delete dry-run success log missing")
+if "password_hash" in joined:
+    raise SystemExit("delete dry-run log leaked password_hash")
+print("user delete dual write dry-run smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "user delete dual write dry-run smoke PASS" not in result.stdout:
+        raise AssertionError("user delete dual write dry-run smoke subprocess did not report PASS.")
+
+
 def run_users_create_readiness_guard_smoke(db_path: Path) -> None:
     from check_users_create_readiness import (
         build_next_sqlite_collision_report,
@@ -750,6 +905,9 @@ def main() -> int:
         run_floor_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_role_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
+        run_user_delete_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
+        run_protected_user_delete_guard_smoke(db_path, Path(tmpdir) / "app-smoke.db")
+        run_user_delete_dual_write_dry_run_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_users_create_readiness_guard_smoke(db_path)
         run_users_create_readiness_autoincrement_sequence_smoke()
         run_users_delete_readiness_guard_smoke(db_path)
@@ -776,7 +934,7 @@ def main() -> int:
     run_help("backfill_users_display_name_to_postgres.py")
 
     controlled_result = run_script("check_controlled_dual_write.py")
-    if "PASS controlled dual-write floors/users update/create wiring looks correct." not in controlled_result.stdout:
+    if "PASS controlled dual-write floors/users update/create/delete wiring looks correct." not in controlled_result.stdout:
         raise AssertionError("check_controlled_dual_write.py did not report PASS.")
 
     floors_result = run_script("check_floors_secondary_update.py", env={"DATABASE_URL": ""})

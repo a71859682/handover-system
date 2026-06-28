@@ -22,6 +22,9 @@ REQUIRED_FUNCTIONS = {
     "create_user_sqlite",
     "create_user_postgres",
     "maybe_dual_write_user_create",
+    "delete_user_sqlite",
+    "delete_user_postgres",
+    "maybe_dual_write_user_delete",
     "controlled_dual_write_enabled",
 }
 REQUIRED_LOG_SNIPPETS = [
@@ -38,12 +41,14 @@ REQUIRED_LOG_SNIPPETS = [
     "DUAL_WRITE operation=update table=users",
     "DUAL_WRITE_DRY_RUN operation=create table=users",
     "DUAL_WRITE operation=create table=users",
+    "DUAL_WRITE_DRY_RUN operation=delete table=users",
+    "DUAL_WRITE operation=delete table=users",
 ]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate the controlled dual-write wiring for floors updates and users update/create paths."
+        description="Validate the controlled dual-write wiring for floors updates and users update/create/delete paths."
     )
     return parser.parse_args()
 
@@ -122,6 +127,23 @@ def assert_route_wiring(source: str) -> None:
     if not (password_hash_index < sqlite_create_index < dual_write_create_index):
         raise AssertionError("users create dual-write wiring is not ordered correctly.")
 
+    delete_route_snippets = (
+        'elif action.startswith("delete_user:"):',
+        "deleted_user_row = delete_user_sqlite(conn, user_id)",
+        "maybe_dual_write_user_delete(deleted_user_row)",
+    )
+    for snippet in delete_route_snippets:
+        if snippet not in source:
+            raise AssertionError(f"Missing required route snippet: {snippet}")
+
+    delete_route_index = source.index('elif action.startswith("delete_user:"):')
+    delete_route_tail = source[delete_route_index:]
+    sqlite_delete_index = delete_route_tail.index("deleted_user_row = delete_user_sqlite(conn, user_id)")
+    dual_write_delete_index = delete_route_tail.index("maybe_dual_write_user_delete(deleted_user_row)")
+
+    if not (sqlite_delete_index < dual_write_delete_index):
+        raise AssertionError("users delete dual-write wiring is not ordered correctly.")
+
 
 def main() -> int:
     parse_args()
@@ -131,7 +153,7 @@ def main() -> int:
     assert_required_logs(source)
     assert_route_wiring(source)
 
-    print("PASS controlled dual-write floors/users update/create wiring looks correct.")
+    print("PASS controlled dual-write floors/users update/create/delete wiring looks correct.")
     return 0
 
 

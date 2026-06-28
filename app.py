@@ -80,7 +80,7 @@ def controlled_dual_write_enabled(*, table: str, operation: str) -> bool:
         return False
     if operation == "update":
         return table in dual_write_tables()
-    if operation == "create" and table == "users":
+    if operation in {"create", "delete"} and table == "users":
         return table in dual_write_tables()
     return False
 
@@ -190,6 +190,42 @@ def create_user_sqlite(
         "username": row["username"],
         "display_name": row["display_name"],
         "password_hash": row["password_hash"],
+        "role": row["role"],
+        "created_at": row["created_at"],
+    }
+
+
+def is_protected_user_row(user_row: sqlite3.Row | dict[str, object]) -> bool:
+    return (
+        int(user_row["id"]) == 1
+        or str(user_row["username"]) == "admin"
+        or str(user_row["role"]) == "admin"
+    )
+
+
+def delete_user_sqlite(
+    conn: sqlite3.Connection,
+    user_id: int,
+) -> dict[str, object]:
+    row = conn.execute(
+        """
+        SELECT id, username, display_name, password_hash, role, created_at
+        FROM users
+        WHERE id = ?
+        """,
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError(f"SQLite users primary delete could not find id={user_id}.")
+    if is_protected_user_row(row):
+        raise ValueError(f"SQLite users primary delete refused protected id={user_id}.")
+    cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    if cur.rowcount != 1:
+        raise RuntimeError(f"SQLite users primary delete affected {cur.rowcount} rows for user_id={user_id}.")
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
         "role": row["role"],
         "created_at": row["created_at"],
     }
@@ -342,6 +378,50 @@ def create_user_postgres(
             cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
             dual_write_log(
                 f"DUAL_WRITE_USERS_SECONDARY table=users operation=create event=RELEASE_SAVEPOINT_OK user_id={id}"
+            )
+            pg_conn.commit()
+        except Exception:
+            try:
+                cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+            finally:
+                cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            pg_conn.commit()
+            raise
+
+
+def delete_user_postgres(
+    pg_conn: psycopg.Connection,
+    *,
+    id: int,
+    username: str,
+) -> None:
+    savepoint_name = f"dual_write_users_delete_{id}"
+    dual_write_log(f"{DUAL_WRITE_USERS_STRATEGY_LOG} operation=delete user_id={id}")
+    with pg_conn.cursor() as cur:
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users operation=delete event=SAVEPOINT_START user_id={id}")
+        cur.execute(f"SAVEPOINT {savepoint_name}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users operation=delete event=SAVEPOINT_OK user_id={id}")
+        try:
+            dual_write_log(
+                f"DUAL_WRITE_USERS_SECONDARY table=users operation=delete event=EXECUTE_SQL_START user_id={id}"
+            )
+            cur.execute(
+                "DELETE FROM users WHERE id = %s AND username = %s",
+                (id, username),
+            )
+            if cur.rowcount == 0:
+                dual_write_log(
+                    "DUAL_WRITE_USERS_SECONDARY table=users operation=delete "
+                    f"event=SECONDARY_NOT_FOUND user_id={id} username={username!r}"
+                )
+            elif cur.rowcount != 1:
+                raise RuntimeError(
+                    f"PostgreSQL users secondary delete affected {cur.rowcount} rows for user_id={id}."
+                )
+            dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users operation=delete event=EXECUTE_SQL_OK user_id={id}")
+            cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            dual_write_log(
+                f"DUAL_WRITE_USERS_SECONDARY table=users operation=delete event=RELEASE_SAVEPOINT_OK user_id={id}"
             )
             pg_conn.commit()
         except Exception:
@@ -537,6 +617,58 @@ def maybe_dual_write_user_create(user_row: dict[str, object]) -> None:
     except Exception as exc:
         dual_write_log(
             "DUAL_WRITE operation=create table=users "
+            f"user_id={user_id} username={username!r} dry_run=false postgres_result=failed error={exc!r}"
+        )
+        if dual_write_strict_enabled():
+            raise
+
+
+def maybe_dual_write_user_delete(user_row: dict[str, object]) -> None:
+    if not controlled_dual_write_enabled(table="users", operation="delete"):
+        return
+
+    user_id = int(user_row["id"])
+    username = str(user_row["username"])
+    dry_run = dual_write_dry_run_enabled()
+    if dry_run:
+        dual_write_log(
+            f"DUAL_WRITE_DRY_RUN operation=delete table=users user_id={user_id} username={username!r}"
+        )
+        dual_write_log(f"{DUAL_WRITE_USERS_STRATEGY_LOG} operation=delete user_id={user_id}")
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users operation=delete event=SAVEPOINT_START user_id={user_id}"
+        )
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users operation=delete event=SAVEPOINT_OK user_id={user_id}"
+        )
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users operation=delete event=EXECUTE_SQL_START user_id={user_id}"
+        )
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users operation=delete event=EXECUTE_SQL_OK user_id={user_id}"
+        )
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users operation=delete event=RELEASE_SAVEPOINT_OK user_id={user_id}"
+        )
+        dual_write_log(
+            "DUAL_WRITE operation=delete table=users "
+            f"user_id={user_id} username={username!r} dry_run=true postgres_result=success"
+        )
+        return
+
+    try:
+        delete_user_postgres(
+            get_primary_postgres_connection(),
+            id=user_id,
+            username=username,
+        )
+        dual_write_log(
+            "DUAL_WRITE operation=delete table=users "
+            f"user_id={user_id} username={username!r} dry_run=false postgres_result=success"
+        )
+    except Exception as exc:
+        dual_write_log(
+            "DUAL_WRITE operation=delete table=users "
             f"user_id={user_id} username={username!r} dry_run=false postgres_result=failed error={exc!r}"
         )
         if dual_write_strict_enabled():
@@ -1317,6 +1449,17 @@ def users():
                     flash("\u6210\u54e1\u8cc7\u6599\u5df2\u66f4\u65b0\u3002", "success")
                 except sqlite3.IntegrityError:
                     flash("\u5e33\u865f\u5df2\u5b58\u5728\u3002", "error")
+        elif action.startswith("delete_user:"):
+            user_id = int(action.split(":", 1)[1])
+            try:
+                with db() as conn:
+                    deleted_user_row = delete_user_sqlite(conn, user_id)
+                maybe_dual_write_user_delete(deleted_user_row)
+                flash("\u6210\u54e1\u5df2\u522a\u9664\u3002", "success")
+            except ValueError:
+                flash("\u7ba1\u7406\u54e1\u6216\u4fdd\u8b77\u5e33\u865f\u4e0d\u53ef\u522a\u9664\u3002", "error")
+            except LookupError:
+                flash("\u627e\u4e0d\u5230\u8981\u522a\u9664\u7684\u6210\u54e1\u3002", "error")
         else:
             flash("\u64cd\u4f5c\u7121\u6548\u3002", "error")
 
