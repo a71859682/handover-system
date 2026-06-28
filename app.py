@@ -2,49 +2,19 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import uuid
 from functools import wraps
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from flask import Flask, has_app_context
+import psycopg
+from flask import Flask, flash, g, jsonify, redirect, render_template, request, session, url_for
 from openpyxl import load_workbook
-from werkzeug.security import generate_password_hash
-
-from config import APP_DB_PATH, DATABASE_URL, USE_SQLALCHEMY_READS
-from database import init_database
-from db_compat import IntegrityError, connect_db
-from routes.admin import admin_bp
-from routes.api import api_bp
-from routes.auth import admin_required as auth_admin_required, auth_bp, login_required as auth_login_required
-from routes.sheet import sheet_bp
-from services.progress_service import reset_sheet, update_progress, update_unit_extra
-from services.progress_orm_service import (
-    list_extra_fields_for_sheet_orm,
-    list_progress_orm,
-    list_unit_extra_orm,
-    list_unit_extra_values_for_sheet_orm,
-)
-from services.settings_orm_service import get_setting_orm, get_settings_orm
-from services.sheet_service import available_sheets, load_grid, render_grid_payload, resolve_sheet_id
-from services.sheets_orm_service import (
-    get_sheet_orm,
-    list_floors_for_sheet_orm,
-    list_sheets_orm,
-    list_tasks_for_sheet_orm,
-    list_units_for_floor_orm,
-)
-from services.users_orm_service import get_user_by_id_orm, get_user_by_username_orm, list_users_orm
-from services.write_service import (
-    create_sheet_sqlite,
-    create_user_sqlite,
-    seed_settings_sqlite,
-    upsert_setting_sqlite,
-)
-from tools.import_seed import import_seed_into_conn
+from werkzeug.security import check_password_hash, generate_password_hash
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = APP_DB_PATH
-SEED_PATH = BASE_DIR / "seeds" / "default_seed.json"
+DB_PATH = Path(os.environ.get("APP_DB_PATH", r"I:\公司web\大英新埔\site.db"))
 SOURCE_XLSX = BASE_DIR / "source.xlsx"
 MAX_WORK_COL = 60  # D:BH
 DONE_VALUE = "O"
@@ -69,334 +39,283 @@ DEFAULT_SETTINGS = {
     "vendor_header": "廠商",
     "task_header": "工項",
 }
+DUAL_WRITE_FLOORS_STRATEGY_LOG = (
+    "DUAL_WRITE_FLOORS_SECONDARY table=floors strategy=reuse_primary_postgres_connection"
+)
+DUAL_WRITE_USERS_STRATEGY_LOG = (
+    "DUAL_WRITE_USERS_SECONDARY table=users strategy=reuse_primary_postgres_connection"
+)
 
+
+app = Flask(__name__)
+app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
 ASSET_VERSION = "20260627-010"
 
 
-def normalize_sqlalchemy_database_url(database_url: str) -> str:
-    if database_url.startswith("postgresql+psycopg://"):
-        return database_url
-    if database_url.startswith("postgresql://"):
-        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
-    if database_url.startswith("postgres://"):
-        return database_url.replace("postgres://", "postgresql+psycopg://", 1)
-    return database_url
+@app.context_processor
+def inject_asset_version():
+    return {"asset_version": ASSET_VERSION}
 
 
-def create_app():
-    app = Flask(__name__)
-    app.config["SECRET_KEY"] = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
-    if DATABASE_URL:
-        app.config["SQLALCHEMY_DATABASE_URI"] = normalize_sqlalchemy_database_url(DATABASE_URL)
-    else:
-        app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH.resolve().as_posix()}"
-    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-    init_database(app)
-
-    @app.context_processor
-    def inject_asset_version():
-        return {"asset_version": ASSET_VERSION}
-
-    app.register_blueprint(admin_bp)
-    app.register_blueprint(api_bp)
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(sheet_bp)
-    return app
+def db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-app = create_app()
+def env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def db():
-    return connect_db(DB_PATH)
+def dual_write_tables() -> set[str]:
+    raw = os.environ.get("DUAL_WRITE_TABLES", "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def controlled_dual_write_enabled(*, table: str, operation: str) -> bool:
+    if operation != "update":
+        return False
+    if not env_flag("DUAL_WRITE_ENABLED"):
+        return False
+    if env_flag("USE_SQLALCHEMY_WRITES"):
+        return False
+    return table in dual_write_tables()
+
+
+def dual_write_dry_run_enabled() -> bool:
+    return env_flag("DUAL_WRITE_DRY_RUN")
+
+
+def dual_write_strict_enabled() -> bool:
+    return env_flag("DUAL_WRITE_STRICT")
+
+
+def dual_write_log(message: str) -> None:
+    print(message, flush=True)
+
+
+def get_primary_postgres_connection() -> psycopg.Connection:
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if not database_url:
+        raise RuntimeError("DATABASE_URL is required for PostgreSQL secondary writes.")
+    scheme = urlsplit(database_url).scheme.lower()
+    if scheme not in {"postgresql", "postgres"}:
+        raise RuntimeError(f"DATABASE_URL must point to PostgreSQL, got scheme '{scheme or 'missing'}'.")
+
+    pg_conn = getattr(g, "_dual_write_pg_conn", None)
+    if pg_conn is None or pg_conn.closed:
+        pg_conn = psycopg.connect(database_url)
+        g._dual_write_pg_conn = pg_conn
+    return pg_conn
+
+
+@app.teardown_appcontext
+def close_primary_postgres_connection(exc: BaseException | None) -> None:
+    pg_conn = g.pop("_dual_write_pg_conn", None)
+    if pg_conn is None or pg_conn.closed:
+        return
+    try:
+        if exc is None:
+            pg_conn.commit()
+        else:
+            pg_conn.rollback()
+    finally:
+        pg_conn.close()
+
+
+def update_floor_fields_sqlite(
+    conn: sqlite3.Connection,
+    floor_id: int,
+    *,
+    name: str,
+    block_name: str,
+) -> None:
+    conn.execute(
+        "UPDATE floors SET name = ?, block_name = ? WHERE id = ?",
+        (name, block_name, floor_id),
+    )
+
+
+def update_user_display_name_sqlite(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    display_name: str,
+) -> None:
+    conn.execute(
+        "UPDATE users SET display_name = ? WHERE id = ?",
+        (display_name, user_id),
+    )
+
+
+def update_floor_fields_postgres(
+    pg_conn: psycopg.Connection,
+    floor_id: int,
+    *,
+    name: str,
+    block_name: str,
+) -> None:
+    savepoint_name = f"dual_write_floors_update_{floor_id}"
+    dual_write_log(f"{DUAL_WRITE_FLOORS_STRATEGY_LOG} floor_id={floor_id}")
+    with pg_conn.cursor() as cur:
+        dual_write_log(f"DUAL_WRITE_FLOORS_SECONDARY table=floors event=SAVEPOINT_START floor_id={floor_id}")
+        cur.execute(f"SAVEPOINT {savepoint_name}")
+        dual_write_log(f"DUAL_WRITE_FLOORS_SECONDARY table=floors event=SAVEPOINT_OK floor_id={floor_id}")
+        try:
+            dual_write_log(f"DUAL_WRITE_FLOORS_SECONDARY table=floors event=EXECUTE_SQL_START floor_id={floor_id}")
+            cur.execute(
+                "UPDATE floors SET name = %s, block_name = %s WHERE id = %s",
+                (name, block_name, floor_id),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError(
+                    f"PostgreSQL floors secondary update affected {cur.rowcount} rows for floor_id={floor_id}."
+                )
+            dual_write_log(f"DUAL_WRITE_FLOORS_SECONDARY table=floors event=EXECUTE_SQL_OK floor_id={floor_id}")
+            cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            dual_write_log(
+                f"DUAL_WRITE_FLOORS_SECONDARY table=floors event=RELEASE_SAVEPOINT_OK floor_id={floor_id}"
+            )
+            pg_conn.commit()
+        except Exception:
+            try:
+                cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+            finally:
+                cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            pg_conn.commit()
+            raise
+
+
+def update_user_display_name_postgres(
+    pg_conn: psycopg.Connection,
+    user_id: int,
+    *,
+    display_name: str,
+) -> None:
+    savepoint_name = f"dual_write_users_update_{user_id}"
+    dual_write_log(f"{DUAL_WRITE_USERS_STRATEGY_LOG} user_id={user_id}")
+    with pg_conn.cursor() as cur:
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=SAVEPOINT_START user_id={user_id}")
+        cur.execute(f"SAVEPOINT {savepoint_name}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=SAVEPOINT_OK user_id={user_id}")
+        try:
+            dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=EXECUTE_SQL_START user_id={user_id}")
+            cur.execute(
+                "UPDATE users SET display_name = %s WHERE id = %s",
+                (display_name, user_id),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError(
+                    f"PostgreSQL users secondary update affected {cur.rowcount} rows for user_id={user_id}."
+                )
+            dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=EXECUTE_SQL_OK user_id={user_id}")
+            cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            dual_write_log(
+                f"DUAL_WRITE_USERS_SECONDARY table=users event=RELEASE_SAVEPOINT_OK user_id={user_id}"
+            )
+            pg_conn.commit()
+        except Exception:
+            try:
+                cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+            finally:
+                cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            pg_conn.commit()
+            raise
+
+
+def maybe_dual_write_floor_update(
+    floor_id: int,
+    *,
+    name: str,
+    block_name: str,
+) -> None:
+    if not controlled_dual_write_enabled(table="floors", operation="update"):
+        return
+
+    dry_run = dual_write_dry_run_enabled()
+    if dry_run:
+        dual_write_log(f"DUAL_WRITE_DRY_RUN operation=update table=floors floor_id={floor_id}")
+        dual_write_log(f"{DUAL_WRITE_FLOORS_STRATEGY_LOG} floor_id={floor_id}")
+        dual_write_log(f"DUAL_WRITE_FLOORS_SECONDARY table=floors event=SAVEPOINT_START floor_id={floor_id}")
+        dual_write_log(f"DUAL_WRITE_FLOORS_SECONDARY table=floors event=SAVEPOINT_OK floor_id={floor_id}")
+        dual_write_log(f"DUAL_WRITE_FLOORS_SECONDARY table=floors event=EXECUTE_SQL_START floor_id={floor_id}")
+        dual_write_log(f"DUAL_WRITE_FLOORS_SECONDARY table=floors event=EXECUTE_SQL_OK floor_id={floor_id}")
+        dual_write_log(
+            f"DUAL_WRITE_FLOORS_SECONDARY table=floors event=RELEASE_SAVEPOINT_OK floor_id={floor_id}"
+        )
+        dual_write_log(
+            "DUAL_WRITE operation=update table=floors "
+            f"floor_id={floor_id} dry_run=true postgres_result=success"
+        )
+        return
+
+    try:
+        update_floor_fields_postgres(
+            get_primary_postgres_connection(),
+            floor_id,
+            name=name,
+            block_name=block_name,
+        )
+        dual_write_log(
+            "DUAL_WRITE operation=update table=floors "
+            f"floor_id={floor_id} dry_run=false postgres_result=success"
+        )
+    except Exception as exc:
+        dual_write_log(
+            "DUAL_WRITE operation=update table=floors "
+            f"floor_id={floor_id} dry_run=false postgres_result=failed error={exc!r}"
+        )
+        if dual_write_strict_enabled():
+            raise
+
+
+def maybe_dual_write_user_display_name_update(
+    user_id: int,
+    *,
+    display_name: str,
+) -> None:
+    if not controlled_dual_write_enabled(table="users", operation="update"):
+        return
+
+    dry_run = dual_write_dry_run_enabled()
+    if dry_run:
+        dual_write_log(f"DUAL_WRITE_DRY_RUN operation=update table=users user_id={user_id}")
+        dual_write_log(f"{DUAL_WRITE_USERS_STRATEGY_LOG} user_id={user_id}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=SAVEPOINT_START user_id={user_id}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=SAVEPOINT_OK user_id={user_id}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=EXECUTE_SQL_START user_id={user_id}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=EXECUTE_SQL_OK user_id={user_id}")
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users event=RELEASE_SAVEPOINT_OK user_id={user_id}"
+        )
+        dual_write_log(
+            "DUAL_WRITE operation=update table=users "
+            f"user_id={user_id} dry_run=true postgres_result=success"
+        )
+        return
+
+    try:
+        update_user_display_name_postgres(
+            get_primary_postgres_connection(),
+            user_id,
+            display_name=display_name,
+        )
+        dual_write_log(
+            "DUAL_WRITE operation=update table=users "
+            f"user_id={user_id} dry_run=false postgres_result=success"
+        )
+    except Exception as exc:
+        dual_write_log(
+            "DUAL_WRITE operation=update table=users "
+            f"user_id={user_id} dry_run=false postgres_result=failed error={exc!r}"
+        )
+        if dual_write_strict_enabled():
+            raise
 
 
 def query_one(sql: str, params: tuple = ()) -> sqlite3.Row | None:
     with db() as conn:
         return conn.execute(sql, params).fetchone()
-
-
-def _row_value(row, key: str):
-    if isinstance(row, sqlite3.Row):
-        return row[key]
-    if isinstance(row, dict):
-        return row[key]
-    try:
-        return row[key]
-    except (KeyError, TypeError, IndexError):
-        return getattr(row, key)
-
-
-def _user_to_payload(row, include_password_hash: bool = True) -> dict[str, object] | None:
-    if row is None:
-        return None
-
-    payload = {
-        "id": _row_value(row, "id"),
-        "username": _row_value(row, "username"),
-        "display_name": _row_value(row, "display_name"),
-        "role": _row_value(row, "role"),
-        "created_at": _row_value(row, "created_at"),
-    }
-    if include_password_hash:
-        payload["password_hash"] = _row_value(row, "password_hash")
-    return payload
-
-
-def _sheet_to_payload(row) -> dict[str, object] | None:
-    if row is None:
-        return None
-    return {
-        "id": _row_value(row, "id"),
-        "name": _row_value(row, "name"),
-        "sort_order": _row_value(row, "sort_order"),
-        "created_at": _row_value(row, "created_at"),
-    }
-
-
-def _task_to_payload(row) -> dict[str, object]:
-    return {
-        "id": _row_value(row, "id"),
-        "sheet_id": _row_value(row, "sheet_id"),
-        "col_index": _row_value(row, "col_index"),
-        "vendor": _row_value(row, "vendor"),
-        "location": _row_value(row, "location"),
-        "name": _row_value(row, "name"),
-    }
-
-
-def _floor_to_payload(row) -> dict[str, object]:
-    return {
-        "id": _row_value(row, "id"),
-        "sheet_id": _row_value(row, "sheet_id"),
-        "sort_order": _row_value(row, "sort_order"),
-        "name": _row_value(row, "name"),
-        "block_name": _row_value(row, "block_name"),
-        "unit_count": _row_value(row, "unit_count"),
-    }
-
-
-def _unit_to_payload(row) -> dict[str, object]:
-    return {
-        "id": _row_value(row, "id"),
-        "floor_id": _row_value(row, "floor_id"),
-        "sort_order": _row_value(row, "sort_order"),
-        "name": _row_value(row, "name"),
-    }
-
-
-def _progress_to_payload(row) -> dict[str, object]:
-    return {
-        "unit_id": _row_value(row, "unit_id"),
-        "task_id": _row_value(row, "task_id"),
-        "value": _row_value(row, "value"),
-        "updated_by": _row_value(row, "updated_by"),
-        "updated_at": _row_value(row, "updated_at"),
-    }
-
-
-def _unit_extra_to_payload(row) -> dict[str, object]:
-    return {
-        "unit_id": _row_value(row, "unit_id"),
-        "initial_check": _row_value(row, "initial_check"),
-        "recheck_1": _row_value(row, "recheck_1"),
-        "recheck_2": _row_value(row, "recheck_2"),
-        "handover": _row_value(row, "handover"),
-        "updated_by": _row_value(row, "updated_by"),
-        "updated_at": _row_value(row, "updated_at"),
-    }
-
-
-def _extra_field_to_payload(row) -> dict[str, object]:
-    return {
-        "id": _row_value(row, "id"),
-        "sheet_id": _row_value(row, "sheet_id"),
-        "field_key": _row_value(row, "field_key"),
-        "name": _row_value(row, "name"),
-        "field_type": _row_value(row, "field_type"),
-        "sort_order": _row_value(row, "sort_order"),
-        "is_builtin": _row_value(row, "is_builtin"),
-        "active": _row_value(row, "active"),
-    }
-
-
-def _unit_extra_value_to_payload(row) -> dict[str, object]:
-    return {
-        "unit_id": _row_value(row, "unit_id"),
-        "field_key": _row_value(row, "field_key"),
-        "value": _row_value(row, "value"),
-        "updated_by": _row_value(row, "updated_by"),
-        "updated_at": _row_value(row, "updated_at"),
-    }
-
-
-def get_user_by_username(username: str) -> dict[str, object] | None:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return _user_to_payload(get_user_by_username_orm(username))
-        with app.app_context():
-            return _user_to_payload(get_user_by_username_orm(username))
-
-    return _user_to_payload(query_one("SELECT * FROM users WHERE username = ?", (username,)))
-
-
-def get_user_by_id(user_id: int) -> dict[str, object] | None:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return _user_to_payload(get_user_by_id_orm(user_id))
-        with app.app_context():
-            return _user_to_payload(get_user_by_id_orm(user_id))
-
-    return _user_to_payload(query_one("SELECT * FROM users WHERE id = ?", (user_id,)))
-
-
-def list_users() -> list[dict[str, object]]:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return [_user_to_payload(user, include_password_hash=False) for user in list_users_orm()]
-        with app.app_context():
-            return [_user_to_payload(user, include_password_hash=False) for user in list_users_orm()]
-
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT id, username, display_name, role, created_at FROM users ORDER BY id"
-        ).fetchall()
-    return [_user_to_payload(row, include_password_hash=False) for row in rows]
-
-
-def list_sheets() -> list[dict[str, object]]:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return [_sheet_to_payload(sheet) for sheet in list_sheets_orm()]
-        with app.app_context():
-            return [_sheet_to_payload(sheet) for sheet in list_sheets_orm()]
-
-    with db() as conn:
-        rows = conn.execute("SELECT * FROM sheets ORDER BY sort_order, id").fetchall()
-    return [_sheet_to_payload(row) for row in rows]
-
-
-def get_sheet(sheet_id: int) -> dict[str, object] | None:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return _sheet_to_payload(get_sheet_orm(sheet_id))
-        with app.app_context():
-            return _sheet_to_payload(get_sheet_orm(sheet_id))
-
-    with db() as conn:
-        row = conn.execute("SELECT * FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
-    return _sheet_to_payload(row)
-
-
-def list_tasks_for_sheet(sheet_id: int) -> list[dict[str, object]]:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return [_task_to_payload(task) for task in list_tasks_for_sheet_orm(sheet_id)]
-        with app.app_context():
-            return [_task_to_payload(task) for task in list_tasks_for_sheet_orm(sheet_id)]
-
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM tasks WHERE sheet_id = ? ORDER BY col_index", (sheet_id,)
-        ).fetchall()
-    return [_task_to_payload(row) for row in rows]
-
-
-def list_floors_for_sheet(sheet_id: int) -> list[dict[str, object]]:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return [_floor_to_payload(floor) for floor in list_floors_for_sheet_orm(sheet_id)]
-        with app.app_context():
-            return [_floor_to_payload(floor) for floor in list_floors_for_sheet_orm(sheet_id)]
-
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM floors WHERE sheet_id = ? ORDER BY sort_order", (sheet_id,)
-        ).fetchall()
-    return [_floor_to_payload(row) for row in rows]
-
-
-def list_units_for_floor(floor_id: int) -> list[dict[str, object]]:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return [_unit_to_payload(unit) for unit in list_units_for_floor_orm(floor_id)]
-        with app.app_context():
-            return [_unit_to_payload(unit) for unit in list_units_for_floor_orm(floor_id)]
-
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM units WHERE floor_id = ? ORDER BY sort_order", (floor_id,)
-        ).fetchall()
-    return [_unit_to_payload(row) for row in rows]
-
-
-def list_progress() -> list[dict[str, object]]:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return [_progress_to_payload(row) for row in list_progress_orm()]
-        with app.app_context():
-            return [_progress_to_payload(row) for row in list_progress_orm()]
-
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM progress ORDER BY unit_id, task_id"
-        ).fetchall()
-    return [_progress_to_payload(row) for row in rows]
-
-
-def list_unit_extra() -> list[dict[str, object]]:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return [_unit_extra_to_payload(row) for row in list_unit_extra_orm()]
-        with app.app_context():
-            return [_unit_extra_to_payload(row) for row in list_unit_extra_orm()]
-
-    with db() as conn:
-        rows = conn.execute("SELECT * FROM unit_extra ORDER BY unit_id").fetchall()
-    return [_unit_extra_to_payload(row) for row in rows]
-
-
-def list_extra_fields_for_sheet(sheet_id: int) -> list[dict[str, object]]:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return [_extra_field_to_payload(row) for row in list_extra_fields_for_sheet_orm(sheet_id)]
-        with app.app_context():
-            return [_extra_field_to_payload(row) for row in list_extra_fields_for_sheet_orm(sheet_id)]
-
-    with db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM extra_fields WHERE sheet_id = ? ORDER BY sort_order, id",
-            (sheet_id,),
-        ).fetchall()
-    return [_extra_field_to_payload(row) for row in rows]
-
-
-def list_unit_extra_values_for_sheet(sheet_id: int) -> list[dict[str, object]]:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return [
-                _unit_extra_value_to_payload(row)
-                for row in list_unit_extra_values_for_sheet_orm(sheet_id)
-            ]
-        with app.app_context():
-            return [
-                _unit_extra_value_to_payload(row)
-                for row in list_unit_extra_values_for_sheet_orm(sheet_id)
-            ]
-
-    with db() as conn:
-        rows = conn.execute(
-            """
-            SELECT v.*
-            FROM unit_extra_values v
-            JOIN units u ON u.id = v.unit_id
-            JOIN floors f ON f.id = u.floor_id
-            WHERE f.sheet_id = ?
-            ORDER BY v.unit_id, v.field_key
-            """,
-            (sheet_id,),
-        ).fetchall()
-    return [_unit_extra_value_to_payload(row) for row in rows]
 
 
 def login_required(fn):
@@ -420,10 +339,6 @@ def admin_required(fn):
         return fn(*args, **kwargs)
 
     return wrapper
-
-
-login_required = auth_login_required
-admin_required = auth_admin_required
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
@@ -531,33 +446,18 @@ def seed_admin(conn: sqlite3.Connection) -> None:
     exists = conn.execute("SELECT id FROM users WHERE username = ?", ("admin",)).fetchone()
     if exists:
         return
-    create_user_sqlite(
-        conn,
-        username="admin",
-        display_name="管理員",
-        password_hash=generate_password_hash("admin"),
-        role="admin",
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("admin", "管理員", generate_password_hash("admin"), "admin"),
     )
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return get_setting_orm(key, DEFAULT_SETTINGS[key])
-        with app.app_context():
-            return get_setting_orm(key, DEFAULT_SETTINGS[key])
-
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else DEFAULT_SETTINGS[key]
 
 
 def get_settings(conn: sqlite3.Connection) -> dict[str, str]:
-    if USE_SQLALCHEMY_READS:
-        if has_app_context():
-            return get_settings_orm(DEFAULT_SETTINGS)
-        with app.app_context():
-            return get_settings_orm(DEFAULT_SETTINGS)
-
     settings = DEFAULT_SETTINGS.copy()
     rows = conn.execute("SELECT key, value FROM meta").fetchall()
     for row in rows:
@@ -567,11 +467,20 @@ def get_settings(conn: sqlite3.Connection) -> dict[str, str]:
 
 
 def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
-    upsert_setting_sqlite(conn, key, value)
+    conn.execute(
+        """
+        INSERT INTO meta (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, value),
+    )
 
 
 def seed_settings(conn: sqlite3.Connection) -> None:
-    seed_settings_sqlite(conn, DEFAULT_SETTINGS)
+    for key, value in DEFAULT_SETTINGS.items():
+        row = conn.execute("SELECT key FROM meta WHERE key = ?", (key,)).fetchone()
+        if not row:
+            set_setting(conn, key, value)
 
 
 def seed_from_excel(conn: sqlite3.Connection) -> None:
@@ -585,7 +494,8 @@ def seed_from_excel(conn: sqlite3.Connection) -> None:
     ws = wb.active
     sheet_row = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
     if not sheet_row:
-        sheet_id = create_sheet_sqlite(conn, name=get_setting(conn, "tab_title"), sort_order=1)
+        cur = conn.execute("INSERT INTO sheets (name, sort_order) VALUES (?, ?)", (get_setting(conn, "tab_title"), 1))
+        sheet_id = cur.lastrowid
     else:
         sheet_id = sheet_row["id"]
     task_ids: dict[int, int] = {}
@@ -678,7 +588,11 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         )
     sheet = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
     if not sheet:
-        default_sheet_id = create_sheet_sqlite(conn, name=get_setting(conn, "tab_title"), sort_order=1)
+        cur = conn.execute(
+            "INSERT INTO sheets (name, sort_order) VALUES (?, ?)",
+            (get_setting(conn, "tab_title"), 1),
+        )
+        default_sheet_id = cur.lastrowid
     else:
         default_sheet_id = sheet["id"]
     if "sheet_id" not in task_cols:
@@ -795,34 +709,571 @@ def ensure_extra_fields(conn: sqlite3.Connection) -> None:
             )
 
 
-def primary_tables_are_empty(conn: sqlite3.Connection) -> bool:
-    for table in ("users", "sheets", "tasks", "floors", "units"):
-        if conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]:
-            return False
-    return True
-
-
 def bootstrap() -> None:
     with db() as conn:
         init_schema(conn)
-        if primary_tables_are_empty(conn):
-            if SEED_PATH.exists():
-                import_seed_into_conn(conn, SEED_PATH)
-            else:
-                seed_admin(conn)
-                seed_settings(conn)
-                seed_from_excel(conn)
-        migrate_schema(conn)
         seed_admin(conn)
         seed_settings(conn)
+        seed_from_excel(conn)
+        migrate_schema(conn)
         normalize_progress_values(conn)
         ensure_unit_extra_rows(conn)
         ensure_extra_fields(conn)
         migrate_unit_layout(conn)
 
+
+def available_sheets(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM sheets ORDER BY sort_order, id").fetchall()
+
+
+def resolve_sheet_id(conn: sqlite3.Connection, sheet_id: int | None = None) -> int:
+    if sheet_id:
+        row = conn.execute("SELECT id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+        if row:
+            return row["id"]
+    row = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
+    if row:
+        return row["id"]
+    cur = conn.execute("INSERT INTO sheets (name, sort_order) VALUES (?, ?)", (get_setting(conn, "tab_title"), 1))
+    return cur.lastrowid
+
+
+def extra_done(field: dict | sqlite3.Row, extra: dict) -> bool:
+    field_key = field["field_key"]
+    if field_key == "initial_check":
+        return bool(extra.get("recheck_1")) or bool(extra.get("recheck_2")) or extra.get("handover") == DONE_VALUE
+    if field_key == "recheck_1":
+        return bool(extra.get("recheck_2")) or extra.get("handover") == DONE_VALUE
+    if field_key == "recheck_2":
+        return bool(extra.get("recheck_2")) or extra.get("handover") == DONE_VALUE
+    if field_key == "handover":
+        return extra.get("handover") == DONE_VALUE
+    if field["field_type"] == "status":
+        return extra.get(field_key) == DONE_VALUE
+    return bool(extra.get(field_key))
+
+
+def load_grid(sheet_id: int | None = None) -> dict:
+    with db() as conn:
+        current_sheet_id = resolve_sheet_id(conn, sheet_id)
+        settings = get_settings(conn)
+        sheets = available_sheets(conn)
+        current_sheet = conn.execute("SELECT * FROM sheets WHERE id = ?", (current_sheet_id,)).fetchone()
+        tasks = conn.execute("SELECT * FROM tasks WHERE sheet_id = ? ORDER BY col_index", (current_sheet_id,)).fetchall()
+        floors = conn.execute("SELECT * FROM floors WHERE sheet_id = ? ORDER BY sort_order", (current_sheet_id,)).fetchall()
+        units_by_floor = {
+            floor["id"]: conn.execute(
+                "SELECT * FROM units WHERE floor_id = ? ORDER BY sort_order", (floor["id"],)
+            ).fetchall()
+            for floor in floors
+        }
+        progress_rows = conn.execute("SELECT unit_id, task_id, value FROM progress").fetchall()
+        extra_rows = conn.execute("SELECT * FROM unit_extra").fetchall()
+        extra_fields = conn.execute(
+            "SELECT * FROM extra_fields WHERE sheet_id = ? AND active = 1 ORDER BY sort_order, id",
+            (current_sheet_id,),
+        ).fetchall()
+        extra_value_rows = conn.execute(
+            """
+            SELECT v.unit_id, v.field_key, v.value
+            FROM unit_extra_values v
+            JOIN units u ON u.id = v.unit_id
+            JOIN floors f ON f.id = u.floor_id
+            WHERE f.sheet_id = ?
+            """,
+            (current_sheet_id,),
+        ).fetchall()
+
+    progress = {(row["unit_id"], row["task_id"]): row["value"] for row in progress_rows}
+    extras = {row["unit_id"]: dict(row) for row in extra_rows}
+    for row in extra_value_rows:
+        extras.setdefault(row["unit_id"], {})[row["field_key"]] = row["value"]
+    floor_rows = []
+    summary = {task["id"]: {"done": 0, "total": 0} for task in tasks}
+    extra_summary = {field["field_key"]: {"done": 0, "total": 0} for field in extra_fields}
+
+    for floor in floors:
+        units = units_by_floor[floor["id"]]
+        parent_status = {}
+        for task in tasks:
+            values = [progress.get((unit["id"], task["id"]), WORKING_VALUE) for unit in units]
+            done_count = sum(1 for value in values if value == DONE_VALUE)
+            parent_status[task["id"]] = DONE_VALUE if units and done_count == len(units) else WORKING_VALUE
+            summary[task["id"]]["done"] += done_count
+            summary[task["id"]]["total"] += len(units)
+        for unit in units:
+            extra = extras.get(unit["id"], {})
+            for field in extra_fields:
+                field_key = field["field_key"]
+                extra_summary[field_key]["done"] += 1 if extra_done(field, extra) else 0
+                extra_summary[field_key]["total"] += 1
+        floor_rows.append({"floor": floor, "units": units, "parent_status": parent_status})
+
+    return {
+        "settings": settings,
+        "sheets": sheets,
+        "current_sheet": current_sheet,
+        "tasks": tasks,
+        "extra_fields": extra_fields,
+        "floor_rows": floor_rows,
+        "progress": progress,
+        "extras": extras,
+        "summary": summary,
+        "extra_summary": extra_summary,
+    }
+
+
+def render_grid_payload(sheet_id: int | None = None) -> dict:
+    grid = load_grid(sheet_id)
+    floors = []
+    for item in grid["floor_rows"]:
+        floor = dict(item["floor"])
+        units = [dict(unit) for unit in item["units"]]
+        floors.append({"floor": floor, "units": units, "parent_status": item["parent_status"]})
+    return {
+        "settings": grid["settings"],
+        "sheets": [dict(sheet) for sheet in grid["sheets"]],
+        "current_sheet": dict(grid["current_sheet"]) if grid["current_sheet"] else None,
+        "tasks": [dict(task) for task in grid["tasks"]],
+        "extra_fields": [dict(field) for field in grid["extra_fields"]],
+        "floors": floors,
+        "progress": {f"{unit_id}:{task_id}": value for (unit_id, task_id), value in grid["progress"].items()},
+        "extras": {str(unit_id): extra for unit_id, extra in grid["extras"].items()},
+        "summary": grid["summary"],
+        "extra_summary": grid["extra_summary"],
+    }
+
+
+@app.route("/")
+def index():
+    if not session.get("user_id"):
+        return redirect(url_for("login"))
+    return redirect(url_for("sheet"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    settings = query_settings()
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        display_name = request.form.get("display_name", "").strip() or username
+        password = request.form.get("password", "")
+        user = query_one("SELECT * FROM users WHERE username = ?", (username,))
+        if user and check_password_hash(user["password_hash"], password):
+            session.clear()
+            session["user_id"] = user["id"]
+            session["username"] = user["username"]
+            session["display_name"] = user["display_name"] or user["username"]
+            session["role"] = user["role"]
+            return redirect(url_for("sheet"))
+        flash("帳號或密碼錯誤。", "error")
+    return render_template("login.html", settings=settings)
+
+
 def query_settings() -> dict[str, str]:
     with db() as conn:
         return get_settings(conn)
+
+
+@app.route("/logout", methods=["POST"])
+@login_required
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+@app.route("/sheet")
+@app.route("/sheet/<int:sheet_id>")
+@login_required
+def sheet(sheet_id: int | None = None):
+    with db() as conn:
+        resolved = resolve_sheet_id(conn, sheet_id)
+    session["sheet_id"] = resolved
+    grid = load_grid(resolved)
+    return render_template(
+        "sheet.html",
+        grid=grid,
+        settings=grid["settings"],
+        done_value=DONE_VALUE,
+        working_value=WORKING_VALUE,
+    )
+
+
+@app.route("/api/grid")
+@login_required
+def api_grid():
+    sheet_id = request.args.get("sheet_id", type=int) or session.get("sheet_id")
+    return jsonify(render_grid_payload(sheet_id))
+
+
+@app.route("/api/progress", methods=["POST"])
+@login_required
+def api_progress():
+    data = request.get_json(force=True)
+    unit_id = int(data.get("unit_id"))
+    task_id = int(data.get("task_id"))
+    value = data.get("value", WORKING_VALUE)
+    if value not in (DONE_VALUE, WORKING_VALUE):
+        return jsonify({"ok": False, "message": "狀態只能是 O 或 X。"}), 400
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO progress (unit_id, task_id, value, updated_by, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(unit_id, task_id) DO UPDATE SET
+                value = excluded.value,
+                updated_by = excluded.updated_by,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (unit_id, task_id, value, session["user_id"]),
+        )
+    sheet_row = query_one(
+        "SELECT f.sheet_id FROM units u JOIN floors f ON f.id = u.floor_id WHERE u.id = ?",
+        (unit_id,),
+    )
+    return jsonify({"ok": True, "grid": render_grid_payload(sheet_row["sheet_id"] if sheet_row else session.get("sheet_id"))})
+
+
+@app.route("/api/unit-extra", methods=["POST"])
+@login_required
+def api_unit_extra():
+    data = request.get_json(force=True)
+    unit_id = int(data.get("unit_id"))
+    field = data.get("field", "")
+    value = data.get("value", "")
+    with db() as conn:
+        field_row = conn.execute(
+            """
+            SELECT ef.*
+            FROM extra_fields ef
+            JOIN floors f ON f.sheet_id = ef.sheet_id
+            JOIN units u ON u.floor_id = f.id
+            WHERE u.id = ? AND ef.field_key = ? AND ef.active = 1
+            """,
+            (unit_id, field),
+        ).fetchone()
+        if not field_row:
+            return jsonify({"ok": False, "message": "欄位錯誤。"}), 400
+        if field_row["field_type"] == "status" and value not in (DONE_VALUE, WORKING_VALUE):
+            return jsonify({"ok": False, "message": "O/X 欄位只能是 O 或 X。"}), 400
+        conn.execute(
+            "INSERT OR IGNORE INTO unit_extra (unit_id, handover) VALUES (?, ?)",
+            (unit_id, WORKING_VALUE),
+        )
+        if field in EXTRA_FIELDS:
+            conn.execute(
+                f"""
+                UPDATE unit_extra
+                SET {field} = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE unit_id = ?
+                """,
+                (value, session["user_id"], unit_id),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO unit_extra_values (unit_id, field_key, value, updated_by, updated_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(unit_id, field_key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_by = excluded.updated_by,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (unit_id, field, value, session["user_id"]),
+            )
+    sheet_row = query_one(
+        "SELECT f.sheet_id FROM units u JOIN floors f ON f.id = u.floor_id WHERE u.id = ?",
+        (unit_id,),
+    )
+    return jsonify({"ok": True, "grid": render_grid_payload(sheet_row["sheet_id"] if sheet_row else session.get("sheet_id"))})
+
+
+@app.route("/api/reset-sheet", methods=["POST"])
+@admin_required
+def api_reset_sheet():
+    data = request.get_json(force=True)
+    password = data.get("password", "")
+    user = query_one("SELECT * FROM users WHERE id = ?", (session["user_id"],))
+    if not user or not check_password_hash(user["password_hash"], password):
+        return jsonify({"ok": False, "message": "管理員密碼錯誤。"}), 403
+
+    with db() as conn:
+        sheet_id = resolve_sheet_id(conn, data.get("sheet_id") or session.get("sheet_id"))
+        conn.execute(
+            """
+            UPDATE progress
+            SET value = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE task_id IN (SELECT id FROM tasks WHERE sheet_id = ?)
+            """,
+            (WORKING_VALUE, session["user_id"], sheet_id),
+        )
+        conn.execute(
+            """
+            UPDATE unit_extra
+            SET initial_check = '',
+                recheck_1 = '',
+                recheck_2 = '',
+                handover = ?,
+                updated_by = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE unit_id IN (
+                SELECT u.id
+                FROM units u
+                JOIN floors f ON f.id = u.floor_id
+                WHERE f.sheet_id = ?
+            )
+            """,
+            (WORKING_VALUE, session["user_id"], sheet_id),
+        )
+        conn.execute(
+            """
+            DELETE FROM unit_extra_values
+            WHERE unit_id IN (
+                SELECT u.id
+                FROM units u
+                JOIN floors f ON f.id = u.floor_id
+                WHERE f.sheet_id = ?
+            )
+            AND field_key IN (SELECT field_key FROM extra_fields WHERE sheet_id = ?)
+            """,
+            (sheet_id, sheet_id),
+        )
+    return jsonify({"ok": True, "grid": render_grid_payload(sheet_id)})
+
+
+@app.route("/admin/users", methods=["GET", "POST"])
+@admin_required
+def users():
+    if request.method == "POST":
+        action = request.form.get("action", "create_user")
+        username = request.form.get("username", "").strip()
+        display_name = request.form.get("display_name", "").strip() or username
+        password = request.form.get("password", "")
+        role = request.form.get("role", "member")
+
+        if role not in ("member", "admin"):
+            flash("\u89d2\u8272\u8a2d\u5b9a\u932f\u8aa4\u3002", "error")
+        elif action == "create_user":
+            if not username or not password:
+                flash("\u8acb\u8f38\u5165\u5e33\u865f\u8207\u5bc6\u78bc\u3002", "error")
+            else:
+                try:
+                    with db() as conn:
+                        conn.execute(
+                            "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+                            (username, display_name, generate_password_hash(password), role),
+                        )
+                    flash("\u6210\u54e1\u5df2\u65b0\u589e\u3002", "success")
+                except sqlite3.IntegrityError:
+                    flash("\u5e33\u865f\u5df2\u5b58\u5728\u3002", "error")
+        elif action.startswith("update_user:"):
+            user_id = int(action.split(":", 1)[1])
+            if not username:
+                flash("\u5e33\u865f\u4e0d\u53ef\u7a7a\u767d\u3002", "error")
+            else:
+                try:
+                    with db() as conn:
+                        if password:
+                            conn.execute(
+                                """
+                                UPDATE users
+                                SET username = ?, password_hash = ?, role = ?
+                                WHERE id = ?
+                                """,
+                                (username, generate_password_hash(password), role, user_id),
+                            )
+                        else:
+                            conn.execute(
+                                "UPDATE users SET username = ?, role = ? WHERE id = ?",
+                                (username, role, user_id),
+                            )
+                        update_user_display_name_sqlite(conn, user_id, display_name=display_name)
+                    maybe_dual_write_user_display_name_update(user_id, display_name=display_name)
+                    if user_id == session.get("user_id"):
+                        session["username"] = username
+                        session["display_name"] = display_name
+                        session["role"] = role
+                    flash("\u6210\u54e1\u8cc7\u6599\u5df2\u66f4\u65b0\u3002", "success")
+                except sqlite3.IntegrityError:
+                    flash("\u5e33\u865f\u5df2\u5b58\u5728\u3002", "error")
+        else:
+            flash("\u64cd\u4f5c\u7121\u6548\u3002", "error")
+
+        return redirect(url_for("users"))
+
+    with db() as conn:
+        all_users = conn.execute("SELECT id, username, display_name, role, created_at FROM users ORDER BY id").fetchall()
+        settings = get_settings(conn)
+    return render_template("users.html", users=all_users, settings=settings)
+
+
+@app.route("/admin/table", methods=["GET", "POST"])
+@admin_required
+def table_admin():
+    with db() as conn:
+        sheet_id = resolve_sheet_id(conn, request.values.get("sheet_id", type=int) or session.get("sheet_id"))
+        session["sheet_id"] = sheet_id
+        if request.method == "POST":
+            actions = request.form.getlist("action")
+            action = actions[-1] if actions else "save"
+            if action == "create_sheet":
+                name = request.form.get("new_sheet_name", "").strip() or "????"
+                next_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM sheets").fetchone()[0]
+                cur = conn.execute("INSERT INTO sheets (name, sort_order) VALUES (?, ?)", (name, next_order))
+                for field_key, field in BUILTIN_EXTRA_FIELDS.items():
+                    conn.execute(
+                        """
+                        INSERT INTO extra_fields
+                        (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+                        VALUES (?, ?, ?, ?, ?, 1, 1)
+                        """,
+                        (cur.lastrowid, field_key, field["name"], field["type"], field["sort_order"]),
+                    )
+                flash("???????", "success")
+                return redirect(url_for("table_admin", sheet_id=cur.lastrowid))
+            if action == "delete_sheet":
+                count = conn.execute("SELECT COUNT(*) FROM sheets").fetchone()[0]
+                if count <= 1:
+                    flash("????????????", "error")
+                    return redirect(url_for("table_admin", sheet_id=sheet_id))
+                unit_ids = [row["id"] for row in conn.execute("SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ?", (sheet_id,))]
+                if unit_ids:
+                    placeholders = ",".join("?" for _ in unit_ids)
+                    conn.execute(f"DELETE FROM progress WHERE unit_id IN ({placeholders})", unit_ids)
+                    conn.execute(f"DELETE FROM unit_extra WHERE unit_id IN ({placeholders})", unit_ids)
+                    conn.execute(f"DELETE FROM unit_extra_values WHERE unit_id IN ({placeholders})", unit_ids)
+                    conn.execute(f"DELETE FROM units WHERE id IN ({placeholders})", unit_ids)
+                conn.execute("DELETE FROM tasks WHERE sheet_id = ?", (sheet_id,))
+                conn.execute("DELETE FROM floors WHERE sheet_id = ?", (sheet_id,))
+                conn.execute("DELETE FROM unit_extra_values WHERE field_key IN (SELECT field_key FROM extra_fields WHERE sheet_id = ?)", (sheet_id,))
+                conn.execute("DELETE FROM extra_fields WHERE sheet_id = ?", (sheet_id,))
+                conn.execute("DELETE FROM sheets WHERE id = ?", (sheet_id,))
+                next_sheet = resolve_sheet_id(conn)
+                flash("???????", "success")
+                return redirect(url_for("table_admin", sheet_id=next_sheet))
+            if action == "add_task":
+                next_col = conn.execute("SELECT COALESCE(MAX(col_index), 3) + 1 FROM tasks").fetchone()[0]
+                cur = conn.execute(
+                    "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)",
+                    (sheet_id, next_col, request.form.get("new_task_vendor", ""), request.form.get("new_task_location", ""), request.form.get("new_task_name", "???") or "???"),
+                )
+                for unit in conn.execute("SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ?", (sheet_id,)):
+                    conn.execute("INSERT INTO progress (unit_id, task_id, value) VALUES (?, ?, ?)", (unit["id"], cur.lastrowid, WORKING_VALUE))
+                flash("??????", "success")
+                return redirect(url_for("table_admin", sheet_id=sheet_id))
+            if action.startswith("delete_task:"):
+                task_id = int(action.split(":", 1)[1])
+                conn.execute("DELETE FROM progress WHERE task_id = ?", (task_id,))
+                conn.execute("DELETE FROM tasks WHERE id = ? AND sheet_id = ?", (task_id, sheet_id))
+                flash("??????", "success")
+                return redirect(url_for("table_admin", sheet_id=sheet_id))
+            if action == "add_extra_field":
+                field_name = request.form.get("new_extra_name", "").strip() or "新增欄位"
+                field_type = request.form.get("new_extra_type", "date")
+                if field_type not in EXTRA_FIELD_TYPES:
+                    field_type = "date"
+                next_order = conn.execute(
+                    "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM extra_fields WHERE sheet_id = ?",
+                    (sheet_id,),
+                ).fetchone()[0]
+                conn.execute(
+                    """
+                    INSERT INTO extra_fields
+                    (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+                    VALUES (?, ?, ?, ?, ?, 0, 1)
+                    """,
+                    (sheet_id, f"custom_{uuid.uuid4().hex[:12]}", field_name, field_type, next_order),
+                )
+                flash("欄位已新增。", "success")
+                return redirect(url_for("table_admin", sheet_id=sheet_id))
+            if action.startswith("delete_extra_field:"):
+                field_id = int(action.split(":", 1)[1])
+                conn.execute("UPDATE extra_fields SET active = 0 WHERE id = ? AND sheet_id = ?", (field_id, sheet_id))
+                flash("欄位已刪除。", "success")
+                return redirect(url_for("table_admin", sheet_id=sheet_id))
+            if action == "add_floor":
+                next_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM floors").fetchone()[0]
+                conn.execute(
+                    "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, 0)",
+                    (sheet_id, next_order, request.form.get("new_floor_name", "???") or "???", request.form.get("new_floor_block", "")),
+                )
+                flash("??????", "success")
+                return redirect(url_for("table_admin", sheet_id=sheet_id))
+            if action.startswith("delete_floor:"):
+                floor_id = int(action.split(":", 1)[1])
+                unit_ids = [row["id"] for row in conn.execute("SELECT id FROM units WHERE floor_id = ?", (floor_id,))]
+                if unit_ids:
+                    placeholders = ",".join("?" for _ in unit_ids)
+                    conn.execute(f"DELETE FROM progress WHERE unit_id IN ({placeholders})", unit_ids)
+                    conn.execute(f"DELETE FROM unit_extra WHERE unit_id IN ({placeholders})", unit_ids)
+                    conn.execute(f"DELETE FROM unit_extra_values WHERE unit_id IN ({placeholders})", unit_ids)
+                    conn.execute(f"DELETE FROM units WHERE id IN ({placeholders})", unit_ids)
+                conn.execute("DELETE FROM floors WHERE id = ? AND sheet_id = ?", (floor_id, sheet_id))
+                flash("??????", "success")
+                return redirect(url_for("table_admin", sheet_id=sheet_id))
+            if action.startswith("add_unit:"):
+                floor_id = int(action.split(":", 1)[1])
+                next_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM units WHERE floor_id = ?", (floor_id,)).fetchone()[0]
+                cur = conn.execute(
+                    "INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?)",
+                    (floor_id, next_order, request.form.get(f"new_unit_name_{floor_id}", "???") or "???"),
+                )
+                for task in conn.execute("SELECT id FROM tasks WHERE sheet_id = ?", (sheet_id,)):
+                    conn.execute("INSERT INTO progress (unit_id, task_id, value) VALUES (?, ?, ?)", (cur.lastrowid, task["id"], WORKING_VALUE))
+                conn.execute("INSERT INTO unit_extra (unit_id, handover) VALUES (?, ?)", (cur.lastrowid, WORKING_VALUE))
+                conn.execute("UPDATE floors SET unit_count = (SELECT COUNT(*) FROM units WHERE floor_id = ?) WHERE id = ?", (floor_id, floor_id))
+                flash("??????", "success")
+                return redirect(url_for("table_admin", sheet_id=sheet_id))
+            if action.startswith("delete_unit:"):
+                unit_id = int(action.split(":", 1)[1])
+                floor = conn.execute("SELECT floor_id FROM units WHERE id = ?", (unit_id,)).fetchone()
+                conn.execute("DELETE FROM progress WHERE unit_id = ?", (unit_id,))
+                conn.execute("DELETE FROM unit_extra WHERE unit_id = ?", (unit_id,))
+                conn.execute("DELETE FROM unit_extra_values WHERE unit_id = ?", (unit_id,))
+                conn.execute("DELETE FROM units WHERE id = ?", (unit_id,))
+                if floor:
+                    conn.execute("UPDATE floors SET unit_count = (SELECT COUNT(*) FROM units WHERE floor_id = ?) WHERE id = ?", (floor["floor_id"], floor["floor_id"]))
+                flash("??????", "success")
+                return redirect(url_for("table_admin", sheet_id=sheet_id))
+
+            conn.execute("UPDATE sheets SET name = ? WHERE id = ?", (request.form.get("sheet_name", "").strip() or "???", sheet_id))
+            for key in DEFAULT_SETTINGS:
+                if key in request.form:
+                    set_setting(conn, key, request.form.get(key, "").strip())
+            for task in conn.execute("SELECT id FROM tasks WHERE sheet_id = ?", (sheet_id,)):
+                task_id = task["id"]
+                conn.execute("UPDATE tasks SET vendor = ?, location = ?, name = ? WHERE id = ?", (request.form.get(f"task_vendor_{task_id}", "").strip(), request.form.get(f"task_location_{task_id}", "").strip(), request.form.get(f"task_name_{task_id}", "").strip(), task_id))
+            for field in conn.execute("SELECT id FROM extra_fields WHERE sheet_id = ? AND active = 1", (sheet_id,)):
+                field_id = field["id"]
+                field_type = request.form.get(f"extra_type_{field_id}", "date")
+                if field_type not in EXTRA_FIELD_TYPES:
+                    field_type = "date"
+                conn.execute(
+                    "UPDATE extra_fields SET name = ?, field_type = ? WHERE id = ? AND sheet_id = ?",
+                    (request.form.get(f"extra_name_{field_id}", "").strip() or "欄位", field_type, field_id, sheet_id),
+                )
+            for floor in conn.execute("SELECT id FROM floors WHERE sheet_id = ?", (sheet_id,)):
+                floor_id = floor["id"]
+                floor_name = request.form.get(f"floor_name_{floor_id}", "").strip()
+                floor_block_name = request.form.get(f"floor_block_{floor_id}", "").strip()
+                update_floor_fields_sqlite(conn, floor_id, name=floor_name, block_name=floor_block_name)
+                maybe_dual_write_floor_update(floor_id, name=floor_name, block_name=floor_block_name)
+            for unit in conn.execute("SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ?", (sheet_id,)):
+                unit_id = unit["id"]
+                conn.execute("UPDATE units SET name = ? WHERE id = ?", (request.form.get(f"unit_name_{unit_id}", "").strip(), unit_id))
+            flash("????????", "success")
+            return redirect(url_for("table_admin", sheet_id=sheet_id))
+
+        settings = get_settings(conn)
+        sheets = available_sheets(conn)
+        current_sheet = conn.execute("SELECT * FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+        tasks = conn.execute("SELECT * FROM tasks WHERE sheet_id = ? ORDER BY col_index", (sheet_id,)).fetchall()
+        extra_fields = conn.execute("SELECT * FROM extra_fields WHERE sheet_id = ? AND active = 1 ORDER BY sort_order, id", (sheet_id,)).fetchall()
+        floors = conn.execute("SELECT * FROM floors WHERE sheet_id = ? ORDER BY sort_order", (sheet_id,)).fetchall()
+        units = {floor["id"]: conn.execute("SELECT * FROM units WHERE floor_id = ? ORDER BY sort_order", (floor["id"],)).fetchall() for floor in floors}
+    return render_template("table_admin.html", settings=settings, sheets=sheets, current_sheet=current_sheet, tasks=tasks, extra_fields=extra_fields, floors=floors, units=units)
+
+
 bootstrap()
 
 if __name__ == "__main__":
