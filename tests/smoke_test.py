@@ -439,6 +439,45 @@ def run_users_id_allocation_smoke(db_path: Path) -> None:
         raise AssertionError("Expected users schema SQL to be present.")
 
 
+def run_users_sqlite_sequence_bump_plan_smoke() -> None:
+    from plan_users_sqlite_sequence_bump import build_sequence_bump_plan
+
+    sqlite_report = {
+        "has_autoincrement": True,
+        "sqlite_sequence_exists": True,
+        "sqlite_sequence_value": 1,
+        "max_user_id": 1,
+        "next_sqlite_user_id": 2,
+    }
+    plan = build_sequence_bump_plan(sqlite_report, postgres_max_user_id=3)
+    if not plan["bump_needed"]:
+        raise AssertionError("Expected sqlite sequence bump to be needed.")
+    if plan["recommended_sqlite_sequence_value"] != 3:
+        raise AssertionError(
+            f"Unexpected recommended sqlite sequence value: {plan['recommended_sqlite_sequence_value']}"
+        )
+    if plan["expected_next_sqlite_user_id_after_bump"] != 4:
+        raise AssertionError(
+            "Unexpected expected next sqlite user id after bump: "
+            f"{plan['expected_next_sqlite_user_id_after_bump']}"
+        )
+    if plan["recommended_sql"] != "UPDATE sqlite_sequence SET seq = 3 WHERE name = 'users';":
+        raise AssertionError(f"Unexpected recommended SQL: {plan['recommended_sql']}")
+
+    already_safe_plan = build_sequence_bump_plan(
+        {
+            "has_autoincrement": True,
+            "sqlite_sequence_exists": True,
+            "sqlite_sequence_value": 4,
+            "max_user_id": 4,
+            "next_sqlite_user_id": 5,
+        },
+        postgres_max_user_id=3,
+    )
+    if already_safe_plan["bump_needed"]:
+        raise AssertionError("Expected sqlite sequence bump to be unnecessary when already safe.")
+
+
 def run_admin_user_role_update_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -528,6 +567,7 @@ def main() -> int:
         run_user_role_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_users_create_readiness_guard_smoke(db_path)
         run_users_id_allocation_smoke(db_path)
+        run_users_sqlite_sequence_bump_plan_smoke()
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 
@@ -539,6 +579,7 @@ def main() -> int:
     run_help("check_users_baseline_and_sequence.py")
     run_help("check_users_create_readiness.py")
     run_help("check_users_id_allocation.py")
+    run_help("plan_users_sqlite_sequence_bump.py")
     run_help("fix_users_postgres_sequence.py")
     run_help("backfill_users_display_name_to_postgres.py")
 
@@ -574,6 +615,11 @@ def main() -> int:
     allocation_result = run_script("check_users_id_allocation.py", env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in allocation_result.stdout or "PASS" not in allocation_result.stdout:
         raise AssertionError("check_users_id_allocation.py did not report expected PASS without DATABASE_URL.")
+    plan_result = run_script("plan_users_sqlite_sequence_bump.py", env={"DATABASE_URL": ""})
+    if "DATABASE_URL is not configured." not in plan_result.stdout or "PASS" not in plan_result.stdout:
+        raise AssertionError("plan_users_sqlite_sequence_bump.py did not report expected PASS without DATABASE_URL.")
+    if "DRY RUN ONLY. No data was modified." not in plan_result.stdout:
+        raise AssertionError("plan_users_sqlite_sequence_bump.py did not report dry-run-only status.")
     fix_sequence_result = run_script("fix_users_postgres_sequence.py", args=["--dry-run"], env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in fix_sequence_result.stdout or "PASS" not in fix_sequence_result.stdout:
         raise AssertionError("fix_users_postgres_sequence.py --dry-run did not report expected PASS without DATABASE_URL.")
