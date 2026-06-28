@@ -128,6 +128,12 @@ def create_sample_sqlite(path: Path) -> None:
         """
     )
     conn.execute(
+        """
+        INSERT INTO users (id, username, display_name, password_hash, role, created_at)
+        VALUES (2, 'member', 'Member', 'hash', 'member', '2026-06-27T00:05:00')
+        """
+    )
+    conn.execute(
         "INSERT INTO sheets (id, name, sort_order, created_at) VALUES (1, 'Sheet A', 1, '2026-06-27T00:00:00')"
     )
     conn.execute(
@@ -183,12 +189,16 @@ def run_help(script_name: str) -> None:
         raise AssertionError(f"{script_name} did not print help output.")
 
 
-def run_script(script_name: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run_script(
+    script_name: str,
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
     return subprocess.run(
-        [sys.executable, str(TOOLS_DIR / script_name)],
+        [sys.executable, str(TOOLS_DIR / script_name), *(args or [])],
         cwd=ROOT_DIR,
         capture_output=True,
         text=True,
@@ -279,6 +289,115 @@ print("user helper smoke PASS")
         raise AssertionError("user helper smoke subprocess did not report PASS.")
 
 
+def run_user_role_helper_smoke(db_path: Path, app_db_path: Path) -> None:
+    script = """
+import importlib.util
+from pathlib import Path
+import sqlite3
+import sys
+
+app_db_path, sample_db_path, root_dir = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+import os
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+conn = sqlite3.connect(sample_db_path)
+conn.row_factory = sqlite3.Row
+module.update_user_role_sqlite(conn, 2, role="admin")
+conn.commit()
+row = conn.execute("SELECT username, display_name, role FROM users WHERE id = 2").fetchone()
+conn.close()
+if row["username"] != "member" or row["display_name"] != "Member" or row["role"] != "admin":
+    raise SystemExit("user role helper smoke failed")
+print("user role helper smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "user role helper smoke PASS" not in result.stdout:
+        raise AssertionError("user role helper smoke subprocess did not report PASS.")
+
+
+def run_admin_user_role_update_smoke(db_path: Path, app_db_path: Path) -> None:
+    script = """
+import importlib.util
+from pathlib import Path
+import sqlite3
+import sys
+
+app_db_path, sample_db_path, root_dir = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+import os
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+with module.app.test_client() as client:
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "Admin"
+        session["role"] = "admin"
+
+    response = client.post(
+        "/admin/users",
+        data={"action": "update_user:2", "role": "admin"},
+        follow_redirects=True,
+    )
+    if response.status_code != 200:
+        raise SystemExit("admin update other user role request failed")
+
+    response = client.post(
+        "/admin/users",
+        data={"action": "update_user:1", "role": "member"},
+        follow_redirects=True,
+    )
+    body = response.get_data(as_text=True)
+    if "本階段不允許修改自己的角色" not in body:
+        raise SystemExit("self role update rejection message missing")
+
+conn = sqlite3.connect(sample_db_path)
+conn.row_factory = sqlite3.Row
+other_user = conn.execute("SELECT role FROM users WHERE id = 2").fetchone()
+self_user = conn.execute("SELECT role FROM users WHERE id = 1").fetchone()
+conn.close()
+if other_user["role"] != "admin":
+    raise SystemExit("other user role update smoke failed")
+if self_user["role"] != "admin":
+    raise SystemExit("self role should remain unchanged")
+print("admin user role update smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "admin user role update smoke PASS" not in result.stdout:
+        raise AssertionError("admin user role update smoke subprocess did not report PASS.")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "sample.db"
@@ -291,11 +410,14 @@ def main() -> int:
 
         if list(counts) != TABLE_ORDER:
             raise AssertionError("Table order changed unexpectedly.")
-        if any(count != 1 for count in counts.values()):
+        expected_counts = {"users": 2}
+        if any(count != expected_counts.get(table_name, 1) for table_name, count in counts.items()):
             raise AssertionError(f"Unexpected sample counts: {counts}")
 
         run_floor_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
+        run_user_role_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
+        run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 
     if redact_database_url("postgresql://user:secret@localhost:5432/demo") != "postgresql://user:***@localhost:5432/demo":
         raise AssertionError("DATABASE_URL redaction failed.")
@@ -315,6 +437,9 @@ def main() -> int:
     users_result = run_script("check_users_secondary_update.py", env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in users_result.stdout or "PASS" not in users_result.stdout:
         raise AssertionError("check_users_secondary_update.py did not report expected PASS without DATABASE_URL.")
+    users_role_result = run_script("check_users_secondary_update.py", args=["--field", "role"], env={"DATABASE_URL": ""})
+    if "DATABASE_URL is not configured." not in users_role_result.stdout or "PASS" not in users_role_result.stdout:
+        raise AssertionError("check_users_secondary_update.py --field role did not report expected PASS without DATABASE_URL.")
 
     backfill_result = subprocess.run(
         [

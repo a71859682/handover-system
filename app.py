@@ -148,6 +148,18 @@ def update_user_display_name_sqlite(
     )
 
 
+def update_user_role_sqlite(
+    conn: sqlite3.Connection,
+    user_id: int,
+    *,
+    role: str,
+) -> None:
+    conn.execute(
+        "UPDATE users SET role = ? WHERE id = ?",
+        (role, user_id),
+    )
+
+
 def update_floor_fields_postgres(
     pg_conn: psycopg.Connection,
     floor_id: int,
@@ -203,6 +215,43 @@ def update_user_display_name_postgres(
             cur.execute(
                 "UPDATE users SET display_name = %s WHERE id = %s",
                 (display_name, user_id),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError(
+                    f"PostgreSQL users secondary update affected {cur.rowcount} rows for user_id={user_id}."
+                )
+            dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=EXECUTE_SQL_OK user_id={user_id}")
+            cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            dual_write_log(
+                f"DUAL_WRITE_USERS_SECONDARY table=users event=RELEASE_SAVEPOINT_OK user_id={user_id}"
+            )
+            pg_conn.commit()
+        except Exception:
+            try:
+                cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+            finally:
+                cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            pg_conn.commit()
+            raise
+
+
+def update_user_role_postgres(
+    pg_conn: psycopg.Connection,
+    user_id: int,
+    *,
+    role: str,
+) -> None:
+    savepoint_name = f"dual_write_users_update_{user_id}"
+    dual_write_log(f"{DUAL_WRITE_USERS_STRATEGY_LOG} user_id={user_id}")
+    with pg_conn.cursor() as cur:
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=SAVEPOINT_START user_id={user_id}")
+        cur.execute(f"SAVEPOINT {savepoint_name}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=SAVEPOINT_OK user_id={user_id}")
+        try:
+            dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=EXECUTE_SQL_START user_id={user_id}")
+            cur.execute(
+                "UPDATE users SET role = %s WHERE id = %s",
+                (role, user_id),
             )
             if cur.rowcount != 1:
                 raise RuntimeError(
@@ -299,6 +348,50 @@ def maybe_dual_write_user_display_name_update(
             get_primary_postgres_connection(),
             user_id,
             display_name=display_name,
+        )
+        dual_write_log(
+            "DUAL_WRITE operation=update table=users "
+            f"user_id={user_id} dry_run=false postgres_result=success"
+        )
+    except Exception as exc:
+        dual_write_log(
+            "DUAL_WRITE operation=update table=users "
+            f"user_id={user_id} dry_run=false postgres_result=failed error={exc!r}"
+        )
+        if dual_write_strict_enabled():
+            raise
+
+
+def maybe_dual_write_user_role_update(
+    user_id: int,
+    *,
+    role: str,
+) -> None:
+    if not controlled_dual_write_enabled(table="users", operation="update"):
+        return
+
+    dry_run = dual_write_dry_run_enabled()
+    if dry_run:
+        dual_write_log(f"DUAL_WRITE_DRY_RUN operation=update table=users user_id={user_id}")
+        dual_write_log(f"{DUAL_WRITE_USERS_STRATEGY_LOG} user_id={user_id}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=SAVEPOINT_START user_id={user_id}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=SAVEPOINT_OK user_id={user_id}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=EXECUTE_SQL_START user_id={user_id}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users event=EXECUTE_SQL_OK user_id={user_id}")
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users event=RELEASE_SAVEPOINT_OK user_id={user_id}"
+        )
+        dual_write_log(
+            "DUAL_WRITE operation=update table=users "
+            f"user_id={user_id} dry_run=true postgres_result=success"
+        )
+        return
+
+    try:
+        update_user_role_postgres(
+            get_primary_postgres_connection(),
+            user_id,
+            role=role,
         )
         dual_write_log(
             "DUAL_WRITE operation=update table=users "
@@ -1068,27 +1161,13 @@ def users():
                     flash("\u5e33\u865f\u5df2\u5b58\u5728\u3002", "error")
         elif action.startswith("update_user:"):
             user_id = int(action.split(":", 1)[1])
-            if not username:
-                flash("\u5e33\u865f\u4e0d\u53ef\u7a7a\u767d\u3002", "error")
+            if user_id == session.get("user_id"):
+                flash("\u672c\u968e\u6bb5\u4e0d\u5141\u8a31\u4fee\u6539\u81ea\u5df1\u7684\u89d2\u8272", "error")
             else:
                 try:
                     with db() as conn:
-                        if password:
-                            conn.execute(
-                                """
-                                UPDATE users
-                                SET username = ?, password_hash = ?, role = ?
-                                WHERE id = ?
-                                """,
-                                (username, generate_password_hash(password), role, user_id),
-                            )
-                        else:
-                            conn.execute(
-                                "UPDATE users SET username = ?, role = ? WHERE id = ?",
-                                (username, role, user_id),
-                            )
-                        update_user_display_name_sqlite(conn, user_id, display_name=display_name)
-                    maybe_dual_write_user_display_name_update(user_id, display_name=display_name)
+                        update_user_role_sqlite(conn, user_id, role=role)
+                    maybe_dual_write_user_role_update(user_id, role=role)
                     if user_id == session.get("user_id"):
                         session["username"] = username
                         session["display_name"] = display_name

@@ -49,9 +49,9 @@
         <input form="edit-user-{{ user.id }}" type="hidden" name="action" value="update_user:{{ user.id }}">
         {{ user.id }}
       </td>
-      <td><input form="edit-user-{{ user.id }}" name="username" value="{{ user.username }}" required></td>
-      <td><input form="edit-user-{{ user.id }}" name="display_name" value="{{ user.display_name or user.username }}"></td>
-      <td><input form="edit-user-{{ user.id }}" name="password" type="password" placeholder="&#30041;&#31354;&#19981;&#35722;"></td>
+      <td>{{ user.username }}</td>
+      <td>{{ user.display_name or user.username }}</td>
+      <td>&#26412;&#38542;&#27573;&#19981;&#25552;&#20379;&#20462;&#25913;</td>
       <td>
         <select form="edit-user-{{ user.id }}" name="role">
           <option value="member" {{ 'selected' if user.role == 'member' else '' }}>&#25104;&#21729;</option>

@@ -138,7 +138,13 @@ def connect_postgres(database_url: str) -> psycopg.Connection:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare users.display_name between local SQLite and staging PostgreSQL."
+        description="Compare selected users fields between local SQLite and staging PostgreSQL."
+    )
+    parser.add_argument(
+        "--field",
+        choices=("display_name", "role"),
+        default="display_name",
+        help="User column to compare. Defaults to display_name.",
     )
     parser.add_argument(
         "--user-id",
@@ -153,8 +159,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_user_query(user_id: int | None) -> tuple[str, tuple]:
-    sql = "SELECT id, username, display_name FROM users"
+def build_user_query(field: str, user_id: int | None) -> tuple[str, tuple]:
+    sql = f"SELECT id, username, {field} FROM users"
     params: tuple = ()
     if user_id is not None:
         sql += " WHERE id = ?"
@@ -163,8 +169,8 @@ def build_user_query(user_id: int | None) -> tuple[str, tuple]:
     return sql, params
 
 
-def build_postgres_user_query(user_id: int | None) -> tuple[str, tuple]:
-    sql = "SELECT id, username, display_name FROM users"
+def build_postgres_user_query(field: str, user_id: int | None) -> tuple[str, tuple]:
+    sql = f"SELECT id, username, {field} FROM users"
     params: tuple = ()
     if user_id is not None:
         sql += " WHERE id = %s"
@@ -185,14 +191,14 @@ def main() -> int:
     print(f"SQLite source: {sqlite_path}")
     print(f"PostgreSQL target: {redact_database_url(database_url)}")
 
-    sqlite_sql, sqlite_params = build_user_query(args.user_id)
-    postgres_sql, postgres_params = build_postgres_user_query(args.user_id)
+    sqlite_sql, sqlite_params = build_user_query(args.field, args.user_id)
+    postgres_sql, postgres_params = build_postgres_user_query(args.field, args.user_id)
 
     with connect_sqlite(sqlite_path) as sqlite_conn, connect_postgres(database_url) as pg_conn:
         sqlite_rows = {
             row["id"]: {
                 "username": row["username"],
-                "display_name": row["display_name"],
+                "value": row[args.field],
             }
             for row in sqlite_conn.execute(sqlite_sql, sqlite_params).fetchall()
         }
@@ -201,7 +207,7 @@ def main() -> int:
             postgres_rows = {
                 row[0]: {
                     "username": row[1],
-                    "display_name": row[2],
+                    "value": row[2],
                 }
                 for row in cur.fetchall()
             }
@@ -245,21 +251,21 @@ def main() -> int:
                 has_failure = True
             continue
 
-        sqlite_value = sqlite_row["display_name"]
-        postgres_value = postgres_row["display_name"]
+        sqlite_value = sqlite_row["value"]
+        postgres_value = postgres_row["value"]
         status = "PASS" if sqlite_value == postgres_value else "FAIL"
         print(
             f"{status} users id={user_id}: username={sqlite_username} "
-            f"sqlite={sqlite_value!r} postgres={postgres_value!r}"
+            f"field={args.field} sqlite={sqlite_value!r} postgres={postgres_value!r}"
         )
         if status == "FAIL":
             has_failure = True
 
     if has_failure:
-        print("FAIL users secondary update check found mismatches.")
+        print(f"FAIL users secondary update check found mismatches for field={args.field}.")
         return 1
 
-    print("PASS users secondary update fields match.")
+    print(f"PASS users secondary update field matches for field={args.field}.")
     return 0
 
 

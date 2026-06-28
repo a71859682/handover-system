@@ -16,6 +16,9 @@ REQUIRED_FUNCTIONS = {
     "update_user_display_name_sqlite",
     "update_user_display_name_postgres",
     "maybe_dual_write_user_display_name_update",
+    "update_user_role_sqlite",
+    "update_user_role_postgres",
+    "maybe_dual_write_user_role_update",
     "controlled_dual_write_enabled",
 }
 REQUIRED_LOG_SNIPPETS = [
@@ -35,7 +38,7 @@ REQUIRED_LOG_SNIPPETS = [
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate the controlled dual-write wiring for floors update-only."
+        description="Validate the controlled dual-write wiring for floors/users update-only."
     )
     return parser.parse_args()
 
@@ -73,30 +76,27 @@ def assert_route_wiring(source: str) -> None:
     if not (sqlite_call_index < dual_write_call_index < units_loop_index):
         raise AssertionError("floors dual-write is not scoped correctly ahead of the units loop.")
 
-    password_branch = """UPDATE users
-                                SET username = ?, password_hash = ?, role = ?
-                                WHERE id = ?"""
-    no_password_branch = 'UPDATE users SET username = ?, role = ? WHERE id = ?'
-    sqlite_display_name_call = "update_user_display_name_sqlite(conn, user_id, display_name=display_name)"
-    dual_write_display_name_call = "maybe_dual_write_user_display_name_update(user_id, display_name=display_name)"
+    self_role_block = 'flash("\\u672c\\u968e\\u6bb5\\u4e0d\\u5141\\u8a31\\u4fee\\u6539\\u81ea\\u5df1\\u7684\\u89d2\\u8272", "error")'
+    sqlite_role_call = "update_user_role_sqlite(conn, user_id, role=role)"
+    dual_write_role_call = "maybe_dual_write_user_role_update(user_id, role=role)"
 
     for snippet in (
         'elif action.startswith("update_user:"):',
-        password_branch,
-        no_password_branch,
-        sqlite_display_name_call,
-        dual_write_display_name_call,
+        self_role_block,
+        sqlite_role_call,
+        dual_write_role_call,
     ):
         if snippet not in source:
             raise AssertionError(f"Missing required route snippet: {snippet}")
 
     user_route_index = source.index('elif action.startswith("update_user:"):')
     user_route_tail = source[user_route_index:]
-    sqlite_display_name_index = user_route_tail.index(sqlite_display_name_call)
-    dual_write_display_name_index = user_route_tail.index(dual_write_display_name_call)
+    self_role_block_index = user_route_tail.index(self_role_block)
+    sqlite_role_index = user_route_tail.index(sqlite_role_call)
+    dual_write_role_index = user_route_tail.index(dual_write_role_call)
 
-    if sqlite_display_name_index >= dual_write_display_name_index:
-        raise AssertionError("users display_name dual-write must run after the SQLite helper.")
+    if not (self_role_block_index < sqlite_role_index < dual_write_role_index):
+        raise AssertionError("users role dual-write/update-only wiring is not ordered correctly.")
 
 
 def main() -> int:
