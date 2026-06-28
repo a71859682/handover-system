@@ -478,6 +478,36 @@ def run_users_sqlite_sequence_bump_plan_smoke() -> None:
         raise AssertionError("Expected sqlite sequence bump to be unnecessary when already safe.")
 
 
+def run_users_sqlite_sequence_apply_guard_smoke() -> None:
+    from bump_users_sqlite_sequence import validate_apply_preconditions
+
+    sqlite_report = {
+        "has_autoincrement": True,
+        "sqlite_sequence_exists": True,
+        "sqlite_sequence_value": 1,
+    }
+    bump_plan = {
+        "recommended_sqlite_sequence_value": 3,
+        "expected_next_sqlite_user_id_after_bump": 4,
+        "postgres_max_user_id": 3,
+    }
+    failures = validate_apply_preconditions(sqlite_report, {1: {"username": "admin"}}, bump_plan)
+    if failures:
+        raise AssertionError(f"Unexpected apply precondition failures: {failures}")
+
+    bad_failures = validate_apply_preconditions(
+        {
+            "has_autoincrement": True,
+            "sqlite_sequence_exists": True,
+            "sqlite_sequence_value": 3,
+        },
+        {1: {"username": "admin"}},
+        bump_plan,
+    )
+    if "target_sequence_value_must_exceed_current_sqlite_sequence_value" not in bad_failures:
+        raise AssertionError("Expected apply guard to reject non-increasing sqlite sequence target.")
+
+
 def run_admin_user_role_update_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -568,6 +598,7 @@ def main() -> int:
         run_users_create_readiness_guard_smoke(db_path)
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
+        run_users_sqlite_sequence_apply_guard_smoke()
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 
@@ -580,6 +611,7 @@ def main() -> int:
     run_help("check_users_create_readiness.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")
+    run_help("bump_users_sqlite_sequence.py")
     run_help("fix_users_postgres_sequence.py")
     run_help("backfill_users_display_name_to_postgres.py")
 
@@ -620,6 +652,26 @@ def main() -> int:
         raise AssertionError("plan_users_sqlite_sequence_bump.py did not report expected PASS without DATABASE_URL.")
     if "DRY RUN ONLY. No data was modified." not in plan_result.stdout:
         raise AssertionError("plan_users_sqlite_sequence_bump.py did not report dry-run-only status.")
+    bump_result = run_script("bump_users_sqlite_sequence.py", env={"DATABASE_URL": ""})
+    if "DATABASE_URL is not configured." not in bump_result.stdout or "PASS" not in bump_result.stdout:
+        raise AssertionError("bump_users_sqlite_sequence.py did not report expected PASS without DATABASE_URL.")
+    if "DRY RUN ONLY. No data was modified." not in bump_result.stdout:
+        raise AssertionError("bump_users_sqlite_sequence.py did not report dry-run-only status.")
+    bump_apply_reject = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS_DIR / "bump_users_sqlite_sequence.py"),
+            "--apply",
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "DATABASE_URL": ""},
+    )
+    if bump_apply_reject.returncode == 0:
+        raise AssertionError("bump_users_sqlite_sequence.py --apply should fail without DATABASE_URL.")
+    if "FAIL users sqlite sequence bump apply requires DATABASE_URL." not in bump_apply_reject.stdout:
+        raise AssertionError("bump_users_sqlite_sequence.py --apply did not report expected DATABASE_URL guard.")
     fix_sequence_result = run_script("fix_users_postgres_sequence.py", args=["--dry-run"], env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in fix_sequence_result.stdout or "PASS" not in fix_sequence_result.stdout:
         raise AssertionError("fix_users_postgres_sequence.py --dry-run did not report expected PASS without DATABASE_URL.")
