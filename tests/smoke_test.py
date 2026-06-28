@@ -302,6 +302,7 @@ def main() -> int:
 
     run_help("check_controlled_dual_write.py")
     run_help("check_users_secondary_update.py")
+    run_help("backfill_users_display_name_to_postgres.py")
 
     controlled_result = run_script("check_controlled_dual_write.py")
     if "PASS controlled dual-write floors/users update-only wiring looks correct." not in controlled_result.stdout:
@@ -314,6 +315,23 @@ def main() -> int:
     users_result = run_script("check_users_secondary_update.py", env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in users_result.stdout or "PASS" not in users_result.stdout:
         raise AssertionError("check_users_secondary_update.py did not report expected PASS without DATABASE_URL.")
+
+    backfill_result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS_DIR / "backfill_users_display_name_to_postgres.py"),
+            "--dry-run",
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "DATABASE_URL": ""},
+    )
+    if "DATABASE_URL is not configured." not in backfill_result.stdout or "PASS" not in backfill_result.stdout:
+        raise AssertionError(
+            "backfill_users_display_name_to_postgres.py did not report expected PASS without DATABASE_URL."
+        )
 
     print("smoke_test PASS")
     return 0
