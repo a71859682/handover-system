@@ -739,6 +739,8 @@ def main() -> int:
     persistence_result = run_script("check_sqlite_runtime_persistence.py", env={"DATABASE_URL": ""})
     if "resolved_sqlite_source_path:" not in persistence_result.stdout or "PASS" not in persistence_result.stdout:
         raise AssertionError("check_sqlite_runtime_persistence.py did not report expected PASS output.")
+    if "persistence_status:" not in persistence_result.stdout or "recommended_action:" not in persistence_result.stdout:
+        raise AssertionError("check_sqlite_runtime_persistence.py did not report persistence status output.")
     plan_result = run_script("plan_users_sqlite_sequence_bump.py", env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in plan_result.stdout or "PASS" not in plan_result.stdout:
         raise AssertionError("plan_users_sqlite_sequence_bump.py did not report expected PASS without DATABASE_URL.")

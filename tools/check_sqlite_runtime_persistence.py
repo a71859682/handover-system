@@ -43,6 +43,20 @@ def classify_persistence(sqlite_path: Path) -> tuple[bool, str]:
     return False, "path_not_under_known_persistent_mount"
 
 
+def build_persistence_recommendation(sqlite_path: Path, is_persistent_path: bool, reason: str) -> tuple[str, str]:
+    if is_persistent_path:
+        return "ok", "current_sqlite_path_looks_like_persistent_storage"
+    if reason == "path_is_under_render_source_tree":
+        return (
+            "risk",
+            "set APP_DB_PATH to a persistent disk path such as /var/data/site.db before running production SQLite cleanup",
+        )
+    return (
+        "risk",
+        "confirm a durable SQLite path before running production SQLite cleanup",
+    )
+
+
 def format_timestamp(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp).isoformat(timespec="seconds")
 
@@ -100,6 +114,13 @@ def main() -> int:
     print("Persistence assessment:")
     print(f"- path_under_common_persistent_mount: {str(is_persistent_path).lower()}")
     print(f"- reason: {persistence_reason}")
+    persistence_status, recommended_action = build_persistence_recommendation(
+        sqlite_path,
+        is_persistent_path,
+        persistence_reason,
+    )
+    print(f"- persistence_status: {persistence_status}")
+    print(f"- recommended_action: {recommended_action}")
     if sqlite_path.as_posix().startswith("/opt/render/project/src"):
         print(
             "- warning: SQLite is under /opt/render/project/src; this is likely deploy image or instance-local data, "
