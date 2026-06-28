@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Iterable
 from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
@@ -26,31 +27,89 @@ def sqlite_has_users_table(path: Path) -> bool:
         return False
 
 
+def normalize_candidate_path(raw_path: Path | str) -> Path:
+    return Path(raw_path).expanduser().resolve(strict=False)
+
+
+def discover_app_db_path() -> Path | None:
+    try:
+        from app import DB_PATH  # type: ignore
+    except Exception:
+        return None
+    return normalize_candidate_path(DB_PATH)
+
+
+def iter_db_files(root: Path) -> Iterable[Path]:
+    if not root.exists() or not root.is_dir():
+        return ()
+    seen: set[Path] = set()
+    matches: list[Path] = []
+    for pattern in ("site.db", "*.db"):
+        for candidate in root.rglob(pattern):
+            resolved = normalize_candidate_path(candidate)
+            if resolved in seen or not resolved.is_file():
+                continue
+            seen.add(resolved)
+            matches.append(resolved)
+    return matches
+
+
 def resolve_sqlite_candidates() -> list[tuple[str, Path]]:
-    configured = os.environ.get("APP_DB_PATH")
+    candidates: list[tuple[str, Path]] = []
+    seen: set[Path] = set()
+
+    def add_candidate(label: str, raw_path: Path | str | None) -> None:
+        if raw_path is None:
+            return
+        path = normalize_candidate_path(raw_path)
+        if path in seen:
+            return
+        seen.add(path)
+        candidates.append((label, path))
+
+    configured = os.environ.get("APP_DB_PATH", "").strip()
     if configured:
-        return [
-            ("APP_DB_PATH", Path(configured).expanduser().resolve()),
-            ("/var/data/site.db", Path("/var/data/site.db")),
-            ("./site.db", Path.cwd() / "site.db"),
-            ("repo_site.db", BASE_DIR / "site.db"),
-        ]
-    return [
-        ("APP_DB_PATH", BASE_DIR / "site.db"),
-        ("/var/data/site.db", Path("/var/data/site.db")),
-        ("./site.db", Path.cwd() / "site.db"),
+        add_candidate("APP_DB_PATH", configured)
+
+    add_candidate("flask.DB_PATH", discover_app_db_path())
+    add_candidate("repo_site.db", BASE_DIR / "site.db")
+    add_candidate("cwd_site.db", Path.cwd() / "site.db")
+    add_candidate("/var/data/site.db", Path("/var/data/site.db"))
+    add_candidate("/opt/render/project/src/site.db", Path("/opt/render/project/src/site.db"))
+
+    search_roots = [
+        BASE_DIR,
+        Path.cwd(),
+        Path("/opt/render/project/src"),
+        Path("/opt/render/project"),
+        Path("/var/data"),
     ]
+    searched_roots: set[Path] = set()
+    for root in search_roots:
+        resolved_root = normalize_candidate_path(root)
+        if resolved_root in searched_roots:
+            continue
+        searched_roots.add(resolved_root)
+        for candidate in iter_db_files(resolved_root):
+            add_candidate(f"search:{resolved_root}", candidate)
+
+    return candidates
 
 
 def resolve_sqlite_source_path() -> Path:
     candidates = resolve_sqlite_candidates()
-    existing = [path for _, path in candidates if path.exists()]
-    for path in existing:
+    invalid: list[tuple[str, Path]] = []
+    for label, path in candidates:
+        if not path.exists():
+            continue
         if sqlite_has_users_table(path):
             return path
-    if existing:
-        checked = ", ".join(str(path) for path in existing)
-        raise SystemExit(f"FAIL SQLite candidates exist but none contain a users table: {checked}")
+        invalid.append((label, path))
+    if invalid:
+        checked = ", ".join(f"{label}={path}" for label, path in invalid)
+        raise SystemExit(
+            f"FAIL SQLite candidates exist but none contain a users table: {checked}"
+        )
     checked = ", ".join(f"{label}={path}" for label, path in candidates)
     raise SystemExit(f"FAIL no SQLite candidate found: {checked}")
 
