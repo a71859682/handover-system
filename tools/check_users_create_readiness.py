@@ -25,6 +25,7 @@ from check_users_baseline_and_sequence import (  # noqa: E402
     fetch_sqlite_users,
 )
 from check_users_secondary_update import (  # noqa: E402
+    connect_sqlite,
     connect_postgres,
     redact_database_url,
     resolve_sqlite_source_path,
@@ -212,6 +213,51 @@ def print_username_probe(
     return bool(sqlite_hits or postgres_hits)
 
 
+def fetch_next_sqlite_user_id(sqlite_path: Path) -> int:
+    sqlite_conn = connect_sqlite(sqlite_path)
+    try:
+        row = sqlite_conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM users").fetchone()
+        return int(row[0])
+    finally:
+        sqlite_conn.close()
+
+
+def build_next_sqlite_collision_report(
+    next_sqlite_user_id: int,
+    postgres_rows: dict[int, dict[str, object]],
+) -> dict[str, object]:
+    postgres_row = postgres_rows.get(next_sqlite_user_id)
+    return {
+        "next_sqlite_user_id": next_sqlite_user_id,
+        "postgres_collision": postgres_row,
+        "status": "risk" if postgres_row else "ok",
+        "reason": (
+            "next_sqlite_user_id_collides_with_postgres"
+            if postgres_row
+            else "next_sqlite_user_id_not_present_in_postgres"
+        ),
+    }
+
+
+def print_next_sqlite_collision_report(report: dict[str, object]) -> bool:
+    print("Next SQLite users.id guard:")
+    print(f"- next_sqlite_user_id: {report['next_sqlite_user_id']}")
+    print(f"- status: {report['status']}")
+    print(f"- reason: {report['reason']}")
+
+    postgres_collision = report["postgres_collision"]
+    if postgres_collision:
+        print(
+            f"- postgres_existing_user: id={postgres_collision['id']} "
+            f"username={postgres_collision['username']!r} "
+            f"display_name={postgres_collision['display_name']!r} "
+            f"role={postgres_collision['role']!r} "
+            f"created_at={postgres_collision['created_at']!r}"
+        )
+
+    return report["status"] != "ok"
+
+
 def main() -> int:
     args = parse_args()
     failures, local_warnings = print_runtime_flags()
@@ -232,6 +278,7 @@ def main() -> int:
     print(f"PostgreSQL target: {redact_database_url(database_url)}")
 
     sqlite_rows = fetch_sqlite_users(sqlite_path)
+    next_sqlite_user_id = fetch_next_sqlite_user_id(sqlite_path)
     with connect_postgres(database_url) as pg_conn:
         postgres_rows = fetch_postgres_users(pg_conn)
         sequence_report = fetch_sequence_report(pg_conn)
@@ -239,8 +286,12 @@ def main() -> int:
     baseline_summary = build_baseline_summary(sqlite_rows, postgres_rows)
     has_baseline_drift = print_baseline_summary(baseline_summary, sqlite_rows, postgres_rows)
     has_sequence_failure = print_sequence_report(sequence_report)
+    next_sqlite_collision_report = build_next_sqlite_collision_report(next_sqlite_user_id, postgres_rows)
+    has_next_sqlite_collision = print_next_sqlite_collision_report(next_sqlite_collision_report)
     if has_sequence_failure:
         failures.append("users_sequence_not_healthy")
+    if has_next_sqlite_collision:
+        failures.append("next_sqlite_user_id_collides_with_postgres")
 
     if args.username:
         sqlite_hits, postgres_hits = probe_username_rows(args.username, sqlite_rows, postgres_rows)

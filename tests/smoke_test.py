@@ -11,6 +11,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 TOOLS_DIR = ROOT_DIR / "tools"
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
 
 TABLE_ORDER = [
     "meta",
@@ -384,6 +386,41 @@ print("user create helper smoke PASS")
         raise AssertionError("user create helper smoke subprocess did not report PASS.")
 
 
+def run_users_create_readiness_guard_smoke(db_path: Path) -> None:
+    from check_users_create_readiness import (
+        build_next_sqlite_collision_report,
+        fetch_next_sqlite_user_id,
+    )
+
+    postgres_rows = {
+        3: {
+            "id": 3,
+            "username": "test",
+            "display_name": "Test User",
+            "role": "member",
+            "created_at": "2026-06-28T00:00:00",
+        }
+    }
+
+    next_sqlite_user_id = fetch_next_sqlite_user_id(db_path)
+    if next_sqlite_user_id != 3:
+        raise AssertionError(f"Unexpected next sqlite user id: {next_sqlite_user_id}")
+
+    collision_report = build_next_sqlite_collision_report(next_sqlite_user_id, postgres_rows)
+    if collision_report["status"] != "risk":
+        raise AssertionError("Expected next sqlite collision status=risk.")
+    if collision_report["reason"] != "next_sqlite_user_id_collides_with_postgres":
+        raise AssertionError("Expected next sqlite collision reason.")
+    if collision_report["postgres_collision"]["username"] != "test":
+        raise AssertionError("Expected postgres collision username=test.")
+
+    safe_report = build_next_sqlite_collision_report(next_sqlite_user_id, {})
+    if safe_report["status"] != "ok":
+        raise AssertionError("Expected next sqlite collision status=ok.")
+    if safe_report["reason"] != "next_sqlite_user_id_not_present_in_postgres":
+        raise AssertionError("Expected safe next sqlite collision reason.")
+
+
 def run_admin_user_role_update_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -471,6 +508,7 @@ def main() -> int:
         run_floor_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_role_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
+        run_users_create_readiness_guard_smoke(db_path)
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 
