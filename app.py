@@ -73,13 +73,15 @@ def dual_write_tables() -> set[str]:
 
 
 def controlled_dual_write_enabled(*, table: str, operation: str) -> bool:
-    if operation != "update":
-        return False
     if not env_flag("DUAL_WRITE_ENABLED"):
         return False
     if env_flag("USE_SQLALCHEMY_WRITES"):
         return False
-    return table in dual_write_tables()
+    if operation == "update":
+        return table in dual_write_tables()
+    if operation == "create" and table == "users":
+        return table in dual_write_tables()
+    return False
 
 
 def dual_write_dry_run_enabled() -> bool:
@@ -158,6 +160,38 @@ def update_user_role_sqlite(
         "UPDATE users SET role = ? WHERE id = ?",
         (role, user_id),
     )
+
+
+def create_user_sqlite(
+    conn: sqlite3.Connection,
+    *,
+    username: str,
+    display_name: str,
+    password_hash: str,
+    role: str,
+) -> dict[str, object]:
+    cur = conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        (username, display_name, password_hash, role),
+    )
+    row = conn.execute(
+        """
+        SELECT id, username, display_name, password_hash, role, created_at
+        FROM users
+        WHERE id = ?
+        """,
+        (cur.lastrowid,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"SQLite users primary create could not reload id={cur.lastrowid}.")
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "password_hash": row["password_hash"],
+        "role": row["role"],
+        "created_at": row["created_at"],
+    }
 
 
 def update_floor_fields_postgres(
@@ -261,6 +295,52 @@ def update_user_role_postgres(
             cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
             dual_write_log(
                 f"DUAL_WRITE_USERS_SECONDARY table=users event=RELEASE_SAVEPOINT_OK user_id={user_id}"
+            )
+            pg_conn.commit()
+        except Exception:
+            try:
+                cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+            finally:
+                cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            pg_conn.commit()
+            raise
+
+
+def create_user_postgres(
+    pg_conn: psycopg.Connection,
+    *,
+    id: int,
+    username: str,
+    display_name: str,
+    password_hash: str,
+    role: str,
+    created_at: str,
+) -> None:
+    savepoint_name = f"dual_write_users_create_{id}"
+    dual_write_log(f"{DUAL_WRITE_USERS_STRATEGY_LOG} operation=create user_id={id}")
+    with pg_conn.cursor() as cur:
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users operation=create event=SAVEPOINT_START user_id={id}")
+        cur.execute(f"SAVEPOINT {savepoint_name}")
+        dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users operation=create event=SAVEPOINT_OK user_id={id}")
+        try:
+            dual_write_log(
+                f"DUAL_WRITE_USERS_SECONDARY table=users operation=create event=EXECUTE_SQL_START user_id={id}"
+            )
+            cur.execute(
+                """
+                INSERT INTO users (id, username, display_name, password_hash, role, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (id, username, display_name, password_hash, role, created_at),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError(
+                    f"PostgreSQL users secondary create affected {cur.rowcount} rows for user_id={id}."
+                )
+            dual_write_log(f"DUAL_WRITE_USERS_SECONDARY table=users operation=create event=EXECUTE_SQL_OK user_id={id}")
+            cur.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+            dual_write_log(
+                f"DUAL_WRITE_USERS_SECONDARY table=users operation=create event=RELEASE_SAVEPOINT_OK user_id={id}"
             )
             pg_conn.commit()
         except Exception:
@@ -401,6 +481,62 @@ def maybe_dual_write_user_role_update(
         dual_write_log(
             "DUAL_WRITE operation=update table=users "
             f"user_id={user_id} dry_run=false postgres_result=failed error={exc!r}"
+        )
+        if dual_write_strict_enabled():
+            raise
+
+
+def maybe_dual_write_user_create(user_row: dict[str, object]) -> None:
+    if not controlled_dual_write_enabled(table="users", operation="create"):
+        return
+
+    user_id = int(user_row["id"])
+    username = str(user_row["username"])
+    dry_run = dual_write_dry_run_enabled()
+    if dry_run:
+        dual_write_log(
+            f"DUAL_WRITE_DRY_RUN operation=create table=users user_id={user_id} username={username!r}"
+        )
+        dual_write_log(f"{DUAL_WRITE_USERS_STRATEGY_LOG} operation=create user_id={user_id}")
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users operation=create event=SAVEPOINT_START user_id={user_id}"
+        )
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users operation=create event=SAVEPOINT_OK user_id={user_id}"
+        )
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users operation=create event=EXECUTE_SQL_START user_id={user_id}"
+        )
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users operation=create event=EXECUTE_SQL_OK user_id={user_id}"
+        )
+        dual_write_log(
+            f"DUAL_WRITE_USERS_SECONDARY table=users operation=create event=RELEASE_SAVEPOINT_OK user_id={user_id}"
+        )
+        dual_write_log(
+            "DUAL_WRITE operation=create table=users "
+            f"user_id={user_id} username={username!r} dry_run=true postgres_result=success"
+        )
+        return
+
+    try:
+        create_user_postgres(
+            get_primary_postgres_connection(),
+            id=user_id,
+            username=username,
+            display_name=str(user_row["display_name"]),
+            password_hash=str(user_row["password_hash"]),
+            role=str(user_row["role"]),
+            created_at=str(user_row["created_at"]),
+        )
+        dual_write_log(
+            "DUAL_WRITE operation=create table=users "
+            f"user_id={user_id} username={username!r} dry_run=false postgres_result=success"
+        )
+    except Exception as exc:
+        dual_write_log(
+            "DUAL_WRITE operation=create table=users "
+            f"user_id={user_id} username={username!r} dry_run=false postgres_result=failed error={exc!r}"
         )
         if dual_write_strict_enabled():
             raise
@@ -1151,11 +1287,16 @@ def users():
                 flash("\u8acb\u8f38\u5165\u5e33\u865f\u8207\u5bc6\u78bc\u3002", "error")
             else:
                 try:
+                    password_hash = generate_password_hash(password)
                     with db() as conn:
-                        conn.execute(
-                            "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
-                            (username, display_name, generate_password_hash(password), role),
+                        user_row = create_user_sqlite(
+                            conn,
+                            username=username,
+                            display_name=display_name,
+                            password_hash=password_hash,
+                            role=role,
                         )
+                    maybe_dual_write_user_create(user_row)
                     flash("\u6210\u54e1\u5df2\u65b0\u589e\u3002", "success")
                 except sqlite3.IntegrityError:
                     flash("\u5e33\u865f\u5df2\u5b58\u5728\u3002", "error")

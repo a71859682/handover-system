@@ -19,6 +19,9 @@ REQUIRED_FUNCTIONS = {
     "update_user_role_sqlite",
     "update_user_role_postgres",
     "maybe_dual_write_user_role_update",
+    "create_user_sqlite",
+    "create_user_postgres",
+    "maybe_dual_write_user_create",
     "controlled_dual_write_enabled",
 }
 REQUIRED_LOG_SNIPPETS = [
@@ -33,12 +36,14 @@ REQUIRED_LOG_SNIPPETS = [
     "DUAL_WRITE_DRY_RUN operation=update table=users",
     "DUAL_WRITE_USERS_SECONDARY table=users strategy=reuse_primary_postgres_connection",
     "DUAL_WRITE operation=update table=users",
+    "DUAL_WRITE_DRY_RUN operation=create table=users",
+    "DUAL_WRITE operation=create table=users",
 ]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate the controlled dual-write wiring for floors/users update-only."
+        description="Validate the controlled dual-write wiring for floors updates and users update/create paths."
     )
     return parser.parse_args()
 
@@ -98,6 +103,25 @@ def assert_route_wiring(source: str) -> None:
     if not (self_role_block_index < sqlite_role_index < dual_write_role_index):
         raise AssertionError("users role dual-write/update-only wiring is not ordered correctly.")
 
+    create_route_snippets = (
+        'elif action == "create_user":',
+        'password_hash = generate_password_hash(password)',
+        "user_row = create_user_sqlite(",
+        "maybe_dual_write_user_create(user_row)",
+    )
+    for snippet in create_route_snippets:
+        if snippet not in source:
+            raise AssertionError(f"Missing required route snippet: {snippet}")
+
+    create_route_index = source.index('elif action == "create_user":')
+    create_route_tail = source[create_route_index:user_route_index]
+    password_hash_index = create_route_tail.index('password_hash = generate_password_hash(password)')
+    sqlite_create_index = create_route_tail.index("user_row = create_user_sqlite(")
+    dual_write_create_index = create_route_tail.index("maybe_dual_write_user_create(user_row)")
+
+    if not (password_hash_index < sqlite_create_index < dual_write_create_index):
+        raise AssertionError("users create dual-write wiring is not ordered correctly.")
+
 
 def main() -> int:
     parse_args()
@@ -107,7 +131,7 @@ def main() -> int:
     assert_required_logs(source)
     assert_route_wiring(source)
 
-    print("PASS controlled dual-write floors/users update-only wiring looks correct.")
+    print("PASS controlled dual-write floors/users update/create wiring looks correct.")
     return 0
 
 

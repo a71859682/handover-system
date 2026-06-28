@@ -53,7 +53,7 @@ def create_sample_sqlite(path: Path) -> None:
             display_name TEXT,
             password_hash TEXT NOT NULL,
             role TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE sheets (
             id INTEGER PRIMARY KEY,
@@ -330,6 +330,60 @@ print("user role helper smoke PASS")
         raise AssertionError("user role helper smoke subprocess did not report PASS.")
 
 
+def run_user_create_helper_smoke(db_path: Path, app_db_path: Path) -> None:
+    script = """
+import importlib.util
+from pathlib import Path
+import sqlite3
+import sys
+
+app_db_path, sample_db_path, root_dir = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+import os
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+conn = sqlite3.connect(sample_db_path)
+conn.row_factory = sqlite3.Row
+user_row = module.create_user_sqlite(
+    conn,
+    username="new_member",
+    display_name="New Member",
+    password_hash="hash-created-once",
+    role="member",
+)
+conn.commit()
+row = conn.execute(
+    "SELECT username, display_name, password_hash, role, created_at FROM users WHERE id = ?",
+    (user_row["id"],),
+).fetchone()
+conn.close()
+if row["username"] != "new_member" or row["display_name"] != "New Member" or row["password_hash"] != "hash-created-once" or row["role"] != "member":
+    raise SystemExit("user create helper smoke failed")
+if user_row["username"] != "new_member" or user_row["password_hash"] != "hash-created-once":
+    raise SystemExit("user create helper result mismatch")
+if not user_row["created_at"]:
+    raise SystemExit("user create helper missing created_at")
+print("user create helper smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "user create helper smoke PASS" not in result.stdout:
+        raise AssertionError("user create helper smoke subprocess did not report PASS.")
+
+
 def run_admin_user_role_update_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -417,6 +471,7 @@ def main() -> int:
         run_floor_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_role_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
+        run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 
     if redact_database_url("postgresql://user:secret@localhost:5432/demo") != "postgresql://user:***@localhost:5432/demo":
@@ -430,7 +485,7 @@ def main() -> int:
     run_help("backfill_users_display_name_to_postgres.py")
 
     controlled_result = run_script("check_controlled_dual_write.py")
-    if "PASS controlled dual-write floors/users update-only wiring looks correct." not in controlled_result.stdout:
+    if "PASS controlled dual-write floors/users update/create wiring looks correct." not in controlled_result.stdout:
         raise AssertionError("check_controlled_dual_write.py did not report PASS.")
 
     floors_result = run_script("check_floors_secondary_update.py", env={"DATABASE_URL": ""})
