@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -481,6 +482,74 @@ def run_users_create_readiness_autoincrement_sequence_smoke() -> None:
             raise AssertionError("Expected no PostgreSQL collision row for bumped AUTOINCREMENT sqlite next id.")
 
 
+def run_users_delete_readiness_guard_smoke(db_path: Path) -> None:
+    script = """
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+root_dir, sample_db_path = sys.argv[1:3]
+tool_path = Path(root_dir) / "tools" / "check_users_delete_readiness.py"
+base_env = os.environ.copy()
+base_env["APP_DB_PATH"] = sample_db_path
+base_env["DATABASE_URL"] = ""
+base_env["DUAL_WRITE_ENABLED"] = "true"
+base_env["DUAL_WRITE_DRY_RUN"] = "false"
+base_env["DUAL_WRITE_STRICT"] = "false"
+base_env["USE_SQLALCHEMY_WRITES"] = "false"
+base_env["DUAL_WRITE_TABLES"] = "meta,sheets,extra_fields,units,floors,tasks,users"
+
+result_ok = subprocess.run(
+    [sys.executable, str(tool_path), "--username", "dw_test_delete_real_20260628"],
+    cwd=root_dir,
+    capture_output=True,
+    text=True,
+    env=base_env,
+)
+if result_ok.returncode != 0 or "PASS users delete readiness check passed." not in result_ok.stdout:
+    raise SystemExit("delete readiness allowed-user smoke failed")
+
+result_admin = subprocess.run(
+    [sys.executable, str(tool_path), "--username", "admin"],
+    cwd=root_dir,
+    capture_output=True,
+    text=True,
+    env=base_env,
+)
+if result_admin.returncode == 0 or "FAIL users delete readiness: protected_user" not in result_admin.stdout:
+    raise SystemExit("delete readiness protected-user smoke failed")
+
+print("users delete readiness smoke PASS")
+"""
+    isolated_db_path = db_path.parent / "delete-readiness-sample.db"
+    shutil.copy2(db_path, isolated_db_path)
+    conn = sqlite3.connect(isolated_db_path)
+    conn.execute(
+        """
+        INSERT INTO users (id, username, display_name, password_hash, role, created_at)
+        VALUES (3, 'dw_test_delete_real_20260628', 'Delete Real', 'hash', 'member', '2026-06-28T00:10:00')
+        """
+    )
+    conn.commit()
+    conn.close()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(ROOT_DIR),
+            str(isolated_db_path),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "users delete readiness smoke PASS" not in result.stdout:
+        raise AssertionError("users delete readiness smoke subprocess did not report PASS.")
+
+
 def run_users_id_allocation_smoke(db_path: Path) -> None:
     from check_users_id_allocation import fetch_sqlite_users_schema
 
@@ -683,6 +752,7 @@ def main() -> int:
         run_user_role_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_users_create_readiness_guard_smoke(db_path)
         run_users_create_readiness_autoincrement_sequence_smoke()
+        run_users_delete_readiness_guard_smoke(db_path)
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
         run_users_sqlite_sequence_apply_guard_smoke()
@@ -697,6 +767,7 @@ def main() -> int:
     run_help("check_users_secondary_update.py")
     run_help("check_users_baseline_and_sequence.py")
     run_help("check_users_create_readiness.py")
+    run_help("check_users_delete_readiness.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")
