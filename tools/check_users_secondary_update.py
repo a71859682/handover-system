@@ -15,11 +15,44 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 
+def sqlite_has_users_table(path: Path) -> bool:
+    try:
+        with sqlite3.connect(path) as conn:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+            ).fetchone()
+        return row is not None
+    except sqlite3.Error:
+        return False
+
+
+def resolve_sqlite_candidates() -> list[tuple[str, Path]]:
+    configured = os.environ.get("APP_DB_PATH")
+    if configured:
+        return [
+            ("APP_DB_PATH", Path(configured).expanduser().resolve()),
+            ("/var/data/site.db", Path("/var/data/site.db")),
+            ("./site.db", Path.cwd() / "site.db"),
+            ("repo_site.db", BASE_DIR / "site.db"),
+        ]
+    return [
+        ("APP_DB_PATH", BASE_DIR / "site.db"),
+        ("/var/data/site.db", Path("/var/data/site.db")),
+        ("./site.db", Path.cwd() / "site.db"),
+    ]
+
+
 def resolve_sqlite_source_path() -> Path:
-    source = os.environ.get("APP_SQLITE_SOURCE_PATH")
-    if source:
-        return Path(source).expanduser().resolve()
-    return (BASE_DIR / "site.db").resolve()
+    candidates = resolve_sqlite_candidates()
+    existing = [path for _, path in candidates if path.exists()]
+    for path in existing:
+        if sqlite_has_users_table(path):
+            return path
+    if existing:
+        checked = ", ".join(str(path) for path in existing)
+        raise SystemExit(f"FAIL SQLite candidates exist but none contain a users table: {checked}")
+    checked = ", ".join(f"{label}={path}" for label, path in candidates)
+    raise SystemExit(f"FAIL no SQLite candidate found: {checked}")
 
 
 def redact_database_url(database_url: str) -> str:

@@ -14,13 +14,13 @@
       <div class="subtitle">&#21516;&#27493;&#31649;&#21046;&#34920;</div>
     </div>
     <nav class="nav">
-      <a href="{{ url_for('sheet.sheet') }}">&#31649;&#21046;&#34920;</a>
+      <a href="{{ url_for('sheet') }}">&#31649;&#21046;&#34920;</a>
       {% if session.get("role") == "admin" %}
-      <a href="{{ url_for('admin.table_admin') }}">&#34920;&#26684;&#35373;&#23450;</a>
-      <a href="{{ url_for('admin.users') }}">&#25104;&#21729;&#31649;&#29702;</a>
+      <a href="{{ url_for('table_admin') }}">&#34920;&#26684;&#35373;&#23450;</a>
+      <a href="{{ url_for('users') }}">&#25104;&#21729;&#31649;&#29702;</a>
       {% endif %}
       <span class="user">{{ session.get("display_name") or session.get("username") }}</span>
-      <form method="post" action="{{ url_for('auth.logout') }}">
+      <form method="post" action="{{ url_for('logout') }}">
         <button type="submit" class="ghost">&#30331;&#20986;</button>
       </form>
     </nav>

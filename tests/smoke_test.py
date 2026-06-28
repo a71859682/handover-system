@@ -200,11 +200,12 @@ def run_script(script_name: str, env: dict[str, str] | None = None) -> subproces
 def run_floor_helper_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
+from pathlib import Path
 import sqlite3
 import sys
 
 app_db_path, sample_db_path, root_dir = sys.argv[1:4]
-spec = importlib.util.spec_from_file_location("app_under_test", root_dir + "\\\\app.py")
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
 module = importlib.util.module_from_spec(spec)
 import os
 os.environ["APP_DB_PATH"] = app_db_path
@@ -240,11 +241,12 @@ print("floor helper smoke PASS")
 def run_user_helper_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
+from pathlib import Path
 import sqlite3
 import sys
 
 app_db_path, sample_db_path, root_dir = sys.argv[1:4]
-spec = importlib.util.spec_from_file_location("app_under_test", root_dir + "\\\\app.py")
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
 module = importlib.util.module_from_spec(spec)
 import os
 os.environ["APP_DB_PATH"] = app_db_path
