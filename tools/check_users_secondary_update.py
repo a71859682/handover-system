@@ -15,6 +15,8 @@ BASE_DIR = Path(__file__).resolve().parents[1]
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+from sqlite_db_path import get_sqlite_db_path
+
 
 def sqlite_has_users_table(path: Path) -> bool:
     try:
@@ -71,6 +73,7 @@ def resolve_sqlite_candidates() -> list[tuple[str, Path]]:
     if configured:
         add_candidate("APP_DB_PATH", configured)
 
+    add_candidate("shared_sqlite_db_path", get_sqlite_db_path())
     add_candidate("flask.DB_PATH", discover_app_db_path())
     add_candidate("repo_site.db", BASE_DIR / "site.db")
     add_candidate("cwd_site.db", Path.cwd() / "site.db")

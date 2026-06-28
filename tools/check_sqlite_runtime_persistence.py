@@ -18,6 +18,7 @@ from check_users_secondary_update import (  # noqa: E402
     resolve_sqlite_candidates,
     resolve_sqlite_source_path,
 )
+from sqlite_db_path import resolve_sqlite_db_path  # noqa: E402
 
 
 PERSISTENT_PREFIXES = (
@@ -67,12 +68,15 @@ def main() -> int:
     raw_env_app_db_path = os.environ.get("APP_DB_PATH", "")
     config_app_db_path = APP_DB_PATH
     app_db_path = discover_app_db_path()
+    shared_resolution = resolve_sqlite_db_path()
     sqlite_path = resolve_sqlite_source_path()
     sqlite_report = fetch_sqlite_users_schema(sqlite_path)
 
     print("SQLite runtime path configuration:")
     print(f"- APP_DB_PATH_env: {raw_env_app_db_path!r}")
     print(f"- APP_DB_PATH_config: {config_app_db_path}")
+    print(f"- shared_resolver_source: {shared_resolution.source}")
+    print(f"- shared_resolver_path: {shared_resolution.path}")
     print(f"- app.DB_PATH: {app_db_path}")
     print(f"- resolved_sqlite_source_path: {sqlite_path}")
     print(f"- app_and_tool_paths_match: {str(app_db_path == sqlite_path).lower()}")

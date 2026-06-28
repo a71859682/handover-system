@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-
-BASE_DIR = Path(__file__).resolve().parent
+from sqlite_db_path import get_sqlite_db_path
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -20,7 +18,7 @@ def _env_csv(name: str, default: str = "") -> tuple[str, ...]:
 
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
-APP_DB_PATH = Path(os.environ.get("APP_DB_PATH", BASE_DIR / "site.db"))
+APP_DB_PATH = get_sqlite_db_path()
 USE_SQLALCHEMY_READS = _env_flag("USE_SQLALCHEMY_READS", default=False)
 USE_SQLALCHEMY_WRITES = _env_flag("USE_SQLALCHEMY_WRITES", default=False)
 DUAL_WRITE_DRY_RUN = _env_flag("DUAL_WRITE_DRY_RUN", default=False)

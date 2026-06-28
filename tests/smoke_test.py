@@ -568,6 +568,32 @@ def run_users_sqlite_sequence_apply_guard_smoke() -> None:
         raise AssertionError("Expected apply guard to reject non-increasing sqlite sequence target.")
 
 
+def run_sqlite_db_path_resolver_smoke() -> None:
+    from sqlite_db_path import resolve_sqlite_db_path
+
+    default_resolution = resolve_sqlite_db_path("")
+    if default_resolution.source != "default_project_site_db":
+        raise AssertionError(f"Unexpected default sqlite db path source: {default_resolution.source}")
+    if default_resolution.path.name != "site.db":
+        raise AssertionError(f"Unexpected default sqlite db path name: {default_resolution.path}")
+
+    env_resolution = resolve_sqlite_db_path(str(ROOT_DIR / "site.db"))
+    if env_resolution.source != "env_APP_DB_PATH":
+        raise AssertionError(f"Unexpected env sqlite db path source: {env_resolution.source}")
+    if env_resolution.path.name != "site.db":
+        raise AssertionError(f"Unexpected env sqlite db path name: {env_resolution.path}")
+
+    invalid_windows_env_resolution = resolve_sqlite_db_path(r"I:\公司web\大英新埔\site.db")
+    if os.name == "nt":
+        if invalid_windows_env_resolution.source != "env_APP_DB_PATH":
+            raise AssertionError("Expected Windows-style APP_DB_PATH to remain valid on Windows.")
+    else:
+        if invalid_windows_env_resolution.source != "fallback_default_invalid_windows_env_on_non_windows":
+            raise AssertionError(
+                "Expected Windows-style APP_DB_PATH to fall back to project site.db on non-Windows."
+            )
+
+
 def run_admin_user_role_update_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -660,6 +686,7 @@ def main() -> int:
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
         run_users_sqlite_sequence_apply_guard_smoke()
+        run_sqlite_db_path_resolver_smoke()
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 

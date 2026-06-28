@@ -11,10 +11,11 @@ import psycopg
 from flask import Flask, flash, g, jsonify, redirect, render_template, request, session, url_for
 from openpyxl import load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
+from sqlite_db_path import get_sqlite_db_path
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = Path(os.environ.get("APP_DB_PATH", r"I:\公司web\大英新埔\site.db"))
+DB_PATH = get_sqlite_db_path()
 SOURCE_XLSX = BASE_DIR / "source.xlsx"
 MAX_WORK_COL = 60  # D:BH
 DONE_VALUE = "O"
