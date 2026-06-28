@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from db_compat import PostgresCompatConnection
+
 
 TEST_DB_DIR = Path(tempfile.mkdtemp(prefix="handover-smoke-test-"))
 TEST_DB_PATH = TEST_DB_DIR / "site.db"
@@ -319,6 +321,73 @@ def test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_
     assert "skipped_non_sqlite_primary" not in log_output
 
 
+def test_controlled_dual_write_meta_reuses_postgres_compat_primary_connection():
+    os.environ["DUAL_WRITE_ENABLED"] = "true"
+    os.environ["DUAL_WRITE_TABLES"] = "meta"
+    os.environ["DUAL_WRITE_STRICT"] = "false"
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+    os.environ["DATABASE_URL"] = "postgresql://example.test/app"
+
+    import config
+    import services.write_service as write_service
+
+    config = importlib.reload(config)
+    write_service = importlib.reload(write_service)
+
+    logger = logging.getLogger("dual_write")
+    logger.setLevel(logging.INFO)
+    messages: list[str] = []
+
+    class CollectHandler(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+
+    handler = CollectHandler(level=logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    raw_calls: list[tuple[str, tuple[object, ...] | None]] = []
+
+    class FakeCursor:
+        def execute(self, sql, params=None):
+            raw_calls.append((sql.strip(), params))
+
+        def close(self):
+            return None
+
+    class FakeRawConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    compat_conn = object.__new__(PostgresCompatConnection)
+    compat_conn._conn = FakeRawConnection()
+
+    class FailingPsycopg:
+        def connect(self, url, **kwargs):
+            raise AssertionError("psycopg.connect should not be used when reusing compat primary connection")
+
+    write_service.psycopg = FailingPsycopg()
+
+    try:
+        result, error, details = write_service._write_meta_to_postgres_secondary(  # type: ignore[attr-defined]
+            compat_conn,
+            key="site_title",
+            value="Compat reuse",
+        )
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    log_output = "\n".join(messages)
+    assert result == "success"
+    assert error is None
+    assert details["strategy"] == "reuse_primary_postgres_connection"
+    assert any("SAVEPOINT dual_write_meta_secondary" in call[0] for call in raw_calls)
+    assert any("INSERT INTO meta" in call[0] for call in raw_calls)
+    assert "strategy=reuse_primary_postgres_connection" in log_output
+    assert "event=EXECUTE_SQL_OK" in log_output
+
+
 def test_controlled_dual_write_meta_strict_false_logs_postgres_error_without_blocking_primary():
     os.environ["DUAL_WRITE_ENABLED"] = "true"
     os.environ["DUAL_WRITE_TABLES"] = "meta"
@@ -506,6 +575,7 @@ def run():
     test_create_user_sqlite_with_sqlite_connection()
     test_controlled_dual_write_meta_stays_gated_to_meta()
     test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_write()
+    test_controlled_dual_write_meta_reuses_postgres_compat_primary_connection()
     test_controlled_dual_write_meta_strict_false_logs_postgres_error_without_blocking_primary()
     test_controlled_dual_write_meta_strict_true_raises_after_primary_write()
     test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log()
