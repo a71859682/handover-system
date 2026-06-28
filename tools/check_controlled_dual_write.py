@@ -52,13 +52,27 @@ def _make_sqlite_users_conn() -> sqlite3.Connection:
     return conn
 
 
+def _make_sqlite_sheets_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE sheets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    return conn
+
+
 def main() -> int:
     temp_dir = Path(tempfile.mkdtemp(prefix="controlled-dual-write-"))
     os.environ["APP_DB_PATH"] = str(temp_dir / "site.db")
 
     config, write_service = _load_modules(
         dual_write_enabled=True,
-        dual_write_tables="meta",
+        dual_write_tables="meta,sheets",
         dual_write_strict=False,
         dual_write_dry_run=True,
     )
@@ -144,6 +158,13 @@ def main() -> int:
         )
         non_meta_calls_unchanged = len(postgres_calls) == before_non_meta_calls
 
+        sheets_conn = _make_sqlite_sheets_conn()
+        sheets_conn.execute("INSERT INTO sheets (id, name, sort_order) VALUES (1, 'Old name', 1)")
+        before_sheet_calls = len(postgres_calls)
+        write_service.update_sheet_name_sqlite(sheets_conn, sheet_id=1, name="New name")
+        sheet_value = sheets_conn.execute("SELECT name FROM sheets WHERE id = 1").fetchone()[0]
+        sheet_calls_added = len(postgres_calls) > before_sheet_calls
+
         before_non_sqlite_calls = len(postgres_calls)
         write_service._maybe_controlled_dual_write_meta(  # type: ignore[attr-defined]
             NonSqlitePrimaryConnection(),
@@ -161,27 +182,42 @@ def main() -> int:
             ("site_title",),
         ).fetchone()[0]
 
+        sheets_conn_before_failure = _make_sqlite_sheets_conn()
+        sheets_conn_before_failure.execute("INSERT INTO sheets (id, name, sort_order) VALUES (2, 'Before failure', 2)")
+        write_service.update_sheet_name_sqlite(sheets_conn_before_failure, sheet_id=2, name="After failure")
+        sheet_value_after_failure = sheets_conn_before_failure.execute(
+            "SELECT name FROM sheets WHERE id = 2"
+        ).fetchone()[0]
+
         log_output = stream.getvalue()
 
         allowed_tables = write_service._controlled_dual_write_tables()  # type: ignore[attr-defined]
         checks = [
             ("USE_SQLALCHEMY_WRITES disabled", config.USE_SQLALCHEMY_WRITES is False),
             ("DUAL_WRITE_ENABLED enabled", config.DUAL_WRITE_ENABLED is True),
-            ("DUAL_WRITE_TABLES limited to meta/settings", allowed_tables == {"meta"}),
+            ("DUAL_WRITE_TABLES limited to meta and sheets", allowed_tables == {"meta", "sheets"}),
             ("Meta dual write is gated on", write_service._is_controlled_dual_write_enabled_for("meta") is True),  # type: ignore[attr-defined]
+            ("Sheets dual write is gated on", write_service._is_controlled_dual_write_enabled_for("sheets") is True),  # type: ignore[attr-defined]
             ("Users do not dual write to PostgreSQL", non_meta_calls_unchanged),
             ("Non-SQLite runtime still attempts PostgreSQL secondary", non_sqlite_primary_attempted),
             ("Meta primary SQLite write still works", sqlite_value == "Controlled Dual Write"),
+            ("Sheets primary SQLite write still works", sheet_value == "New name"),
             ("Meta primary write survives failed secondary in non-strict mode", sqlite_value_after_failure == "Primary survives secondary failure"),
+            ("Sheets primary write survives failed secondary in non-strict mode", sheet_value_after_failure == "After failure"),
             ("Meta PostgreSQL secondary write can be attempted", any(call[0] == "CONNECT" for call in postgres_calls)),
+            ("Sheets PostgreSQL secondary write can be attempted", sheet_calls_added),
             ("Controlled dual write log emitted", "DUAL_WRITE operation=upsert table=meta" in log_output),
             ("Controlled dual write log reports success", "postgres_result=success" in log_output),
             ("Controlled dual write reports failed on non-strict secondary error", "postgres_result=failed" in log_output),
+            ("Sheets controlled dual write log emitted", "DUAL_WRITE operation=update table=sheets" in log_output),
             ("Controlled dual write no longer reports skipped_non_sqlite_primary", "skipped_non_sqlite_primary" not in log_output),
             ("Secondary debug log includes connect step", "DUAL_WRITE_META_SECONDARY strategy=raw_psycopg event=CONNECT_START" in log_output),
             ("Secondary debug log includes execute step", "DUAL_WRITE_META_SECONDARY strategy=raw_psycopg event=EXECUTE_SQL_START" in log_output),
             ("Secondary debug log includes rollback step on failure", "DUAL_WRITE_META_SECONDARY strategy=raw_psycopg event=ROLLBACK" in log_output),
+            ("Sheets secondary debug log includes savepoint step", "DUAL_WRITE_SHEETS_SECONDARY table=sheets strategy=raw_psycopg event=EXECUTE_SQL_START" in log_output),
+            ("Sheets secondary debug log includes release savepoint step", "DUAL_WRITE_SHEETS_SECONDARY table=sheets strategy=raw_psycopg event=ROLLBACK" in log_output or "DUAL_WRITE_SHEETS_SECONDARY table=sheets strategy=raw_psycopg event=COMMIT_OK" in log_output),
             ("Dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=upsert table=meta" in log_output),
+            ("Sheets dry-run log still emitted", "DUAL_WRITE_DRY_RUN operation=update table=sheets" in log_output),
         ]
 
         failed = [label for label, ok in checks if not ok]

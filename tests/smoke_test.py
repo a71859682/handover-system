@@ -230,6 +230,140 @@ def test_controlled_dual_write_meta_stays_gated_to_meta():
     assert "DUAL_WRITE operation=insert table=users" not in log_output
 
 
+def test_controlled_dual_write_sheet_update_stays_gated_to_sheets_only():
+    os.environ["DUAL_WRITE_ENABLED"] = "true"
+    os.environ["DUAL_WRITE_TABLES"] = "meta,sheets"
+    os.environ["DUAL_WRITE_STRICT"] = "false"
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+    os.environ["DATABASE_URL"] = "postgresql://example.test/app"
+
+    import config
+    import services.write_service as write_service
+
+    config = importlib.reload(config)
+    write_service = importlib.reload(write_service)
+
+    logger = logging.getLogger("dual_write")
+    logger.setLevel(logging.INFO)
+    messages: list[str] = []
+
+    class CollectHandler(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+
+    handler = CollectHandler(level=logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    postgres_calls: list[tuple[str, tuple[object, ...] | None]] = []
+
+    class FakeCursor:
+        def execute(self, sql, params=None):
+            postgres_calls.append((sql, params))
+
+        def close(self):
+            return None
+
+    class FakeRawConnection:
+        def cursor(self):
+            return FakeCursor()
+
+    compat_conn = object.__new__(PostgresCompatConnection)
+    compat_conn._conn = FakeRawConnection()
+
+    try:
+        compat_conn.execute = lambda sql, params=(): None  # type: ignore[attr-defined]
+        write_service.update_sheet_name_sqlite(compat_conn, sheet_id=9, name="Renamed sheet")
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    log_output = "\n".join(messages)
+    assert any("SAVEPOINT dual_write_sheets_secondary" in call[0] for call in postgres_calls if isinstance(call[0], str))
+    assert any("UPDATE sheets" in call[0] for call in postgres_calls if isinstance(call[0], str))
+    assert "DUAL_WRITE operation=update table=sheets" in log_output
+    assert "postgres_result=success" in log_output
+    assert "DUAL_WRITE_DRY_RUN operation=update table=sheets" in log_output
+    assert "DUAL_WRITE_SHEETS_SECONDARY table=sheets strategy=reuse_primary_postgres_connection event=SAVEPOINT_START" in log_output
+    assert "DUAL_WRITE_SHEETS_SECONDARY table=sheets strategy=reuse_primary_postgres_connection event=EXECUTE_SQL_OK" in log_output
+
+
+def test_controlled_dual_write_sheet_update_strict_false_logs_postgres_error_without_blocking_primary():
+    os.environ["DUAL_WRITE_ENABLED"] = "true"
+    os.environ["DUAL_WRITE_TABLES"] = "meta,sheets"
+    os.environ["DUAL_WRITE_STRICT"] = "false"
+    os.environ["DUAL_WRITE_DRY_RUN"] = "true"
+    os.environ["DATABASE_URL"] = "postgresql://example.test/app"
+
+    import config
+    import services.write_service as write_service
+
+    config = importlib.reload(config)
+    write_service = importlib.reload(write_service)
+
+    logger = logging.getLogger("dual_write")
+    logger.setLevel(logging.INFO)
+    messages: list[str] = []
+
+    class CollectHandler(logging.Handler):
+        def emit(self, record):
+            messages.append(self.format(record))
+
+    handler = CollectHandler(level=logging.INFO)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+
+    class FailingCursor:
+        def execute(self, sql, params=None):
+            raise RuntimeError("forced sheets secondary failure")
+
+        def close(self):
+            return None
+
+    class FailingPostgresConnection:
+        def __init__(self):
+            self.rolled_back = False
+
+        def cursor(self):
+            return FailingCursor()
+
+        def commit(self):
+            raise AssertionError("commit should not be called on failed secondary write")
+
+        def rollback(self):
+            self.rolled_back = True
+
+        def close(self):
+            return None
+
+    failing_connections: list[FailingPostgresConnection] = []
+
+    class FailingPsycopg:
+        def connect(self, url, **kwargs):
+            conn = FailingPostgresConnection()
+            failing_connections.append(conn)
+            return conn
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE sheets (id INTEGER PRIMARY KEY, name TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 1)")
+    conn.execute("INSERT INTO sheets (id, name, sort_order) VALUES (1, 'Before', 1)")
+    write_service.psycopg = FailingPsycopg()
+
+    try:
+        write_service.update_sheet_name_sqlite(conn, sheet_id=1, name="After")
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    log_output = "\n".join(messages)
+    stored_value = conn.execute("SELECT name FROM sheets WHERE id = 1").fetchone()[0]
+    assert stored_value == "After"
+    assert "DUAL_WRITE operation=update table=sheets" in log_output
+    assert "postgres_result=failed" in log_output
+    assert "DUAL_WRITE_DRY_RUN operation=update table=sheets" in log_output
+    assert failing_connections and failing_connections[0].rolled_back is True
+
+
 def test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_write():
     os.environ["DUAL_WRITE_ENABLED"] = "true"
     os.environ["DUAL_WRITE_TABLES"] = "meta"
@@ -574,10 +708,12 @@ def run():
     test_logout_redirects()
     test_create_user_sqlite_with_sqlite_connection()
     test_controlled_dual_write_meta_stays_gated_to_meta()
+    test_controlled_dual_write_sheet_update_stays_gated_to_sheets_only()
     test_controlled_dual_write_meta_non_sqlite_runtime_still_attempts_secondary_write()
     test_controlled_dual_write_meta_reuses_postgres_compat_primary_connection()
     test_controlled_dual_write_meta_strict_false_logs_postgres_error_without_blocking_primary()
     test_controlled_dual_write_meta_strict_true_raises_after_primary_write()
+    test_controlled_dual_write_sheet_update_strict_false_logs_postgres_error_without_blocking_primary()
     test_create_user_runtime_path_uses_cursor_lastrowid_and_emits_dry_run_log()
 
 
