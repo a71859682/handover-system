@@ -670,6 +670,7 @@ def main() -> int:
     run_help("check_users_secondary_update.py")
     run_help("check_users_baseline_and_sequence.py")
     run_help("check_users_create_readiness.py")
+    run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")
     run_help("bump_users_sqlite_sequence.py")
@@ -708,6 +709,9 @@ def main() -> int:
     allocation_result = run_script("check_users_id_allocation.py", env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in allocation_result.stdout or "PASS" not in allocation_result.stdout:
         raise AssertionError("check_users_id_allocation.py did not report expected PASS without DATABASE_URL.")
+    persistence_result = run_script("check_sqlite_runtime_persistence.py", env={"DATABASE_URL": ""})
+    if "resolved_sqlite_source_path:" not in persistence_result.stdout or "PASS" not in persistence_result.stdout:
+        raise AssertionError("check_sqlite_runtime_persistence.py did not report expected PASS output.")
     plan_result = run_script("plan_users_sqlite_sequence_bump.py", env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in plan_result.stdout or "PASS" not in plan_result.stdout:
         raise AssertionError("plan_users_sqlite_sequence_bump.py did not report expected PASS without DATABASE_URL.")
