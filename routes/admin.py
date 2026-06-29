@@ -114,12 +114,12 @@ def table_admin():
                     builtin_fields=app.BUILTIN_EXTRA_FIELDS,
                 )
                 flash("工作表已新增。", "success")
-                return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
+                return redirect(url_for(".table_admin", sheet_id=sheet_id))
             if action == "delete_sheet":
                 count = conn.execute("SELECT COUNT(*) FROM sheets").fetchone()[0]
                 if count <= 1:
                     flash("至少要保留一個工作表。", "error")
-                    return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
+                    return redirect(url_for(".table_admin", sheet_id=sheet_id))
                 unit_ids = [row["id"] for row in conn.execute("SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ?", (sheet_id,))]
                 if unit_ids:
                     placeholders = ",".join("?" for _ in unit_ids)
@@ -134,7 +134,7 @@ def table_admin():
                 conn.execute("DELETE FROM sheets WHERE id = ?", (sheet_id,))
                 next_sheet = app.resolve_sheet_id(conn)
                 flash("工作表已刪除。", "success")
-                return redirect(url_for("admin.table_admin", sheet_id=next_sheet))
+                return redirect(url_for(".table_admin", sheet_id=next_sheet))
             if action == "add_task":
                 next_col = conn.execute("SELECT COALESCE(MAX(col_index), 3) + 1 FROM tasks").fetchone()[0]
                 cur = conn.execute(
@@ -144,13 +144,13 @@ def table_admin():
                 for unit in conn.execute("SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ?", (sheet_id,)):
                     conn.execute("INSERT INTO progress (unit_id, task_id, value) VALUES (?, ?, ?)", (unit["id"], cur.lastrowid, app.WORKING_VALUE))
                 flash("任務已新增。", "success")
-                return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
+                return redirect(url_for(".table_admin", sheet_id=sheet_id))
             if action.startswith("delete_task:"):
                 task_id = int(action.split(":", 1)[1])
                 conn.execute("DELETE FROM progress WHERE task_id = ?", (task_id,))
                 conn.execute("DELETE FROM tasks WHERE id = ? AND sheet_id = ?", (task_id, sheet_id))
                 flash("任務已刪除。", "success")
-                return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
+                return redirect(url_for(".table_admin", sheet_id=sheet_id))
             if action == "add_extra_field":
                 field_name = request.form.get("new_extra_name", "").strip() or "新欄位"
                 field_type = request.form.get("new_extra_type", "date")
@@ -169,12 +169,12 @@ def table_admin():
                     (sheet_id, f"custom_{uuid.uuid4().hex[:12]}", field_name, field_type, next_order),
                 )
                 flash("欄位已新增。", "success")
-                return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
+                return redirect(url_for(".table_admin", sheet_id=sheet_id))
             if action.startswith("delete_extra_field:"):
                 field_id = int(action.split(":", 1)[1])
                 deactivate_extra_field_sqlite(conn, field_id=field_id, sheet_id=sheet_id)
                 flash("欄位已停用。", "success")
-                return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
+                return redirect(url_for(".table_admin", sheet_id=sheet_id))
             if action == "add_floor":
                 next_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM floors").fetchone()[0]
                 conn.execute(
@@ -182,7 +182,7 @@ def table_admin():
                     (sheet_id, next_order, request.form.get("new_floor_name", "新樓層") or "新樓層", request.form.get("new_floor_block", "")),
                 )
                 flash("樓層已新增。", "success")
-                return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
+                return redirect(url_for(".table_admin", sheet_id=sheet_id))
             if action.startswith("delete_floor:"):
                 floor_id = int(action.split(":", 1)[1])
                 unit_ids = [row["id"] for row in conn.execute("SELECT id FROM units WHERE floor_id = ?", (floor_id,))]
@@ -194,7 +194,7 @@ def table_admin():
                     conn.execute(f"DELETE FROM units WHERE id IN ({placeholders})", unit_ids)
                 conn.execute("DELETE FROM floors WHERE id = ? AND sheet_id = ?", (floor_id, sheet_id))
                 flash("樓層已刪除。", "success")
-                return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
+                return redirect(url_for(".table_admin", sheet_id=sheet_id))
             if action.startswith("add_unit:"):
                 floor_id = int(action.split(":", 1)[1])
                 next_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM units WHERE floor_id = ?", (floor_id,)).fetchone()[0]
@@ -207,7 +207,7 @@ def table_admin():
                 conn.execute("INSERT INTO unit_extra (unit_id, handover) VALUES (?, ?)", (cur.lastrowid, app.WORKING_VALUE))
                 conn.execute("UPDATE floors SET unit_count = (SELECT COUNT(*) FROM units WHERE floor_id = ?) WHERE id = ?", (floor_id, floor_id))
                 flash("戶別已新增。", "success")
-                return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
+                return redirect(url_for(".table_admin", sheet_id=sheet_id))
             if action.startswith("delete_unit:"):
                 unit_id = int(action.split(":", 1)[1])
                 floor = conn.execute("SELECT floor_id FROM units WHERE id = ?", (unit_id,)).fetchone()
@@ -218,7 +218,7 @@ def table_admin():
                 if floor:
                     conn.execute("UPDATE floors SET unit_count = (SELECT COUNT(*) FROM units WHERE floor_id = ?) WHERE id = ?", (floor["floor_id"], floor["floor_id"]))
                 flash("戶別已刪除。", "success")
-                return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
+                return redirect(url_for(".table_admin", sheet_id=sheet_id))
 
             update_sheet_name_sqlite(
                 conn,
@@ -265,7 +265,7 @@ def table_admin():
                     name=request.form.get(f"unit_name_{unit_id}", "").strip(),
                 )
             flash("設定已更新。", "success")
-            return redirect(url_for("admin.table_admin", sheet_id=sheet_id))
+            return redirect(url_for(".table_admin", sheet_id=sheet_id))
 
         settings = app.get_settings(conn)
         sheets = app.available_sheets(conn)

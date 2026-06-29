@@ -306,6 +306,198 @@ print("sheet endpoint smoke PASS")
         raise AssertionError("sheet endpoint smoke subprocess did not report PASS.")
 
 
+def run_table_admin_endpoint_and_formula_smoke(app_db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+template_text = (Path(root_dir) / "templates" / "table_admin.html").read_text(encoding="utf-8")
+if "admin.table_admin" in template_text:
+    raise SystemExit("table_admin.html should not reference admin.table_admin")
+admin_route_text = (Path(root_dir) / "routes" / "admin.py").read_text(encoding="utf-8")
+if "admin.table_admin" in admin_route_text:
+    raise SystemExit("routes/admin.py should not reference admin.table_admin")
+
+table_rules = [rule.rule for rule in module.app.url_map.iter_rules() if rule.endpoint == "table_admin"]
+if "/admin/table" not in table_rules:
+    raise SystemExit("app.url_map missing table_admin endpoint")
+
+field_initial = {"field_key": "initial_check", "field_type": "date"}
+field_recheck_1 = {"field_key": "recheck_1", "field_type": "date"}
+field_recheck_2 = {"field_key": "recheck_2", "field_type": "date"}
+field_handover = {"field_key": "handover", "field_type": "status"}
+
+if module.extra_done(field_initial, {"recheck_1": "", "recheck_2": "2026-06-29", "handover": "X"}):
+    raise SystemExit("initial_check should not complete from recheck_2 alone")
+if not module.extra_done(field_initial, {"recheck_1": "2026-06-29", "recheck_2": "", "handover": "X"}):
+    raise SystemExit("initial_check should complete from recheck_1")
+if not module.extra_done(field_initial, {"recheck_1": "", "recheck_2": "", "handover": "O"}):
+    raise SystemExit("initial_check should complete from handover=O")
+
+if not module.extra_done(field_recheck_1, {"recheck_2": "2026-06-29", "handover": "X"}):
+    raise SystemExit("recheck_1 should complete from recheck_2")
+if not module.extra_done(field_recheck_1, {"recheck_2": "", "handover": "O"}):
+    raise SystemExit("recheck_1 should complete from handover=O")
+
+if not module.extra_done(field_recheck_2, {"recheck_2": "2026-06-29", "handover": "X"}):
+    raise SystemExit("recheck_2 should complete from its own date")
+if not module.extra_done(field_recheck_2, {"recheck_2": "", "handover": "O"}):
+    raise SystemExit("recheck_2 should complete from handover=O")
+if not module.extra_done(field_handover, {"handover": "O"}):
+    raise SystemExit("handover should complete from O")
+
+with module.app.test_client() as client:
+    login_response = client.post(
+        "/login",
+        data={"username": "admin", "display_name": "Admin", "password": "admin"},
+        follow_redirects=False,
+    )
+    if login_response.status_code != 302:
+        raise SystemExit("login route did not redirect for table admin smoke")
+
+    table_response = client.get("/admin/table")
+    if table_response.status_code != 200:
+        raise SystemExit("/admin/table should render successfully")
+    html = table_response.get_data(as_text=True)
+    if "/admin/table?sheet_id=1" not in html and "/admin/table?sheet_id=" not in html:
+        raise SystemExit("table admin sheet switcher link missing expected /admin/table?sheet_id=... href")
+    if "admin.table_admin" in html:
+        raise SystemExit("rendered /admin/table should not contain admin.table_admin")
+
+print("table admin endpoint and formula smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "table admin endpoint and formula smoke PASS" not in result.stdout:
+        raise AssertionError("table admin endpoint and formula smoke subprocess did not report PASS.")
+
+
+def run_handover_reset_separation_smoke(app_db_path: Path) -> None:
+    if app_db_path.exists():
+        app_db_path.unlink()
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+from werkzeug.security import generate_password_hash
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+progress_spec = importlib.util.spec_from_file_location(
+    "progress_service_under_test",
+    str(Path(root_dir) / "services" / "progress_service.py"),
+)
+progress_module = importlib.util.module_from_spec(progress_spec)
+progress_spec.loader.exec_module(progress_module)
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    target_unit = conn.execute(
+        "SELECT u.id AS unit_id, f.sheet_id "
+        "FROM units u "
+        "JOIN floors f ON f.id = u.floor_id "
+        "ORDER BY u.id "
+        "LIMIT 1"
+    ).fetchone()
+    if target_unit is None:
+        raise SystemExit("expected at least one unit for handover/reset smoke")
+    conn.execute(
+        "UPDATE users SET password_hash = ? WHERE id = 1",
+        (generate_password_hash("admin"),),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO unit_extra (unit_id, handover) VALUES (?, ?)",
+        (target_unit["unit_id"], "X"),
+    )
+    conn.execute(
+        '''
+        UPDATE unit_extra
+        SET initial_check = ?, recheck_1 = ?, recheck_2 = ?, handover = ?, updated_by = 1, updated_at = CURRENT_TIMESTAMP
+        WHERE unit_id = ?
+        ''',
+        ("2026-06-20", "2026-06-21", "2026-06-22", "X", target_unit["unit_id"]),
+    )
+
+result = progress_module.update_unit_extra(
+    unit_id=target_unit["unit_id"],
+    field="handover",
+    value="O",
+    user_id=1,
+    fallback_sheet_id=target_unit["sheet_id"],
+)
+if not result["ok"]:
+    raise SystemExit("handover single-cell update should succeed")
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT initial_check, recheck_1, recheck_2, handover FROM unit_extra WHERE unit_id = ?",
+        (target_unit["unit_id"],),
+    ).fetchone()
+if row["initial_check"] != "2026-06-20" or row["recheck_1"] != "2026-06-21" or row["recheck_2"] != "2026-06-22":
+    raise SystemExit("handover single-cell update should not clear date fields")
+if row["handover"] != "O":
+    raise SystemExit("handover single-cell update should store O")
+
+reset_result = progress_module.reset_sheet(sheet_id=target_unit["sheet_id"], user_id=1, password="admin")
+if not reset_result["ok"]:
+    raise SystemExit("reset_sheet should succeed with valid password")
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    reset_row = conn.execute(
+        "SELECT initial_check, recheck_1, recheck_2, handover FROM unit_extra WHERE unit_id = ?",
+        (target_unit["unit_id"],),
+    ).fetchone()
+if reset_row["initial_check"] != "" or reset_row["recheck_1"] != "" or reset_row["recheck_2"] != "":
+    raise SystemExit("reset_sheet should clear date fields")
+if reset_row["handover"] != "X":
+    raise SystemExit("reset_sheet should reset handover to X")
+
+print("handover reset separation smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "handover reset separation smoke PASS" not in result.stdout:
+        raise AssertionError("handover reset separation smoke subprocess did not report PASS.")
+
+
 def run_floor_helper_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -1427,6 +1619,8 @@ def main() -> int:
         run_sqlite_db_path_resolver_smoke()
         run_users_template_delete_ui_smoke()
         run_sheet_endpoint_smoke(Path(tmpdir) / "app-smoke.db")
+        run_table_admin_endpoint_and_formula_smoke(Path(tmpdir) / "app-smoke.db")
+        run_handover_reset_separation_smoke(Path(tmpdir) / "handover-smoke.db")
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 

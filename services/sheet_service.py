@@ -34,7 +34,7 @@ def extra_done(field: dict | sqlite3.Row, extra: dict) -> bool:
 
     field_key = field["field_key"]
     if field_key == "initial_check":
-        return bool(extra.get("recheck_1")) or bool(extra.get("recheck_2")) or extra.get("handover") == done_value
+        return bool(extra.get("recheck_1")) or extra.get("handover") == done_value
     if field_key == "recheck_1":
         return bool(extra.get("recheck_2")) or extra.get("handover") == done_value
     if field_key == "recheck_2":

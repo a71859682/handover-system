@@ -9,7 +9,7 @@
   <h2>&#31649;&#21046;&#34920;&#20999;&#25563;</h2>
   <div class="sheet-switcher">
     {% for sheet in sheets %}
-    <a class="tab {{ 'active' if sheet.id == current_sheet.id else '' }}" href="{{ url_for('admin.table_admin', sheet_id=sheet.id) }}">{{ sheet.name }}</a>
+    <a class="tab {{ 'active' if sheet.id == current_sheet.id else '' }}" href="{{ url_for('table_admin', sheet_id=sheet.id) }}">{{ sheet.name }}</a>
     {% endfor %}
   </div>
   <form method="post" class="inline-form">

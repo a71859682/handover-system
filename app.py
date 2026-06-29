@@ -1484,7 +1484,7 @@ def resolve_sheet_id(conn: sqlite3.Connection, sheet_id: int | None = None) -> i
 def extra_done(field: dict | sqlite3.Row, extra: dict) -> bool:
     field_key = field["field_key"]
     if field_key == "initial_check":
-        return bool(extra.get("recheck_1")) or bool(extra.get("recheck_2")) or extra.get("handover") == DONE_VALUE
+        return bool(extra.get("recheck_1")) or extra.get("handover") == DONE_VALUE
     if field_key == "recheck_1":
         return bool(extra.get("recheck_2")) or extra.get("handover") == DONE_VALUE
     if field_key == "recheck_2":
