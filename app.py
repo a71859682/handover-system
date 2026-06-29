@@ -42,6 +42,8 @@ DEFAULT_SETTINGS = {
     "vendor_header": "廠商",
     "task_header": "工項",
 }
+DEFAULT_SITE_NAME = "大英營造-新埔段"
+DEFAULT_SITE_CODE = ""
 DUAL_WRITE_FLOORS_STRATEGY_LOG = (
     "DUAL_WRITE_FLOORS_SECONDARY table=floors strategy=reuse_primary_postgres_connection"
 )
@@ -70,6 +72,10 @@ def db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
 def env_flag(name: str) -> bool:
@@ -1453,6 +1459,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             sort_order INTEGER NOT NULL DEFAULT 1,
+            site_id INTEGER,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
@@ -1526,6 +1533,37 @@ def init_schema(conn: sqlite3.Connection) -> None:
             value TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS sites (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            site_name TEXT NOT NULL,
+            site_code TEXT NOT NULL DEFAULT '',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(site_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS user_site_permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            site_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, site_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS vendor_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            vendor_name TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(username)
+        );
+
         CREATE TABLE IF NOT EXISTS vendor_contacts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sheet_id INTEGER NOT NULL,
@@ -1557,6 +1595,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_site_permissions_user_id ON user_site_permissions (user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_site_permissions_site_id ON user_site_permissions (site_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vendor_accounts_vendor_name ON vendor_accounts (vendor_name)")
     conn.executescript(
         """
         CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
@@ -1584,6 +1625,77 @@ def seed_admin(conn: sqlite3.Connection) -> None:
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+
+
+def seed_default_site(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT id FROM sites WHERE site_name = ?", (DEFAULT_SITE_NAME,)).fetchone()
+    if row:
+        return row["id"]
+    cur = conn.execute(
+        """
+        INSERT INTO sites (site_name, site_code, is_active)
+        VALUES (?, ?, 1)
+        """,
+        (DEFAULT_SITE_NAME, DEFAULT_SITE_CODE),
+    )
+    return cur.lastrowid
+
+
+def ensure_sheets_site_backfill(conn: sqlite3.Connection, default_site_id: int) -> None:
+    sheet_columns = _table_columns(conn, "sheets")
+    if "site_id" not in sheet_columns:
+        conn.execute("ALTER TABLE sheets ADD COLUMN site_id INTEGER")
+    conn.execute("UPDATE sheets SET site_id = ? WHERE site_id IS NULL", (default_site_id,))
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sheets_site_id ON sheets (site_id)")
+
+
+def ensure_site_foundation_schema(conn: sqlite3.Connection) -> int:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sites (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            site_name TEXT NOT NULL,
+            site_code TEXT NOT NULL DEFAULT '',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(site_name)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_site_permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            site_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, site_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS vendor_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            vendor_name TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(username)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_site_permissions_user_id ON user_site_permissions (user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_site_permissions_site_id ON user_site_permissions (site_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_vendor_accounts_vendor_name ON vendor_accounts (vendor_name)")
+    default_site_id = seed_default_site(conn)
+    ensure_sheets_site_backfill(conn, default_site_id)
+    return default_site_id
 
 
 def _vendor_contacts_has_legacy_unique(conn: sqlite3.Connection) -> bool:
@@ -1766,7 +1878,11 @@ def seed_from_excel(conn: sqlite3.Connection) -> None:
     ws = wb.active
     sheet_row = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
     if not sheet_row:
-        cur = conn.execute("INSERT INTO sheets (name, sort_order) VALUES (?, ?)", (get_setting(conn, "tab_title"), 1))
+        default_site_id = ensure_site_foundation_schema(conn)
+        cur = conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?)",
+            (get_setting(conn, "tab_title"), 1, default_site_id),
+        )
         sheet_id = cur.lastrowid
     else:
         sheet_id = sheet_row["id"]
@@ -1854,15 +1970,17 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 sort_order INTEGER NOT NULL DEFAULT 1,
+                site_id INTEGER,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
     sheet = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
     if not sheet:
+        default_site_id = ensure_site_foundation_schema(conn)
         cur = conn.execute(
-            "INSERT INTO sheets (name, sort_order) VALUES (?, ?)",
-            (get_setting(conn, "tab_title"), 1),
+            "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?)",
+            (get_setting(conn, "tab_title"), 1, default_site_id),
         )
         default_sheet_id = cur.lastrowid
     else:
@@ -1901,6 +2019,7 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         ON vendor_work_entries (business_date);
         """
     )
+    ensure_site_foundation_schema(conn)
     ensure_vendor_contacts_schema(conn)
 
 
@@ -2017,6 +2136,7 @@ def bootstrap() -> None:
         seed_settings(conn)
         seed_from_excel(conn)
         migrate_schema(conn)
+        ensure_site_foundation_schema(conn)
         normalize_progress_values(conn)
         ensure_unit_extra_rows(conn)
         ensure_extra_fields(conn)
@@ -2035,7 +2155,11 @@ def resolve_sheet_id(conn: sqlite3.Connection, sheet_id: int | None = None) -> i
     row = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
     if row:
         return row["id"]
-    cur = conn.execute("INSERT INTO sheets (name, sort_order) VALUES (?, ?)", (get_setting(conn, "tab_title"), 1))
+    default_site_id = ensure_site_foundation_schema(conn)
+    cur = conn.execute(
+        "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?)",
+        (get_setting(conn, "tab_title"), 1, default_site_id),
+    )
     return cur.lastrowid
 
 
@@ -2838,7 +2962,11 @@ def table_admin():
             if action == "create_sheet":
                 name = request.form.get("new_sheet_name", "").strip() or "????"
                 next_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM sheets").fetchone()[0]
-                cur = conn.execute("INSERT INTO sheets (name, sort_order) VALUES (?, ?)", (name, next_order))
+                default_site_id = ensure_site_foundation_schema(conn)
+                cur = conn.execute(
+                    "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?)",
+                    (name, next_order, default_site_id),
+                )
                 for field_key, field in BUILTIN_EXTRA_FIELDS.items():
                     conn.execute(
                         """

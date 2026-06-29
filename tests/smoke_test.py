@@ -152,6 +152,8 @@ def create_sample_sqlite(path: Path) -> None:
         """
     )
     conn.execute("INSERT INTO meta (key, value) VALUES ('site_title', 'demo')")
+    conn.execute("INSERT INTO meta (key, value) VALUES ('excel_seeded', '1')")
+    conn.execute("INSERT INTO meta (key, value) VALUES ('unit_layout_version', '2026-06-26-ab')")
     conn.execute(
         """
         INSERT INTO users (id, username, display_name, password_hash, role, created_at)
@@ -255,6 +257,86 @@ def run_users_template_delete_ui_smoke() -> None:
             raise AssertionError(f"users.html missing delete UI snippet: {snippet}")
     if "password_hash" in template:
         raise AssertionError("users.html delete UI should not include password_hash.")
+
+
+def run_site_foundation_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+def columns(conn, table_name):
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+
+required_tables = {"sites", "user_site_permissions", "vendor_accounts", "sheets"}
+existing_tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+missing_tables = sorted(required_tables - existing_tables)
+if missing_tables:
+    raise SystemExit(f"missing tables: {missing_tables}")
+
+site_columns = columns(conn, "sites")
+if {"site_name", "site_code", "is_active", "created_at", "updated_at"} - site_columns:
+    raise SystemExit("sites table missing required columns")
+
+sheet_columns = columns(conn, "sheets")
+if "site_id" not in sheet_columns:
+    raise SystemExit("sheets.site_id missing after bootstrap")
+
+default_rows = conn.execute(
+    "SELECT id, site_name FROM sites WHERE site_name = ?",
+    (module.DEFAULT_SITE_NAME,),
+).fetchall()
+if len(default_rows) != 1:
+    raise SystemExit(f"default site count mismatch: {len(default_rows)}")
+default_site_id = default_rows[0]["id"]
+
+sheet_rows = conn.execute("SELECT id, site_id FROM sheets ORDER BY id").fetchall()
+if not sheet_rows:
+    raise SystemExit("expected at least one sheet")
+if any(row["site_id"] is None for row in sheet_rows):
+    raise SystemExit("sheet site_id backfill missing")
+if any(row["site_id"] != default_site_id for row in sheet_rows):
+    raise SystemExit("sheet site_id did not backfill to default site")
+
+conn.close()
+module.bootstrap()
+conn = sqlite3.connect(db_path)
+conn.row_factory = sqlite3.Row
+default_site_count = conn.execute(
+    "SELECT COUNT(*) AS count FROM sites WHERE site_name = ?",
+    (module.DEFAULT_SITE_NAME,),
+).fetchone()["count"]
+conn.close()
+if default_site_count != 1:
+    raise SystemExit("default site seed is not idempotent")
+print("site foundation smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "site foundation smoke PASS" not in result.stdout:
+        raise AssertionError("site foundation smoke subprocess did not report PASS.")
 
 
 def run_crew_schema_smoke(app_db_path: Path) -> None:
@@ -2787,10 +2869,13 @@ def main() -> int:
 
         if list(counts) != TABLE_ORDER:
             raise AssertionError("Table order changed unexpectedly.")
-        expected_counts = {"meta": 1, "users": 2, "vendor_contacts": 0, "vendor_work_entries": 0}
+        expected_counts = {"meta": 3, "users": 2, "vendor_contacts": 0, "vendor_work_entries": 0}
         if any(count != expected_counts.get(table_name, 1) for table_name, count in counts.items()):
             raise AssertionError(f"Unexpected sample counts: {counts}")
 
+        site_foundation_db = Path(tmpdir) / "site-foundation.db"
+        create_sample_sqlite(site_foundation_db)
+        run_site_foundation_smoke(site_foundation_db)
         run_floor_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_role_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
@@ -2832,6 +2917,9 @@ def main() -> int:
     run_help("check_users_read_inventory.py")
     run_help("check_users_read_compare_readiness.py")
     run_help("check_crew_schema.py")
+    run_help("check_site_schema.py")
+    run_help("check_site_seed.py")
+    run_help("check_sheet_site_backfill.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")
@@ -2874,6 +2962,15 @@ def main() -> int:
     crew_schema_result = run_script("check_crew_schema.py", env={"DATABASE_URL": ""})
     if "crew_schema_scope: sqlite_only" not in crew_schema_result.stdout or "PASS crew schema check passed." not in crew_schema_result.stdout:
         raise AssertionError("check_crew_schema.py did not report expected SQLite-only PASS output.")
+    site_schema_result = run_script("check_site_schema.py", env={"DATABASE_URL": ""})
+    if "site_schema_scope: sqlite_only" not in site_schema_result.stdout or "PASS site schema check passed." not in site_schema_result.stdout:
+        raise AssertionError("check_site_schema.py did not report expected PASS output.")
+    site_seed_result = run_script("check_site_seed.py", env={"DATABASE_URL": ""})
+    if "site_seed_scope: sqlite_only" not in site_seed_result.stdout or "PASS site seed check passed." not in site_seed_result.stdout:
+        raise AssertionError("check_site_seed.py did not report expected PASS output.")
+    site_backfill_result = run_script("check_sheet_site_backfill.py", env={"DATABASE_URL": ""})
+    if "sheet_site_backfill_scope: sqlite_only" not in site_backfill_result.stdout or "PASS sheet site backfill check passed." not in site_backfill_result.stdout:
+        raise AssertionError("check_sheet_site_backfill.py did not report expected PASS output.")
     persistence_result = run_script("check_sqlite_runtime_persistence.py", env={"DATABASE_URL": ""})
     if "resolved_sqlite_source_path:" not in persistence_result.stdout or "PASS" not in persistence_result.stdout:
         raise AssertionError("check_sqlite_runtime_persistence.py did not report expected PASS output.")
