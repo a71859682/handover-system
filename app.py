@@ -1077,6 +1077,197 @@ def list_users() -> list[sqlite3.Row]:
     return rows
 
 
+def crew_api_error(code: str, message: str, *, status: int = 400):
+    return jsonify({"ok": False, "error": {"code": code, "message": message}}), status
+
+
+def parse_crew_business_date(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("business_date is required.")
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
+    except ValueError as exc:
+        raise ValueError("business_date must use YYYY-MM-DD.") from exc
+
+
+def parse_crew_planned_at(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        return ""
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            parsed = datetime.strptime(raw, fmt)
+            return parsed.strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+    raise ValueError("planned_at must use YYYY-MM-DD HH:MM.")
+
+
+def parse_non_negative_int(value, *, field_name: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a non-negative integer.") from exc
+    if parsed < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer.")
+    return parsed
+
+
+def parse_optional_positive_int(value, *, field_name: str) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive integer.") from exc
+    if parsed <= 0:
+        raise ValueError(f"{field_name} must be a positive integer.")
+    return parsed
+
+
+def require_sheet_exists(conn: sqlite3.Connection, sheet_id: int) -> None:
+    row = conn.execute("SELECT id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+    if row is None:
+        raise LookupError(f"sheet_id={sheet_id} was not found.")
+
+
+def normalize_vendor_name(value: str) -> str:
+    vendor_name = value.strip()
+    if not vendor_name:
+        raise ValueError("vendor_name is required.")
+    if len(vendor_name) > 100:
+        raise ValueError("vendor_name must be 100 characters or fewer.")
+    return vendor_name
+
+
+def get_active_crew_vendors(sheet_id: int) -> list[str]:
+    with db() as conn:
+        tasks = conn.execute(
+            """
+            SELECT id, vendor
+            FROM tasks
+            WHERE sheet_id = ?
+            ORDER BY col_index, id
+            """,
+            (sheet_id,),
+        ).fetchall()
+        active_task_ids = {
+            row["task_id"]
+            for row in conn.execute(
+                """
+                SELECT DISTINCT p.task_id
+                FROM progress p
+                JOIN tasks t ON t.id = p.task_id
+                WHERE t.sheet_id = ? AND p.value = ?
+                """,
+                (sheet_id, WORKING_VALUE),
+            ).fetchall()
+        }
+
+    seen: set[str] = set()
+    active_vendors: list[str] = []
+    for task in tasks:
+        vendor_name = (task["vendor"] or "").strip()
+        if not vendor_name or task["id"] not in active_task_ids or vendor_name in seen:
+            continue
+        seen.add(vendor_name)
+        active_vendors.append(vendor_name)
+    return active_vendors
+
+
+def get_pending_items_by_vendor(sheet_id: int) -> dict[str, list[str]]:
+    with db() as conn:
+        tasks = conn.execute(
+            """
+            SELECT id, vendor, name
+            FROM tasks
+            WHERE sheet_id = ?
+            ORDER BY col_index, id
+            """,
+            (sheet_id,),
+        ).fetchall()
+        active_task_ids = {
+            row["task_id"]
+            for row in conn.execute(
+                """
+                SELECT DISTINCT p.task_id
+                FROM progress p
+                JOIN tasks t ON t.id = p.task_id
+                WHERE t.sheet_id = ? AND p.value = ?
+                """,
+                (sheet_id, WORKING_VALUE),
+            ).fetchall()
+        }
+
+    pending_items: dict[str, list[str]] = {}
+    for task in tasks:
+        vendor_name = (task["vendor"] or "").strip()
+        task_name = str(task["name"] or "").strip()
+        if not vendor_name or not task_name or task["id"] not in active_task_ids:
+            continue
+        pending_items.setdefault(vendor_name, []).append(task_name)
+    return pending_items
+
+
+def fetch_vendor_contact_map(conn: sqlite3.Connection, sheet_id: int) -> dict[str, dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, sheet_id, vendor_name, contact_name, contact_phone, created_at, updated_at
+        FROM vendor_contacts
+        WHERE sheet_id = ?
+        ORDER BY vendor_name, id
+        """,
+        (sheet_id,),
+    ).fetchall()
+    return {
+        row["vendor_name"]: {
+            "id": row["id"],
+            "sheet_id": row["sheet_id"],
+            "vendor_name": row["vendor_name"],
+            "contact_name": row["contact_name"],
+            "contact_phone": row["contact_phone"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    }
+
+
+def fetch_vendor_work_entries(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    business_date: str,
+) -> dict[str, list[dict[str, object]]]:
+    rows = conn.execute(
+        """
+        SELECT id, sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+               actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+        FROM vendor_work_entries
+        WHERE sheet_id = ? AND business_date = ?
+        ORDER BY vendor_name, entry_order, id
+        """,
+        (sheet_id, business_date),
+    ).fetchall()
+    entries_by_vendor: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        entries_by_vendor.setdefault(row["vendor_name"], []).append(dict(row))
+    return entries_by_vendor
+
+
+def parse_planned_at_datetime(value: str) -> datetime | None:
+    raw = value.strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
@@ -1890,6 +2081,389 @@ def api_reset_sheet():
             (sheet_id, sheet_id),
         )
     return jsonify({"ok": True, "grid": render_grid_payload(sheet_id)})
+
+
+@app.route("/api/crew-forms")
+@login_required
+def api_crew_forms():
+    sheet_id = request.args.get("sheet_id", type=int)
+    if sheet_id is None:
+        return crew_api_error("invalid_sheet_id", "sheet_id is required and must be a valid integer.")
+
+    raw_business_date = request.args.get("business_date", "").strip()
+    try:
+        business_date = parse_crew_business_date(raw_business_date) if raw_business_date else resolve_crew_business_date()
+    except ValueError as exc:
+        return crew_api_error("invalid_business_date", str(exc))
+
+    with db() as conn:
+        try:
+            require_sheet_exists(conn, sheet_id)
+        except LookupError:
+            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+
+        active_vendors = get_active_crew_vendors(sheet_id)
+        active_vendor_set = set(active_vendors)
+        contacts_by_vendor = fetch_vendor_contact_map(conn, sheet_id)
+        entries_by_vendor = fetch_vendor_work_entries(conn, sheet_id=sheet_id, business_date=business_date)
+
+        active_vendor_payload = []
+        for vendor_name in active_vendors:
+            contact = contacts_by_vendor.get(
+                vendor_name,
+                {
+                    "id": None,
+                    "sheet_id": sheet_id,
+                    "vendor_name": vendor_name,
+                    "contact_name": "",
+                    "contact_phone": "",
+                    "created_at": "",
+                    "updated_at": "",
+                },
+            )
+            active_vendor_payload.append(
+                {
+                    "vendor_name": vendor_name,
+                    "contact": contact,
+                    "work_entries": entries_by_vendor.get(vendor_name, []),
+                }
+            )
+
+        inactive_contacts = [
+            contact
+            for vendor_name, contact in contacts_by_vendor.items()
+            if vendor_name not in active_vendor_set
+        ]
+
+    return jsonify(
+        {
+            "ok": True,
+            "sheet_id": sheet_id,
+            "business_date": business_date,
+            "active_vendors": active_vendor_payload,
+            "inactive_contacts": inactive_contacts,
+        }
+    )
+
+
+@app.route("/api/vendor-contact", methods=["POST"])
+@login_required
+def api_vendor_contact():
+    data = request.get_json(silent=True) or {}
+    sheet_id = data.get("sheet_id")
+    try:
+        sheet_id = parse_non_negative_int(sheet_id, field_name="sheet_id")
+        if sheet_id <= 0:
+            raise ValueError("sheet_id must be a positive integer.")
+        vendor_name = normalize_vendor_name(str(data.get("vendor_name", "")))
+    except ValueError as exc:
+        return crew_api_error("invalid_request", str(exc))
+
+    contact_name = str(data.get("contact_name", "")).strip()
+    contact_phone = str(data.get("contact_phone", "")).strip()
+    if len(contact_name) > 100:
+        return crew_api_error("invalid_contact_name", "contact_name must be 100 characters or fewer.")
+    if len(contact_phone) > 50:
+        return crew_api_error("invalid_contact_phone", "contact_phone must be 50 characters or fewer.")
+
+    with db() as conn:
+        try:
+            require_sheet_exists(conn, sheet_id)
+        except LookupError:
+            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+        conn.execute(
+            """
+            INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_phone)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(sheet_id, vendor_name) DO UPDATE SET
+                contact_name = excluded.contact_name,
+                contact_phone = excluded.contact_phone,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (sheet_id, vendor_name, contact_name, contact_phone),
+        )
+        row = conn.execute(
+            """
+            SELECT id, sheet_id, vendor_name, contact_name, contact_phone, created_at, updated_at
+            FROM vendor_contacts
+            WHERE sheet_id = ? AND vendor_name = ?
+            """,
+            (sheet_id, vendor_name),
+        ).fetchone()
+
+    return jsonify({"ok": True, "contact": dict(row) if row else None})
+
+
+@app.route("/api/vendor-work-entry", methods=["POST"])
+@login_required
+def api_vendor_work_entry():
+    data = request.get_json(silent=True) or {}
+    try:
+        entry_id = parse_optional_positive_int(data.get("id"), field_name="id")
+        sheet_id = parse_non_negative_int(data.get("sheet_id"), field_name="sheet_id")
+        if sheet_id <= 0:
+            raise ValueError("sheet_id must be a positive integer.")
+        vendor_name = normalize_vendor_name(str(data.get("vendor_name", "")))
+        business_date = (
+            parse_crew_business_date(str(data.get("business_date", "")))
+            if str(data.get("business_date", "")).strip()
+            else resolve_crew_business_date()
+        )
+        planned_at = parse_crew_planned_at(str(data.get("planned_at", "")))
+        planned_headcount = parse_non_negative_int(data.get("planned_headcount", 0), field_name="planned_headcount")
+        actual_headcount = parse_non_negative_int(data.get("actual_headcount", 0), field_name="actual_headcount")
+        work_content = str(data.get("work_content", "")).strip()
+        work_headcount = parse_non_negative_int(data.get("work_headcount", 0), field_name="work_headcount")
+        entry_order = parse_non_negative_int(data.get("entry_order", 0), field_name="entry_order")
+    except ValueError as exc:
+        return crew_api_error("invalid_request", str(exc))
+
+    if len(work_content) > 500:
+        return crew_api_error("invalid_work_content", "work_content must be 500 characters or fewer.")
+
+    with db() as conn:
+        try:
+            require_sheet_exists(conn, sheet_id)
+        except LookupError:
+            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+
+        if entry_id is None:
+            cur = conn.execute(
+                """
+                INSERT INTO vendor_work_entries (
+                    sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                    actual_headcount, work_content, work_headcount, entry_order
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sheet_id,
+                    vendor_name,
+                    business_date,
+                    planned_at,
+                    planned_headcount,
+                    actual_headcount,
+                    work_content,
+                    work_headcount,
+                    entry_order,
+                ),
+            )
+            target_id = int(cur.lastrowid)
+        else:
+            existing = conn.execute(
+                """
+                SELECT id, sheet_id
+                FROM vendor_work_entries
+                WHERE id = ?
+                """,
+                (entry_id,),
+            ).fetchone()
+            if existing is None:
+                return crew_api_error("entry_not_found", "vendor work entry id was not found.", status=404)
+            if int(existing["sheet_id"]) != sheet_id:
+                return crew_api_error(
+                    "sheet_mismatch",
+                    "vendor work entry belongs to a different sheet_id.",
+                    status=409,
+                )
+            conn.execute(
+                """
+                UPDATE vendor_work_entries
+                SET vendor_name = ?,
+                    business_date = ?,
+                    planned_at = ?,
+                    planned_headcount = ?,
+                    actual_headcount = ?,
+                    work_content = ?,
+                    work_headcount = ?,
+                    entry_order = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND sheet_id = ?
+                """,
+                (
+                    vendor_name,
+                    business_date,
+                    planned_at,
+                    planned_headcount,
+                    actual_headcount,
+                    work_content,
+                    work_headcount,
+                    entry_order,
+                    entry_id,
+                    sheet_id,
+                ),
+            )
+            target_id = entry_id
+
+        row = conn.execute(
+            """
+            SELECT id, sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                   actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+            FROM vendor_work_entries
+            WHERE id = ?
+            """,
+            (target_id,),
+        ).fetchone()
+
+    return jsonify({"ok": True, "entry": dict(row) if row else None})
+
+
+@app.route("/api/crew-followups")
+@login_required
+def api_crew_followups():
+    sheet_id = request.args.get("sheet_id", type=int)
+    if sheet_id is None:
+        return crew_api_error("invalid_sheet_id", "sheet_id is required and must be a valid integer.")
+
+    raw_business_date = request.args.get("business_date", "").strip()
+    try:
+        business_date = parse_crew_business_date(raw_business_date) if raw_business_date else resolve_crew_business_date()
+    except ValueError as exc:
+        return crew_api_error("invalid_business_date", str(exc))
+
+    with db() as conn:
+        try:
+            require_sheet_exists(conn, sheet_id)
+        except LookupError:
+            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+
+        active_vendors = get_active_crew_vendors(sheet_id)
+        pending_by_vendor = get_pending_items_by_vendor(sheet_id)
+        contacts_by_vendor = fetch_vendor_contact_map(conn, sheet_id)
+        entries_by_vendor = fetch_vendor_work_entries(conn, sheet_id=sheet_id, business_date=business_date)
+
+        items = []
+        for vendor_name in active_vendors:
+            entries = entries_by_vendor.get(vendor_name, [])
+            has_valid_planned_at = any(bool(str(entry.get("planned_at", "")).strip()) for entry in entries)
+            if has_valid_planned_at:
+                continue
+            contact = contacts_by_vendor.get(vendor_name, {})
+            items.append(
+                {
+                    "vendor_name": vendor_name,
+                    "pending_items": pending_by_vendor.get(vendor_name, []),
+                    "contact_name": str(contact.get("contact_name", "")),
+                    "contact_phone": str(contact.get("contact_phone", "")),
+                    "planned_at": "",
+                }
+            )
+
+    return jsonify({"ok": True, "sheet_id": sheet_id, "business_date": business_date, "items": items})
+
+
+@app.route("/api/crew-daily-summary")
+@login_required
+def api_crew_daily_summary():
+    sheet_id = request.args.get("sheet_id", type=int)
+    if sheet_id is None:
+        return crew_api_error("invalid_sheet_id", "sheet_id is required and must be a valid integer.")
+
+    raw_business_date = request.args.get("business_date", "").strip()
+    try:
+        business_date = parse_crew_business_date(raw_business_date) if raw_business_date else resolve_crew_business_date()
+    except ValueError as exc:
+        return crew_api_error("invalid_business_date", str(exc))
+
+    with db() as conn:
+        try:
+            require_sheet_exists(conn, sheet_id)
+        except LookupError:
+            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+
+        rows = conn.execute(
+            """
+            SELECT id, vendor_name, actual_headcount, work_content, work_headcount,
+                   planned_at, planned_headcount, entry_order
+            FROM vendor_work_entries
+            WHERE sheet_id = ? AND business_date = ? AND actual_headcount > 0
+            ORDER BY vendor_name, entry_order, id
+            """,
+            (sheet_id, business_date),
+        ).fetchall()
+        items = [
+            {
+                "id": row["id"],
+                "vendor_name": row["vendor_name"],
+                "actual_headcount": row["actual_headcount"],
+                "work_content": row["work_content"],
+                "work_headcount": row["work_headcount"],
+                "planned_at": row["planned_at"],
+                "planned_headcount": row["planned_headcount"],
+                "entry_order": row["entry_order"],
+            }
+            for row in rows
+        ]
+        totals = {
+            "vendors": len({item["vendor_name"] for item in items}),
+            "actual_headcount_sum": sum(int(item["actual_headcount"]) for item in items),
+            "work_headcount_sum": sum(int(item["work_headcount"]) for item in items),
+        }
+
+    return jsonify(
+        {
+            "ok": True,
+            "sheet_id": sheet_id,
+            "business_date": business_date,
+            "items": items,
+            "totals": totals,
+        }
+    )
+
+
+@app.route("/api/crew-missing")
+@login_required
+def api_crew_missing():
+    sheet_id = request.args.get("sheet_id", type=int)
+    if sheet_id is None:
+        return crew_api_error("invalid_sheet_id", "sheet_id is required and must be a valid integer.")
+
+    raw_business_date = request.args.get("business_date", "").strip()
+    try:
+        business_date = parse_crew_business_date(raw_business_date) if raw_business_date else resolve_crew_business_date()
+    except ValueError as exc:
+        return crew_api_error("invalid_business_date", str(exc))
+
+    with db() as conn:
+        try:
+            require_sheet_exists(conn, sheet_id)
+        except LookupError:
+            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+
+        active_vendors = set(get_active_crew_vendors(sheet_id))
+        pending_by_vendor = get_pending_items_by_vendor(sheet_id)
+        contacts_by_vendor = fetch_vendor_contact_map(conn, sheet_id)
+        entries_by_vendor = fetch_vendor_work_entries(conn, sheet_id=sheet_id, business_date=business_date)
+
+        now = datetime.now()
+        items = []
+        for vendor_name, entries in entries_by_vendor.items():
+            if vendor_name not in active_vendors:
+                continue
+            contact = contacts_by_vendor.get(vendor_name, {})
+            for entry in entries:
+                planned_at = str(entry.get("planned_at", "")).strip()
+                if not planned_at:
+                    continue
+                planned_at_dt = parse_planned_at_datetime(planned_at)
+                if planned_at_dt is None or planned_at_dt > now:
+                    continue
+                actual_headcount = int(entry.get("actual_headcount", 0) or 0)
+                if actual_headcount > 0:
+                    continue
+                items.append(
+                    {
+                        "vendor_name": vendor_name,
+                        "contact_name": str(contact.get("contact_name", "")),
+                        "contact_phone": str(contact.get("contact_phone", "")),
+                        "planned_at": planned_at,
+                        "planned_headcount": int(entry.get("planned_headcount", 0) or 0),
+                        "actual_headcount": actual_headcount,
+                        "pending_items": pending_by_vendor.get(vendor_name, []),
+                    }
+                )
+
+    return jsonify({"ok": True, "sheet_id": sheet_id, "business_date": business_date, "items": items})
 
 
 @app.route("/admin/users", methods=["GET", "POST"])

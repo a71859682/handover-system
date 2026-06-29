@@ -351,6 +351,266 @@ print("crew schema smoke PASS")
         raise AssertionError("crew schema smoke subprocess did not report PASS.")
 
 
+def run_crew_api_smoke(app_db_path: Path) -> None:
+    if app_db_path.exists():
+        app_db_path.unlink()
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+business_date = module.resolve_crew_business_date()
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    sheet_row = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
+    if sheet_row is None:
+        raise SystemExit("expected a seeded sheet for crew API smoke")
+    sheet_id = int(sheet_row["id"])
+
+    task_rows = conn.execute(
+        "SELECT id FROM tasks WHERE sheet_id = ? ORDER BY col_index, id LIMIT 4",
+        (sheet_id,),
+    ).fetchall()
+    if len(task_rows) < 4:
+        raise SystemExit("expected at least four tasks for crew API smoke")
+    task_ids = [int(row["id"]) for row in task_rows]
+    conn.execute("UPDATE tasks SET vendor = ?, name = ? WHERE id = ?", ("VendorA", "Pending Paint", task_ids[0]))
+    conn.execute("UPDATE tasks SET vendor = ?, name = ? WHERE id = ?", ("VendorA", "Pending Patch", task_ids[1]))
+    conn.execute("UPDATE tasks SET vendor = ?, name = ? WHERE id = ?", ("VendorC", "Pending Tile", task_ids[2]))
+    conn.execute("UPDATE tasks SET vendor = ?, name = ? WHERE id = ?", ("VendorB", "Closed Task", task_ids[3]))
+
+    conn.execute(
+        "UPDATE progress SET value = ? WHERE task_id = ?",
+        (module.DONE_VALUE, task_ids[3]),
+    )
+
+    conn.execute(
+        "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_phone) VALUES (?, ?, ?, ?)",
+        (sheet_id, "VendorA", "Alice", "0900000001"),
+    )
+    conn.execute(
+        "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_phone) VALUES (?, ?, ?, ?)",
+        (sheet_id, "VendorB", "Bob", "0900000002"),
+    )
+    conn.execute(
+        "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_phone) VALUES (?, ?, ?, ?)",
+        (sheet_id, "VendorC", "Carol", "0900000003"),
+    )
+
+    conn.execute(
+        '''
+        INSERT INTO vendor_work_entries (
+            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+            actual_headcount, work_content, work_headcount, entry_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (sheet_id, "VendorA", business_date, "2000-01-01 09:00", 3, 0, "Missing Crew", 0, 0),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_work_entries (
+            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+            actual_headcount, work_content, work_headcount, entry_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (sheet_id, "VendorA", business_date, "2000-01-01 10:00", 2, 2, "Summary Crew", 2, 1),
+    )
+
+with module.app.test_client() as client:
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "Admin"
+        session["role"] = "admin"
+
+    crew_forms_response = client.get(f"/api/crew-forms?sheet_id={sheet_id}")
+    if crew_forms_response.status_code != 200:
+        raise SystemExit("/api/crew-forms should return 200")
+    crew_forms = crew_forms_response.get_json()
+    if not crew_forms.get("ok"):
+        raise SystemExit("/api/crew-forms should report ok=true")
+    if crew_forms.get("sheet_id") != sheet_id:
+        raise SystemExit("/api/crew-forms returned unexpected sheet_id")
+    if crew_forms.get("business_date") != business_date:
+        raise SystemExit("/api/crew-forms should use resolve_crew_business_date() by default")
+
+    active_vendors = {item["vendor_name"]: item for item in crew_forms["active_vendors"]}
+    if "VendorA" not in active_vendors or "VendorC" not in active_vendors:
+        raise SystemExit("/api/crew-forms should include active vendors")
+    if "VendorB" in active_vendors:
+        raise SystemExit("/api/crew-forms should not include inactive vendor in active_vendors")
+    if active_vendors["VendorA"]["contact"]["contact_name"] != "Alice":
+        raise SystemExit("/api/crew-forms should include vendor contact data")
+    if len(active_vendors["VendorA"]["work_entries"]) != 2:
+        raise SystemExit("/api/crew-forms should include current business_date work entries")
+
+    inactive_names = {item["vendor_name"] for item in crew_forms["inactive_contacts"]}
+    if "VendorB" not in inactive_names:
+        raise SystemExit("inactive vendor contacts should remain visible in inactive_contacts")
+
+    contact_insert = client.post(
+        "/api/vendor-contact",
+        json={
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorZ",
+            "contact_name": "Zoe",
+            "contact_phone": "0900000009",
+        },
+    )
+    if contact_insert.status_code != 200 or not contact_insert.get_json().get("ok"):
+        raise SystemExit("/api/vendor-contact insert should succeed")
+    inserted_contact = contact_insert.get_json()["contact"]
+    if inserted_contact["contact_name"] != "Zoe":
+        raise SystemExit("/api/vendor-contact insert returned unexpected contact_name")
+
+    contact_update = client.post(
+        "/api/vendor-contact",
+        json={
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorZ",
+            "contact_name": "Zoe Updated",
+            "contact_phone": "0900000010",
+        },
+    )
+    if contact_update.status_code != 200 or not contact_update.get_json().get("ok"):
+        raise SystemExit("/api/vendor-contact update should succeed")
+    updated_contact = contact_update.get_json()["contact"]
+    if updated_contact["id"] != inserted_contact["id"]:
+        raise SystemExit("/api/vendor-contact update should upsert by sheet_id + vendor_name")
+    if updated_contact["contact_name"] != "Zoe Updated" or updated_contact["contact_phone"] != "0900000010":
+        raise SystemExit("/api/vendor-contact update returned unexpected payload")
+
+    entry_insert = client.post(
+        "/api/vendor-work-entry",
+        json={
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorA",
+            "planned_at": "",
+            "planned_headcount": 4,
+            "actual_headcount": 0,
+            "work_content": "Insert Crew",
+            "work_headcount": 0,
+            "entry_order": 2,
+        },
+    )
+    if entry_insert.status_code != 200 or not entry_insert.get_json().get("ok"):
+        raise SystemExit("/api/vendor-work-entry insert should succeed")
+    inserted_entry = entry_insert.get_json()["entry"]
+    if inserted_entry["business_date"] != business_date:
+        raise SystemExit("/api/vendor-work-entry insert should default business_date from helper")
+
+    entry_update = client.post(
+        "/api/vendor-work-entry",
+        json={
+            "id": inserted_entry["id"],
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorA",
+            "business_date": business_date,
+            "planned_at": "2000-01-01 11:00",
+            "planned_headcount": 4,
+            "actual_headcount": 1,
+            "work_content": "Insert Crew Updated",
+            "work_headcount": 1,
+            "entry_order": 2,
+        },
+    )
+    if entry_update.status_code != 200 or not entry_update.get_json().get("ok"):
+        raise SystemExit("/api/vendor-work-entry update should succeed")
+    updated_entry = entry_update.get_json()["entry"]
+    if updated_entry["actual_headcount"] != 1 or updated_entry["work_content"] != "Insert Crew Updated":
+        raise SystemExit("/api/vendor-work-entry update returned unexpected payload")
+
+    invalid_entry = client.post(
+        "/api/vendor-work-entry",
+        json={
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorA",
+            "planned_headcount": -1,
+            "actual_headcount": 0,
+            "work_content": "",
+            "work_headcount": 0,
+            "entry_order": 0,
+        },
+    )
+    if invalid_entry.status_code != 400:
+        raise SystemExit("invalid headcount should return HTTP 400")
+    invalid_payload = invalid_entry.get_json()
+    if invalid_payload.get("ok") is not False or "error" not in invalid_payload:
+        raise SystemExit("invalid headcount should use standard error payload")
+
+    followups_response = client.get(f"/api/crew-followups?sheet_id={sheet_id}&business_date={business_date}")
+    if followups_response.status_code != 200:
+        raise SystemExit("/api/crew-followups should return 200")
+    followups = followups_response.get_json()
+    followup_names = {item["vendor_name"] for item in followups["items"]}
+    if "VendorC" not in followup_names:
+        raise SystemExit("/api/crew-followups should include active vendor without planned_at")
+    if "VendorA" in followup_names:
+        raise SystemExit("/api/crew-followups should exclude vendor with planned_at entries")
+
+    summary_response = client.get(f"/api/crew-daily-summary?sheet_id={sheet_id}&business_date={business_date}")
+    if summary_response.status_code != 200:
+        raise SystemExit("/api/crew-daily-summary should return 200")
+    summary = summary_response.get_json()
+    if not summary.get("ok"):
+        raise SystemExit("/api/crew-daily-summary should report ok=true")
+    summary_contents = {item["work_content"] for item in summary["items"]}
+    if "Summary Crew" not in summary_contents or "Insert Crew Updated" not in summary_contents:
+        raise SystemExit("/api/crew-daily-summary should include actual_headcount > 0 entries")
+    if summary["totals"]["actual_headcount_sum"] != 3:
+        raise SystemExit("/api/crew-daily-summary returned unexpected actual_headcount_sum")
+    if summary["totals"]["work_headcount_sum"] != 3:
+        raise SystemExit("/api/crew-daily-summary returned unexpected work_headcount_sum")
+
+    missing_response = client.get(f"/api/crew-missing?sheet_id={sheet_id}&business_date={business_date}")
+    if missing_response.status_code != 200:
+        raise SystemExit("/api/crew-missing should return 200")
+    missing = missing_response.get_json()
+    missing_names = {item["vendor_name"] for item in missing["items"]}
+    if "VendorA" not in missing_names:
+        raise SystemExit("/api/crew-missing should include planned vendor with zero actual headcount")
+    if "VendorC" in missing_names:
+        raise SystemExit("/api/crew-missing should ignore vendors without planned_at")
+    missing_item = next(item for item in missing["items"] if item["vendor_name"] == "VendorA")
+    if missing_item["contact_name"] != "Alice" or missing_item["planned_headcount"] != 3:
+        raise SystemExit("/api/crew-missing returned unexpected vendor payload")
+    if "Pending Paint" not in missing_item["pending_items"] and "Pending Patch" not in missing_item["pending_items"]:
+        raise SystemExit("/api/crew-missing should include pending_items for active vendor")
+
+    refreshed_crew_forms = client.get(f"/api/crew-forms?sheet_id={sheet_id}").get_json()
+    refreshed_inactive_names = {item["vendor_name"] for item in refreshed_crew_forms["inactive_contacts"]}
+    if "VendorZ" not in refreshed_inactive_names:
+        raise SystemExit("inactive vendor contact should persist after upsert")
+
+print("crew API smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "crew API smoke PASS" not in result.stdout:
+        raise AssertionError("crew API smoke subprocess did not report PASS.")
+
+
 def run_sheet_endpoint_smoke(app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -1850,6 +2110,7 @@ def main() -> int:
         run_users_read_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_users_read_compare_readiness_smoke(Path(tmpdir) / "app-smoke.db")
         run_crew_schema_smoke(Path(tmpdir) / "crew-schema-smoke.db")
+        run_crew_api_smoke(Path(tmpdir) / "crew-api-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
         run_users_sqlite_sequence_apply_guard_smoke()
