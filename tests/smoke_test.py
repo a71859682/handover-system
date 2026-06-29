@@ -404,6 +404,9 @@ with module.db() as conn:
     if sheet_row is None:
         raise SystemExit("expected a seeded sheet for crew API smoke")
     sheet_id = int(sheet_row["id"])
+    conn.execute(
+        "INSERT OR IGNORE INTO sheets (id, name, sort_order, created_at) VALUES (2, 'Sheet B', 2, CURRENT_TIMESTAMP)"
+    )
 
     task_rows = conn.execute(
         "SELECT id FROM tasks WHERE sheet_id = ? ORDER BY col_index, id LIMIT 4",
@@ -429,10 +432,6 @@ with module.db() as conn:
     conn.execute(
         "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_phone) VALUES (?, ?, ?, ?)",
         (sheet_id, "VendorB", "Bob", "0900000002"),
-    )
-    conn.execute(
-        "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_phone) VALUES (?, ?, ?, ?)",
-        (sheet_id, "VendorC", "Carol", "0900000003"),
     )
 
     conn.execute(
@@ -479,12 +478,38 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-forms should not include inactive vendor in active_vendors")
     if active_vendors["VendorA"]["contact"]["contact_name"] != "Alice":
         raise SystemExit("/api/crew-forms should include vendor contact data")
+    if not isinstance(active_vendors["VendorA"].get("contacts"), list) or len(active_vendors["VendorA"]["contacts"]) != 1:
+        raise SystemExit("/api/crew-forms should include contacts array for active vendors")
+    if active_vendors["VendorA"]["contacts"][0]["contact_title"] != "":
+        raise SystemExit("/api/crew-forms active vendor contacts should include contact_title")
+    if active_vendors["VendorA"]["contacts"][0]["display_name"] != "Alice":
+        raise SystemExit("/api/crew-forms contact display_name should fall back to contact_name only")
+    if active_vendors["VendorA"]["contact"]["id"] != active_vendors["VendorA"]["contacts"][0]["id"]:
+        raise SystemExit("compatibility contact should equal first contact in contacts array")
+    if active_vendors["VendorA"]["contact"]["display_name"] != active_vendors["VendorA"]["contacts"][0]["display_name"]:
+        raise SystemExit("compatibility contact display_name should match contacts[0]")
+    if not active_vendors["VendorA"]["contacts"][0]["created_at"] or not active_vendors["VendorA"]["contacts"][0]["updated_at"]:
+        raise SystemExit("/api/crew-forms contacts should include created_at and updated_at")
     if len(active_vendors["VendorA"]["work_entries"]) != 2:
         raise SystemExit("/api/crew-forms should include current business_date work entries")
+    vendor_c = active_vendors["VendorC"]
+    if vendor_c["contact"]["id"] is not None:
+        raise SystemExit("active vendor without contacts should use empty compatibility contact")
+    if vendor_c["contact"]["display_name"] != "":
+        raise SystemExit("empty compatibility contact should use empty display_name")
+    if vendor_c["contacts"] != []:
+        raise SystemExit("active vendor without contacts should return empty contacts array")
+    if vendor_c["contact"]["contact_name"] != "" or vendor_c["contact"]["contact_phone"] != "":
+        raise SystemExit("empty compatibility contact should preserve readonly-safe blank fields")
 
     inactive_names = {item["vendor_name"] for item in crew_forms["inactive_contacts"]}
     if "VendorB" not in inactive_names:
         raise SystemExit("inactive vendor contacts should remain visible in inactive_contacts")
+    vendor_b = next(item for item in crew_forms["inactive_contacts"] if item["vendor_name"] == "VendorB")
+    if not isinstance(vendor_b.get("contacts"), list) or len(vendor_b["contacts"]) != 1:
+        raise SystemExit("inactive_contacts should be grouped by vendor with contacts array")
+    if vendor_b["contact"]["contact_name"] != "Bob":
+        raise SystemExit("inactive vendor compatibility contact should remain available")
 
     contact_insert = client.post(
         "/api/vendor-contact",
@@ -492,31 +517,209 @@ with module.app.test_client() as client:
             "sheet_id": sheet_id,
             "vendor_name": "VendorZ",
             "contact_name": "Zoe",
+            "contact_title": "Lead",
             "contact_phone": "0900000009",
+            "is_primary": 1,
         },
     )
     if contact_insert.status_code != 200 or not contact_insert.get_json().get("ok"):
         raise SystemExit("/api/vendor-contact insert should succeed")
-    inserted_contact = contact_insert.get_json()["contact"]
+    inserted_payload = contact_insert.get_json()
+    inserted_contact = inserted_payload["contact"]
     if inserted_contact["contact_name"] != "Zoe":
         raise SystemExit("/api/vendor-contact insert returned unexpected contact_name")
+    if inserted_contact["contact_title"] != "Lead":
+        raise SystemExit("/api/vendor-contact insert should persist contact_title")
+    if inserted_contact["display_name"] != "Lead Zoe":
+        raise SystemExit("/api/vendor-contact insert should build display_name from title + name")
+    if inserted_contact["is_primary"] != 1 or inserted_contact["contact_order"] != 0:
+        raise SystemExit("/api/vendor-contact insert should return expected primary/order defaults")
+    if len(inserted_payload["contacts"]) != 1:
+        raise SystemExit("/api/vendor-contact insert should return vendor contacts list")
+    if inserted_payload["contact"]["id"] != inserted_payload["contacts"][0]["id"]:
+        raise SystemExit("/api/vendor-contact response contract should keep contact == contacts[0]")
 
-    contact_update = client.post(
+    second_contact_insert = client.post(
         "/api/vendor-contact",
         json={
             "sheet_id": sheet_id,
             "vendor_name": "VendorZ",
-            "contact_name": "Zoe Updated",
+            "contact_name": "Zara",
+            "contact_title": "Supervisor",
             "contact_phone": "0900000010",
+            "is_primary": 0,
+        },
+    )
+    if second_contact_insert.status_code != 200 or not second_contact_insert.get_json().get("ok"):
+        raise SystemExit("/api/vendor-contact second insert should succeed")
+    second_payload = second_contact_insert.get_json()
+    if second_payload["contact"]["id"] != second_payload["contacts"][0]["id"]:
+        raise SystemExit("/api/vendor-contact should keep compatibility contact == contacts[0] after second insert")
+    if len(second_payload["contacts"]) != 2:
+        raise SystemExit("/api/vendor-contact should allow multiple rows per sheet/vendor")
+    second_contact = next(
+        (item for item in second_payload["contacts"] if item["contact_name"] == "Zara"),
+        None,
+    )
+    if second_contact is None:
+        raise SystemExit("/api/vendor-contact should include the second inserted contact in contacts array")
+    if second_contact["id"] == inserted_contact["id"]:
+        raise SystemExit("/api/vendor-contact should assign a distinct id to the second contact")
+    if second_contact["contact_order"] != 1:
+        raise SystemExit("/api/vendor-contact should auto increment contact_order")
+    if [item["contact_name"] for item in second_payload["contacts"]] != ["Zoe", "Zara"]:
+        raise SystemExit("/api/vendor-contact contacts should remain sorted by primary/order")
+    if second_payload["contacts"][1]["display_name"] != "Supervisor Zara":
+        raise SystemExit("/api/vendor-contact should serialize display_name for all contacts")
+
+    contact_update = client.post(
+        "/api/vendor-contact",
+        json={
+            "id": second_contact["id"],
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorZ",
+            "contact_name": "Zara Updated",
+            "contact_title": "Coordinator",
+            "contact_phone": "0900000011",
+            "is_primary": 1,
+            "contact_order": 1,
         },
     )
     if contact_update.status_code != 200 or not contact_update.get_json().get("ok"):
         raise SystemExit("/api/vendor-contact update should succeed")
-    updated_contact = contact_update.get_json()["contact"]
-    if updated_contact["id"] != inserted_contact["id"]:
-        raise SystemExit("/api/vendor-contact update should upsert by sheet_id + vendor_name")
-    if updated_contact["contact_name"] != "Zoe Updated" or updated_contact["contact_phone"] != "0900000010":
+    updated_payload = contact_update.get_json()
+    updated_contact = updated_payload["contact"]
+    if updated_contact["id"] != second_contact["id"]:
+        raise SystemExit("/api/vendor-contact update should target the requested id")
+    if updated_contact["contact_name"] != "Zara Updated" or updated_contact["contact_title"] != "Coordinator":
         raise SystemExit("/api/vendor-contact update returned unexpected payload")
+    if updated_contact["display_name"] != "Coordinator Zara Updated":
+        raise SystemExit("/api/vendor-contact update should refresh display_name")
+    if [item["contact_name"] for item in updated_payload["contacts"]] != ["Zara Updated", "Zoe"]:
+        raise SystemExit("/api/vendor-contact update should return sorted contacts after primary switch")
+    if updated_payload["contacts"][1]["is_primary"] != 0:
+        raise SystemExit("/api/vendor-contact should clear sibling primary flags")
+    if updated_payload["contact"]["id"] != updated_payload["contacts"][0]["id"]:
+        raise SystemExit("/api/vendor-contact update should keep contact compatibility contract")
+
+    zero_primary_update = client.post(
+        "/api/vendor-contact",
+        json={
+            "id": inserted_contact["id"],
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorZ",
+            "contact_name": "Zoe",
+            "contact_title": "Lead",
+            "contact_phone": "0900000009",
+            "is_primary": 0,
+            "contact_order": 0,
+        },
+    )
+    if zero_primary_update.status_code != 200 or not zero_primary_update.get_json().get("ok"):
+        raise SystemExit("/api/vendor-contact should allow clearing one contact primary flag")
+    zero_primary_update_2 = client.post(
+        "/api/vendor-contact",
+        json={
+            "id": second_contact["id"],
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorZ",
+            "contact_name": "Zara Updated",
+            "contact_title": "Coordinator",
+            "contact_phone": "0900000011",
+            "is_primary": 0,
+            "contact_order": 1,
+        },
+    )
+    if zero_primary_update_2.status_code != 200 or not zero_primary_update_2.get_json().get("ok"):
+        raise SystemExit("/api/vendor-contact should allow all contacts to be non-primary")
+    if any(item["is_primary"] != 0 for item in zero_primary_update_2.get_json()["contacts"]):
+        raise SystemExit("/api/vendor-contact should allow all is_primary values to be 0")
+    if zero_primary_update_2.get_json()["contact"]["id"] != zero_primary_update_2.get_json()["contacts"][0]["id"]:
+        raise SystemExit("compatibility contact should still be derived from contacts[0] when all primaries are zero")
+
+    long_title = client.post(
+        "/api/vendor-contact",
+        json={
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorZ",
+            "contact_name": "Title Too Long",
+            "contact_title": "T" * 101,
+            "contact_phone": "0900000000",
+        },
+    )
+    if long_title.status_code != 400:
+        raise SystemExit("invalid contact_title should return HTTP 400")
+
+    long_phone = client.post(
+        "/api/vendor-contact",
+        json={
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorZ",
+            "contact_name": "Phone Too Long",
+            "contact_title": "",
+            "contact_phone": "9" * 51,
+        },
+    )
+    if long_phone.status_code != 400:
+        raise SystemExit("invalid contact_phone should return HTTP 400")
+
+    cross_sheet_update = client.post(
+        "/api/vendor-contact",
+        json={
+            "id": second_contact["id"],
+            "sheet_id": 2,
+            "vendor_name": "VendorZ",
+            "contact_name": "Cross Sheet",
+            "contact_title": "",
+            "contact_phone": "0900000000",
+        },
+    )
+    if cross_sheet_update.status_code != 400:
+        raise SystemExit("cross-sheet update should fail before allowing a write")
+    if cross_sheet_update.get_json()["error"]["code"] != "cross_sheet_update_not_allowed":
+        raise SystemExit("cross-sheet update should use cross_sheet_update_not_allowed")
+
+    title_only_contact = client.post(
+        "/api/vendor-contact",
+        json={
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorTitleOnly",
+            "contact_name": "",
+            "contact_title": "工地主任",
+            "contact_phone": "",
+            "is_primary": 1,
+        },
+    )
+    if title_only_contact.status_code != 200 or title_only_contact.get_json()["contact"]["display_name"] != "工地主任":
+        raise SystemExit("display_name should support title-only contacts")
+
+    name_only_contact = client.post(
+        "/api/vendor-contact",
+        json={
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorNameOnly",
+            "contact_name": "王小明",
+            "contact_title": "",
+            "contact_phone": "",
+            "is_primary": 1,
+        },
+    )
+    if name_only_contact.status_code != 200 or name_only_contact.get_json()["contact"]["display_name"] != "王小明":
+        raise SystemExit("display_name should support name-only contacts")
+
+    both_empty_contact = client.post(
+        "/api/vendor-contact",
+        json={
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorEmptyDisplay",
+            "contact_name": "",
+            "contact_title": "",
+            "contact_phone": "",
+            "is_primary": 1,
+        },
+    )
+    if both_empty_contact.status_code != 200 or both_empty_contact.get_json()["contact"]["display_name"] != "":
+        raise SystemExit("display_name should support empty title/name contacts")
 
     entry_insert = client.post(
         "/api/vendor-work-entry",
@@ -619,6 +822,68 @@ with module.app.test_client() as client:
     refreshed_inactive_names = {item["vendor_name"] for item in refreshed_crew_forms["inactive_contacts"]}
     if "VendorZ" not in refreshed_inactive_names:
         raise SystemExit("inactive vendor contact should persist after upsert")
+    refreshed_vendor_z = next(item for item in refreshed_crew_forms["inactive_contacts"] if item["vendor_name"] == "VendorZ")
+    if len(refreshed_vendor_z["contacts"]) != 2:
+        raise SystemExit("inactive vendor should return all saved contacts")
+    if refreshed_vendor_z["contact"]["id"] != refreshed_vendor_z["contacts"][0]["id"]:
+        raise SystemExit("compatibility contact should use the first sorted contact")
+    if refreshed_vendor_z["contact"]["display_name"] != refreshed_vendor_z["contacts"][0]["display_name"]:
+        raise SystemExit("compatibility contact should share display_name with contacts[0]")
+    with module.db() as conn:
+        vendor_z_work_entries = conn.execute(
+            "SELECT COUNT(*) FROM vendor_work_entries WHERE vendor_name = ?",
+            ("VendorZ",),
+        ).fetchone()[0]
+    if vendor_z_work_entries != 0:
+        raise SystemExit("/api/vendor-contact should not create vendor_work_entries")
+    with module.db() as conn:
+        order_vendor = "VendorOrderTest"
+        if module.next_contact_order(conn, sheet_id=sheet_id, vendor_name=order_vendor) != 0:
+            raise SystemExit("next_contact_order should start at 0 for first contact")
+        conn.execute(
+            "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sheet_id, order_vendor, "One", "", "", 0, 0),
+        )
+        if module.next_contact_order(conn, sheet_id=sheet_id, vendor_name=order_vendor) != 1:
+            raise SystemExit("next_contact_order should increment to 1 for second contact")
+        conn.execute(
+            "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (sheet_id, order_vendor, "Two", "", "", 0, 1),
+        )
+        if module.next_contact_order(conn, sheet_id=sheet_id, vendor_name=order_vendor) != 2:
+            raise SystemExit("next_contact_order should increment to 2 for third contact")
+        primary_vendor = "VendorPrimaryTest"
+        conn.execute(
+            "INSERT INTO vendor_contacts (id, sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (9001, sheet_id, primary_vendor, "Primary A", "", "", 1, 0),
+        )
+        conn.execute(
+            "INSERT INTO vendor_contacts (id, sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (9002, sheet_id, primary_vendor, "Primary B", "", "", 0, 1),
+        )
+        conn.execute(
+            "INSERT INTO vendor_contacts (id, sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (9003, 2, primary_vendor, "Other Sheet", "", "", 1, 0),
+        )
+        conn.execute(
+            "INSERT INTO vendor_contacts (id, sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (9004, sheet_id, 'OtherVendor', 'Other Vendor', '', '', 1, 0),
+        )
+        module.set_primary_contact(conn, sheet_id=sheet_id, vendor_name=primary_vendor, contact_id=9002)
+        primary_rows = conn.execute(
+            "SELECT id, is_primary FROM vendor_contacts WHERE sheet_id = ? AND vendor_name = ? ORDER BY id",
+            (sheet_id, primary_vendor),
+        ).fetchall()
+        if [(row["id"], row["is_primary"]) for row in primary_rows] != [(9001, 0), (9002, 1)]:
+            raise SystemExit("set_primary_contact should only update contacts within same sheet/vendor")
+        other_sheet_row = conn.execute(
+            "SELECT is_primary FROM vendor_contacts WHERE id = 9003"
+        ).fetchone()
+        other_vendor_row = conn.execute(
+            "SELECT is_primary FROM vendor_contacts WHERE id = 9004"
+        ).fetchone()
+        if other_sheet_row["is_primary"] != 1 or other_vendor_row["is_primary"] != 1:
+            raise SystemExit("set_primary_contact should not affect other sheets or vendors")
 
 print("crew API smoke PASS")
 """

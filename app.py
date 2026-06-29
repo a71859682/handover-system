@@ -1126,6 +1126,26 @@ def parse_optional_positive_int(value, *, field_name: str) -> int | None:
     return parsed
 
 
+def parse_optional_non_negative_int(value, *, field_name: str) -> int | None:
+    if value in (None, ""):
+        return None
+    return parse_non_negative_int(value, field_name=field_name)
+
+
+def parse_contact_primary_flag(value) -> int:
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if value in (0, 1):
+        return int(value)
+    if isinstance(value, str):
+        raw = value.strip().lower()
+        if raw in ("0", "1"):
+            return int(raw)
+        if raw in ("true", "false"):
+            return 1 if raw == "true" else 0
+    raise ValueError("is_primary must be 0, 1, true, or false.")
+
+
 def require_sheet_exists(conn: sqlite3.Connection, sheet_id: int) -> None:
     row = conn.execute("SELECT id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
     if row is None:
@@ -1210,34 +1230,145 @@ def get_pending_items_by_vendor(sheet_id: int) -> dict[str, list[str]]:
     return pending_items
 
 
-def fetch_vendor_contact_map(conn: sqlite3.Connection, sheet_id: int) -> dict[str, dict[str, object]]:
+def build_contact_display_name(contact_or_fields) -> str:
+    if isinstance(contact_or_fields, sqlite3.Row):
+        contact_title = str(contact_or_fields["contact_title"] or "").strip()
+        contact_name = str(contact_or_fields["contact_name"] or "").strip()
+    else:
+        contact_title = str((contact_or_fields or {}).get("contact_title", "") or "").strip()
+        contact_name = str((contact_or_fields or {}).get("contact_name", "") or "").strip()
+    if contact_title and contact_name:
+        return f"{contact_title} {contact_name}"
+    return contact_title or contact_name
+
+
+def serialize_vendor_contact(row: sqlite3.Row) -> dict[str, object]:
+    return {
+        "id": row["id"],
+        "sheet_id": row["sheet_id"],
+        "vendor_name": row["vendor_name"],
+        "contact_name": row["contact_name"],
+        "contact_title": row["contact_title"],
+        "contact_phone": row["contact_phone"],
+        "display_name": build_contact_display_name(row),
+        "is_primary": row["is_primary"],
+        "contact_order": row["contact_order"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def empty_vendor_contact(sheet_id: int, vendor_name: str) -> dict[str, object]:
+    return {
+        "id": None,
+        "sheet_id": sheet_id,
+        "vendor_name": vendor_name,
+        "contact_name": "",
+        "contact_title": "",
+        "contact_phone": "",
+        "display_name": "",
+        "is_primary": 0,
+        "contact_order": 0,
+        "created_at": "",
+        "updated_at": "",
+    }
+
+
+def vendor_contact_order_clause() -> str:
+    return "is_primary DESC, contact_order ASC, id ASC"
+
+
+def fetch_vendor_contacts_grouped(
+    conn: sqlite3.Connection, sheet_id: int
+) -> dict[str, list[dict[str, object]]]:
     rows = conn.execute(
-        """
+        f"""
         SELECT id, sheet_id, vendor_name, contact_name, contact_title, contact_phone,
                is_primary, contact_order, created_at, updated_at
         FROM vendor_contacts
         WHERE sheet_id = ?
-        ORDER BY vendor_name, is_primary DESC, contact_order ASC, id ASC
+        ORDER BY vendor_name, {vendor_contact_order_clause()}
         """,
         (sheet_id,),
     ).fetchall()
-    contact_map: dict[str, dict[str, object]] = {}
+    contacts_by_vendor: dict[str, list[dict[str, object]]] = {}
     for row in rows:
-        if row["vendor_name"] in contact_map:
-            continue
-        contact_map[row["vendor_name"]] = {
-            "id": row["id"],
-            "sheet_id": row["sheet_id"],
-            "vendor_name": row["vendor_name"],
-            "contact_name": row["contact_name"],
-            "contact_title": row["contact_title"],
-            "contact_phone": row["contact_phone"],
-            "is_primary": row["is_primary"],
-            "contact_order": row["contact_order"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-        }
+        contacts_by_vendor.setdefault(row["vendor_name"], []).append(serialize_vendor_contact(row))
+    return contacts_by_vendor
+
+
+def first_or_empty_vendor_contact(
+    contacts: list[dict[str, object]] | None,
+    *,
+    sheet_id: int,
+    vendor_name: str,
+) -> dict[str, object]:
+    if contacts:
+        return dict(contacts[0])
+    return empty_vendor_contact(sheet_id, vendor_name)
+
+
+def fetch_vendor_contact_map(conn: sqlite3.Connection, sheet_id: int) -> dict[str, dict[str, object]]:
+    contact_map: dict[str, dict[str, object]] = {}
+    for vendor_name, contacts in fetch_vendor_contacts_grouped(conn, sheet_id).items():
+        contact_map[vendor_name] = first_or_empty_vendor_contact(contacts, sheet_id=sheet_id, vendor_name=vendor_name)
     return contact_map
+
+
+def fetch_vendor_contacts_by_vendor(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    vendor_name: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        f"""
+        SELECT id, sheet_id, vendor_name, contact_name, contact_title, contact_phone,
+               is_primary, contact_order, created_at, updated_at
+        FROM vendor_contacts
+        WHERE sheet_id = ? AND vendor_name = ?
+        ORDER BY {vendor_contact_order_clause()}
+        """,
+        (sheet_id, vendor_name),
+    ).fetchall()
+    return [serialize_vendor_contact(row) for row in rows]
+
+
+def next_contact_order(conn: sqlite3.Connection, *, sheet_id: int, vendor_name: str) -> int:
+    row = conn.execute(
+        """
+        SELECT COALESCE(MAX(contact_order), -1) AS max_contact_order
+        FROM vendor_contacts
+        WHERE sheet_id = ? AND vendor_name = ?
+        """,
+        (sheet_id, vendor_name),
+    ).fetchone()
+    return int(row["max_contact_order"]) + 1
+
+
+def set_primary_contact(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    vendor_name: str,
+    contact_id: int,
+) -> None:
+    conn.execute(
+        """
+        UPDATE vendor_contacts
+        SET is_primary = 0, updated_at = CURRENT_TIMESTAMP
+        WHERE sheet_id = ? AND vendor_name = ? AND id != ?
+        """,
+        (sheet_id, vendor_name, contact_id),
+    )
+    conn.execute(
+        """
+        UPDATE vendor_contacts
+        SET is_primary = 1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND sheet_id = ? AND vendor_name = ?
+        """,
+        (contact_id, sheet_id, vendor_name),
+    )
 
 
 def fetch_vendor_work_entries(
@@ -2232,34 +2363,29 @@ def api_crew_forms():
 
         active_vendors = get_active_crew_vendors(sheet_id)
         active_vendor_set = set(active_vendors)
-        contacts_by_vendor = fetch_vendor_contact_map(conn, sheet_id)
+        contacts_by_vendor = fetch_vendor_contacts_grouped(conn, sheet_id)
         entries_by_vendor = fetch_vendor_work_entries(conn, sheet_id=sheet_id, business_date=business_date)
 
         active_vendor_payload = []
         for vendor_name in active_vendors:
-            contact = contacts_by_vendor.get(
-                vendor_name,
-                {
-                    "id": None,
-                    "sheet_id": sheet_id,
-                    "vendor_name": vendor_name,
-                    "contact_name": "",
-                    "contact_phone": "",
-                    "created_at": "",
-                    "updated_at": "",
-                },
-            )
+            contacts = contacts_by_vendor.get(vendor_name, [])
+            contact = first_or_empty_vendor_contact(contacts, sheet_id=sheet_id, vendor_name=vendor_name)
             active_vendor_payload.append(
                 {
                     "vendor_name": vendor_name,
                     "contact": contact,
+                    "contacts": contacts,
                     "work_entries": entries_by_vendor.get(vendor_name, []),
                 }
             )
 
         inactive_contacts = [
-            contact
-            for vendor_name, contact in contacts_by_vendor.items()
+            {
+                "vendor_name": vendor_name,
+                "contact": first_or_empty_vendor_contact(contacts, sheet_id=sheet_id, vendor_name=vendor_name),
+                "contacts": contacts,
+            }
+            for vendor_name, contacts in contacts_by_vendor.items()
             if vendor_name not in active_vendor_set
         ]
 
@@ -2278,19 +2404,24 @@ def api_crew_forms():
 @login_required
 def api_vendor_contact():
     data = request.get_json(silent=True) or {}
-    sheet_id = data.get("sheet_id")
     try:
-        sheet_id = parse_non_negative_int(sheet_id, field_name="sheet_id")
+        contact_id = parse_optional_positive_int(data.get("id"), field_name="id")
+        sheet_id = parse_non_negative_int(data.get("sheet_id"), field_name="sheet_id")
         if sheet_id <= 0:
             raise ValueError("sheet_id must be a positive integer.")
         vendor_name = normalize_vendor_name(str(data.get("vendor_name", "")))
+        contact_order = parse_optional_non_negative_int(data.get("contact_order"), field_name="contact_order")
+        is_primary = parse_contact_primary_flag(data.get("is_primary", 0))
     except ValueError as exc:
         return crew_api_error("invalid_request", str(exc))
 
     contact_name = str(data.get("contact_name", "")).strip()
+    contact_title = str(data.get("contact_title", "")).strip()
     contact_phone = str(data.get("contact_phone", "")).strip()
     if len(contact_name) > 100:
         return crew_api_error("invalid_contact_name", "contact_name must be 100 characters or fewer.")
+    if len(contact_title) > 100:
+        return crew_api_error("invalid_contact_title", "contact_title must be 100 characters or fewer.")
     if len(contact_phone) > 50:
         return crew_api_error("invalid_contact_phone", "contact_phone must be 50 characters or fewer.")
 
@@ -2299,48 +2430,60 @@ def api_vendor_contact():
             require_sheet_exists(conn, sheet_id)
         except LookupError:
             return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
-        existing_contact = conn.execute(
-            """
-            SELECT id
-            FROM vendor_contacts
-            WHERE sheet_id = ? AND vendor_name = ?
-            ORDER BY is_primary DESC, contact_order ASC, id ASC
-            LIMIT 1
-            """,
-            (sheet_id, vendor_name),
-        ).fetchone()
-        if existing_contact:
+        if contact_id is not None:
+            existing_contact = conn.execute(
+                """
+                SELECT id, sheet_id, vendor_name
+                FROM vendor_contacts
+                WHERE id = ?
+                """,
+                (contact_id,),
+            ).fetchone()
+            if existing_contact is None:
+                return crew_api_error("contact_not_found", "contact id was not found.", status=404)
+            if existing_contact["sheet_id"] != sheet_id:
+                return crew_api_error("cross_sheet_update_not_allowed", "contact does not belong to the requested sheet.", status=400)
+            if contact_order is None:
+                current_order = conn.execute(
+                    "SELECT contact_order FROM vendor_contacts WHERE id = ?",
+                    (contact_id,),
+                ).fetchone()
+                contact_order = int(current_order["contact_order"]) if current_order else 0
             conn.execute(
                 """
                 UPDATE vendor_contacts
-                SET contact_name = ?, contact_phone = ?, updated_at = CURRENT_TIMESTAMP
+                SET vendor_name = ?, contact_name = ?, contact_title = ?, contact_phone = ?,
+                    is_primary = ?, contact_order = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (contact_name, contact_phone, existing_contact["id"]),
+                (vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order, contact_id),
             )
+            if is_primary == 1:
+                set_primary_contact(conn, sheet_id=sheet_id, vendor_name=vendor_name, contact_id=contact_id)
+            saved_contact_id = contact_id
         else:
-            conn.execute(
+            if contact_order is None:
+                contact_order = next_contact_order(conn, sheet_id=sheet_id, vendor_name=vendor_name)
+            cur = conn.execute(
                 """
                 INSERT INTO vendor_contacts (
                     sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order
                 )
-                VALUES (?, ?, ?, '', ?, 1, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (sheet_id, vendor_name, contact_name, contact_phone),
+                (sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order),
             )
-        row = conn.execute(
-            """
-            SELECT id, sheet_id, vendor_name, contact_name, contact_title, contact_phone,
-                   is_primary, contact_order, created_at, updated_at
-            FROM vendor_contacts
-            WHERE sheet_id = ? AND vendor_name = ?
-            ORDER BY is_primary DESC, contact_order ASC, id ASC
-            LIMIT 1
-            """,
-            (sheet_id, vendor_name),
-        ).fetchone()
+            saved_contact_id = cur.lastrowid
+            if is_primary == 1:
+                set_primary_contact(conn, sheet_id=sheet_id, vendor_name=vendor_name, contact_id=saved_contact_id)
+        contacts = fetch_vendor_contacts_by_vendor(conn, sheet_id=sheet_id, vendor_name=vendor_name)
+        contact = first_or_empty_vendor_contact(
+            contacts,
+            sheet_id=sheet_id,
+            vendor_name=vendor_name,
+        )
 
-    return jsonify({"ok": True, "contact": dict(row) if row else None})
+    return jsonify({"ok": True, "contact": contact, "contacts": contacts})
 
 
 @app.route("/api/vendor-work-entry", methods=["POST"])
