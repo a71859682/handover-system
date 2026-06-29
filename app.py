@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import uuid
+from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -56,6 +57,8 @@ app.config.setdefault("SQLALCHEMY_TRACK_MODIFICATIONS", False)
 init_database(app)
 ASSET_VERSION = "20260627-010"
 _USERS_READ_COMPARE_ORM_READY = True
+CREW_BUSINESS_DAY_RESET_HOUR = 8
+CREW_BUSINESS_DAY_RESET_MINUTE = 30
 
 
 @app.context_processor
@@ -256,6 +259,19 @@ def _log_users_read_compare_mismatch(
     if error_stage:
         message += f" compare_error_stage={error_stage}"
     dual_write_log(message)
+
+
+def resolve_crew_business_date(now: datetime | None = None) -> str:
+    current = now or datetime.now()
+    reset_point = current.replace(
+        hour=CREW_BUSINESS_DAY_RESET_HOUR,
+        minute=CREW_BUSINESS_DAY_RESET_MINUTE,
+        second=0,
+        microsecond=0,
+    )
+    if current < reset_point:
+        current = current - timedelta(days=1)
+    return current.date().isoformat()
 
 
 def _compare_user_lookup(
@@ -1181,6 +1197,52 @@ def init_schema(conn: sqlite3.Connection) -> None:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS vendor_contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sheet_id INTEGER NOT NULL,
+            vendor_name TEXT NOT NULL,
+            contact_name TEXT NOT NULL DEFAULT '',
+            contact_phone TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(sheet_id, vendor_name),
+            FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS vendor_work_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sheet_id INTEGER NOT NULL,
+            vendor_name TEXT NOT NULL,
+            business_date TEXT NOT NULL,
+            planned_at TEXT NOT NULL DEFAULT '',
+            planned_headcount INTEGER NOT NULL DEFAULT 0,
+            actual_headcount INTEGER NOT NULL DEFAULT 0,
+            work_content TEXT NOT NULL DEFAULT '',
+            work_headcount INTEGER NOT NULL DEFAULT 0,
+            entry_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+        );
+        """
+    )
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_id
+        ON vendor_contacts (sheet_id);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_contacts_vendor_name
+        ON vendor_contacts (vendor_name);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
+        ON vendor_work_entries (sheet_id, business_date);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_vendor_date
+        ON vendor_work_entries (sheet_id, vendor_name, business_date);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_business_date
+        ON vendor_work_entries (business_date);
         """
     )
 
@@ -1344,6 +1406,52 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     if "sheet_id" not in floor_cols:
         conn.execute("ALTER TABLE floors ADD COLUMN sheet_id INTEGER")
         conn.execute("UPDATE floors SET sheet_id = ?", (default_sheet_id,))
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS vendor_contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sheet_id INTEGER NOT NULL,
+            vendor_name TEXT NOT NULL,
+            contact_name TEXT NOT NULL DEFAULT '',
+            contact_phone TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(sheet_id, vendor_name),
+            FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS vendor_work_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sheet_id INTEGER NOT NULL,
+            vendor_name TEXT NOT NULL,
+            business_date TEXT NOT NULL,
+            planned_at TEXT NOT NULL DEFAULT '',
+            planned_headcount INTEGER NOT NULL DEFAULT 0,
+            actual_headcount INTEGER NOT NULL DEFAULT 0,
+            work_content TEXT NOT NULL DEFAULT '',
+            work_headcount INTEGER NOT NULL DEFAULT 0,
+            entry_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_id
+        ON vendor_contacts (sheet_id);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_contacts_vendor_name
+        ON vendor_contacts (vendor_name);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
+        ON vendor_work_entries (sheet_id, business_date);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_vendor_date
+        ON vendor_work_entries (sheet_id, vendor_name, business_date);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_business_date
+        ON vendor_work_entries (business_date);
+        """
+    )
 
 
 def normalize_progress_values(conn: sqlite3.Connection) -> None:

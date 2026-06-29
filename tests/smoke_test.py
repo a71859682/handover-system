@@ -26,6 +26,8 @@ TABLE_ORDER = [
     "unit_extra",
     "extra_fields",
     "unit_extra_values",
+    "vendor_contacts",
+    "vendor_work_entries",
 ]
 
 
@@ -120,6 +122,30 @@ def create_sample_sqlite(path: Path) -> None:
             updated_by INTEGER,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (unit_id, field_key)
+        );
+        CREATE TABLE vendor_contacts (
+            id INTEGER PRIMARY KEY,
+            sheet_id INTEGER NOT NULL,
+            vendor_name TEXT NOT NULL,
+            contact_name TEXT NOT NULL,
+            contact_phone TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(sheet_id, vendor_name)
+        );
+        CREATE TABLE vendor_work_entries (
+            id INTEGER PRIMARY KEY,
+            sheet_id INTEGER NOT NULL,
+            vendor_name TEXT NOT NULL,
+            business_date TEXT NOT NULL,
+            planned_at TEXT NOT NULL,
+            planned_headcount INTEGER NOT NULL,
+            actual_headcount INTEGER NOT NULL,
+            work_content TEXT NOT NULL,
+            work_headcount INTEGER NOT NULL,
+            entry_order INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
         """
     )
@@ -227,6 +253,102 @@ def run_users_template_delete_ui_smoke() -> None:
             raise AssertionError(f"users.html missing delete UI snippet: {snippet}")
     if "password_hash" in template:
         raise AssertionError("users.html delete UI should not include password_hash.")
+
+
+def run_crew_schema_smoke(app_db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from datetime import datetime
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "vendor_contacts" not in tables:
+        raise SystemExit("vendor_contacts table should exist after bootstrap")
+    if "vendor_work_entries" not in tables:
+        raise SystemExit("vendor_work_entries table should exist after bootstrap")
+
+    vendor_contacts_columns = [row["name"] for row in conn.execute("PRAGMA table_info(vendor_contacts)").fetchall()]
+    for required in ("id", "sheet_id", "vendor_name", "contact_name", "contact_phone", "created_at", "updated_at"):
+        if required not in vendor_contacts_columns:
+            raise SystemExit(f"vendor_contacts missing required column: {required}")
+
+    vendor_work_entries_columns = [row["name"] for row in conn.execute("PRAGMA table_info(vendor_work_entries)").fetchall()]
+    for required in (
+        "id",
+        "sheet_id",
+        "vendor_name",
+        "business_date",
+        "planned_at",
+        "planned_headcount",
+        "actual_headcount",
+        "work_content",
+        "work_headcount",
+        "entry_order",
+        "created_at",
+        "updated_at",
+    ):
+        if required not in vendor_work_entries_columns:
+            raise SystemExit(f"vendor_work_entries missing required column: {required}")
+
+    contact_indexes = {row["name"] for row in conn.execute("PRAGMA index_list(vendor_contacts)").fetchall()}
+    for required in ("idx_vendor_contacts_sheet_id", "idx_vendor_contacts_vendor_name"):
+        if required not in contact_indexes:
+            raise SystemExit(f"vendor_contacts missing expected index: {required}")
+
+    work_indexes = {row["name"] for row in conn.execute("PRAGMA index_list(vendor_work_entries)").fetchall()}
+    for required in (
+        "idx_vendor_work_entries_sheet_business_date",
+        "idx_vendor_work_entries_sheet_vendor_date",
+        "idx_vendor_work_entries_business_date",
+    ):
+        if required not in work_indexes:
+            raise SystemExit(f"vendor_work_entries missing expected index: {required}")
+
+    unique_ok = False
+    for row in conn.execute("PRAGMA index_list(vendor_contacts)").fetchall():
+        if row["unique"]:
+            cols = tuple(index_row["name"] for index_row in conn.execute(f"PRAGMA index_info({row['name']})").fetchall())
+            if cols == ("sheet_id", "vendor_name"):
+                unique_ok = True
+                break
+    if not unique_ok:
+        raise SystemExit("vendor_contacts should enforce UNIQUE(sheet_id, vendor_name)")
+
+if module.resolve_crew_business_date(datetime(2026, 6, 29, 8, 29, 0)) != "2026-06-28":
+    raise SystemExit("resolve_crew_business_date should use previous day before 08:30")
+if module.resolve_crew_business_date(datetime(2026, 6, 29, 8, 30, 0)) != "2026-06-29":
+    raise SystemExit("resolve_crew_business_date should use same day at 08:30")
+if module.resolve_crew_business_date(datetime(2026, 6, 29, 23, 59, 0)) != "2026-06-29":
+    raise SystemExit("resolve_crew_business_date should use same day late night")
+
+print("crew schema smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "crew schema smoke PASS" not in result.stdout:
+        raise AssertionError("crew schema smoke subprocess did not report PASS.")
 
 
 def run_sheet_endpoint_smoke(app_db_path: Path) -> None:
@@ -1710,7 +1832,7 @@ def main() -> int:
 
         if list(counts) != TABLE_ORDER:
             raise AssertionError("Table order changed unexpectedly.")
-        expected_counts = {"users": 2}
+        expected_counts = {"users": 2, "vendor_contacts": 0, "vendor_work_entries": 0}
         if any(count != expected_counts.get(table_name, 1) for table_name, count in counts.items()):
             raise AssertionError(f"Unexpected sample counts: {counts}")
 
@@ -1727,6 +1849,7 @@ def main() -> int:
         run_users_read_inventory_smoke()
         run_users_read_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_users_read_compare_readiness_smoke(Path(tmpdir) / "app-smoke.db")
+        run_crew_schema_smoke(Path(tmpdir) / "crew-schema-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
         run_users_sqlite_sequence_apply_guard_smoke()
@@ -1750,6 +1873,7 @@ def main() -> int:
     run_help("check_users_delete_submit.py")
     run_help("check_users_read_inventory.py")
     run_help("check_users_read_compare_readiness.py")
+    run_help("check_crew_schema.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")
@@ -1789,6 +1913,9 @@ def main() -> int:
     allocation_result = run_script("check_users_id_allocation.py", env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in allocation_result.stdout or "PASS" not in allocation_result.stdout:
         raise AssertionError("check_users_id_allocation.py did not report expected PASS without DATABASE_URL.")
+    crew_schema_result = run_script("check_crew_schema.py", env={"DATABASE_URL": ""})
+    if "crew_schema_scope: sqlite_only" not in crew_schema_result.stdout or "PASS crew schema check passed." not in crew_schema_result.stdout:
+        raise AssertionError("check_crew_schema.py did not report expected SQLite-only PASS output.")
     persistence_result = run_script("check_sqlite_runtime_persistence.py", env={"DATABASE_URL": ""})
     if "resolved_sqlite_source_path:" not in persistence_result.stdout or "PASS" not in persistence_result.stdout:
         raise AssertionError("check_sqlite_runtime_persistence.py did not report expected PASS output.")
