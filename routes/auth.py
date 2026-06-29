@@ -26,7 +26,7 @@ def admin_required(fn):
             return redirect(url_for("auth.login"))
         if session.get("role") != "admin":
             flash("Admin access required.", "error")
-            return redirect(url_for("sheet.sheet"))
+            return redirect(url_for("sheet"))
         return fn(*args, **kwargs)
 
     return wrapper
@@ -47,7 +47,7 @@ def login():
             session["username"] = user["username"]
             session["display_name"] = user["display_name"] or user["username"]
             session["role"] = user["role"]
-            return redirect(url_for("sheet.sheet"))
+            return redirect(url_for("sheet"))
         flash("Invalid username or password.", "error")
     return render_template("login.html", settings=settings)
 

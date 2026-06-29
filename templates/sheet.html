@@ -27,7 +27,7 @@
 
 <div class="tabs">
   {% for sheet in grid.sheets %}
-  <a class="tab {{ 'active' if sheet.id == grid.current_sheet.id else '' }}" href="{{ url_for('sheet.sheet', sheet_id=sheet.id) }}">{{ sheet.name }}</a>
+  <a class="tab {{ 'active' if sheet.id == grid.current_sheet.id else '' }}" href="{{ url_for('sheet', sheet_id=sheet.id) }}">{{ sheet.name }}</a>
   {% endfor %}
 </div>
 

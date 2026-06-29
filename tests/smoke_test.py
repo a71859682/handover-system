@@ -229,6 +229,83 @@ def run_users_template_delete_ui_smoke() -> None:
         raise AssertionError("users.html delete UI should not include password_hash.")
 
 
+def run_sheet_endpoint_smoke(app_db_path: Path) -> None:
+    script = """
+import importlib.util
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+import os
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
+if "sheet.sheet" in template_text:
+    raise SystemExit("sheet.html should not reference sheet.sheet")
+
+for source_path in (
+    Path(root_dir) / "routes" / "auth.py",
+    Path(root_dir) / "routes" / "sheet.py",
+):
+    source_text = source_path.read_text(encoding="utf-8")
+    if "sheet.sheet" in source_text:
+        raise SystemExit(f"{source_path.name} should not reference sheet.sheet")
+
+sheet_rules = [rule.rule for rule in module.app.url_map.iter_rules() if rule.endpoint == "sheet"]
+if "/sheet" not in sheet_rules or "/sheet/<int:sheet_id>" not in sheet_rules:
+    raise SystemExit("app.url_map missing expected sheet routes")
+if any(rule.endpoint == "sheet.sheet" for rule in module.app.url_map.iter_rules()):
+    raise SystemExit("app.url_map should not require sheet.sheet endpoint")
+
+with module.app.test_client() as client:
+    login_response = client.post(
+        "/login",
+        data={"username": "admin", "display_name": "Admin", "password": "admin"},
+        follow_redirects=False,
+    )
+    if login_response.status_code != 302:
+        raise SystemExit("login route did not redirect")
+    location = login_response.headers.get("Location", "")
+    if not location.endswith("/sheet"):
+        raise SystemExit(f"login redirect target mismatch: {location}")
+
+    sheet_response = client.get("/sheet")
+    if sheet_response.status_code != 200:
+        raise SystemExit("/sheet GET should render successfully")
+
+    specific_sheet_response = client.get("/sheet/1")
+    if specific_sheet_response.status_code != 200:
+        raise SystemExit("/sheet/1 GET should render successfully")
+
+    html = sheet_response.get_data(as_text=True)
+    if "/sheet/1" not in html:
+        raise SystemExit("sheet tab link should render /sheet/<id> href")
+    if "sheet.sheet" in html:
+        raise SystemExit("rendered sheet page should not contain sheet.sheet")
+
+print("sheet endpoint smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "sheet endpoint smoke PASS" not in result.stdout:
+        raise AssertionError("sheet endpoint smoke subprocess did not report PASS.")
+
+
 def run_floor_helper_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -1349,6 +1426,7 @@ def main() -> int:
         run_users_sqlite_sequence_apply_guard_smoke()
         run_sqlite_db_path_resolver_smoke()
         run_users_template_delete_ui_smoke()
+        run_sheet_endpoint_smoke(Path(tmpdir) / "app-smoke.db")
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 

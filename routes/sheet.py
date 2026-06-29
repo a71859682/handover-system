@@ -18,7 +18,7 @@ def _app_state():
 def index():
     if not session.get("user_id"):
         return redirect(url_for("auth.login"))
-    return redirect(url_for("sheet.sheet"))
+    return redirect(url_for("sheet"))
 
 
 @sheet_bp.route("/sheet")
