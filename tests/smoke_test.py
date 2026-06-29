@@ -93,17 +93,17 @@ def create_sample_sqlite(path: Path) -> None:
             task_id INTEGER NOT NULL,
             value TEXT NOT NULL,
             updated_by INTEGER,
-            updated_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (unit_id, task_id)
         );
         CREATE TABLE unit_extra (
             unit_id INTEGER PRIMARY KEY,
-            initial_check TEXT NOT NULL,
-            recheck_1 TEXT NOT NULL,
-            recheck_2 TEXT NOT NULL,
-            handover TEXT NOT NULL,
+            initial_check TEXT NOT NULL DEFAULT '',
+            recheck_1 TEXT NOT NULL DEFAULT '',
+            recheck_2 TEXT NOT NULL DEFAULT '',
+            handover TEXT NOT NULL DEFAULT 'X',
             updated_by INTEGER,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE extra_fields (
             id INTEGER PRIMARY KEY,
@@ -128,10 +128,12 @@ def create_sample_sqlite(path: Path) -> None:
             sheet_id INTEGER NOT NULL,
             vendor_name TEXT NOT NULL,
             contact_name TEXT NOT NULL,
+            contact_title TEXT NOT NULL DEFAULT '',
             contact_phone TEXT NOT NULL,
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            contact_order INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(sheet_id, vendor_name)
+            updated_at TEXT NOT NULL
         );
         CREATE TABLE vendor_work_entries (
             id INTEGER PRIMARY KEY,
@@ -279,7 +281,18 @@ with module.db() as conn:
         raise SystemExit("vendor_work_entries table should exist after bootstrap")
 
     vendor_contacts_columns = [row["name"] for row in conn.execute("PRAGMA table_info(vendor_contacts)").fetchall()]
-    for required in ("id", "sheet_id", "vendor_name", "contact_name", "contact_phone", "created_at", "updated_at"):
+    for required in (
+        "id",
+        "sheet_id",
+        "vendor_name",
+        "contact_name",
+        "contact_title",
+        "contact_phone",
+        "is_primary",
+        "contact_order",
+        "created_at",
+        "updated_at",
+    ):
         if required not in vendor_contacts_columns:
             raise SystemExit(f"vendor_contacts missing required column: {required}")
 
@@ -302,7 +315,7 @@ with module.db() as conn:
             raise SystemExit(f"vendor_work_entries missing required column: {required}")
 
     contact_indexes = {row["name"] for row in conn.execute("PRAGMA index_list(vendor_contacts)").fetchall()}
-    for required in ("idx_vendor_contacts_sheet_id", "idx_vendor_contacts_vendor_name"):
+    for required in ("idx_vendor_contacts_sheet_id", "idx_vendor_contacts_sheet_vendor", "idx_vendor_contacts_sheet_vendor_order"):
         if required not in contact_indexes:
             raise SystemExit(f"vendor_contacts missing expected index: {required}")
 
@@ -315,15 +328,30 @@ with module.db() as conn:
         if required not in work_indexes:
             raise SystemExit(f"vendor_work_entries missing expected index: {required}")
 
-    unique_ok = False
+    legacy_unique_present = False
     for row in conn.execute("PRAGMA index_list(vendor_contacts)").fetchall():
         if row["unique"]:
             cols = tuple(index_row["name"] for index_row in conn.execute(f"PRAGMA index_info({row['name']})").fetchall())
             if cols == ("sheet_id", "vendor_name"):
-                unique_ok = True
+                legacy_unique_present = True
                 break
-    if not unique_ok:
-        raise SystemExit("vendor_contacts should enforce UNIQUE(sheet_id, vendor_name)")
+    if legacy_unique_present:
+        raise SystemExit("vendor_contacts should not enforce legacy UNIQUE(sheet_id, vendor_name)")
+
+    conn.execute(
+        \"INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order) VALUES (?, ?, ?, ?, ?, ?, ?)\",
+        (1, "Vendor", "Alice", "", "0900000001", 1, 0),
+    )
+    conn.execute(
+        \"INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order) VALUES (?, ?, ?, ?, ?, ?, ?)\",
+        (1, "Vendor", "Bob", "主任", "0900000002", 0, 1),
+    )
+    vendor_contact_count = conn.execute(
+        \"SELECT COUNT(*) FROM vendor_contacts WHERE sheet_id = 1 AND vendor_name = ?\",
+        ("Vendor",),
+    ).fetchone()[0]
+    if vendor_contact_count != 2:
+        raise SystemExit("vendor_contacts should allow multiple rows for the same sheet/vendor")
 
 if module.resolve_crew_business_date(datetime(2026, 6, 29, 8, 29, 0)) != "2026-06-28":
     raise SystemExit("resolve_crew_business_date should use previous day before 08:30")
@@ -609,6 +637,302 @@ print("crew API smoke PASS")
     )
     if "crew API smoke PASS" not in result.stdout:
         raise AssertionError("crew API smoke subprocess did not report PASS.")
+
+
+def create_legacy_vendor_contacts_sqlite(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY,
+            username TEXT NOT NULL UNIQUE,
+            display_name TEXT,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE sheets (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE tasks (
+            id INTEGER PRIMARY KEY,
+            sheet_id INTEGER,
+            col_index INTEGER NOT NULL UNIQUE,
+            vendor TEXT,
+            location TEXT,
+            name TEXT NOT NULL
+        );
+        CREATE TABLE floors (
+            id INTEGER PRIMARY KEY,
+            sheet_id INTEGER,
+            sort_order INTEGER NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            block_name TEXT,
+            unit_count INTEGER NOT NULL
+        );
+        CREATE TABLE units (
+            id INTEGER PRIMARY KEY,
+            floor_id INTEGER NOT NULL,
+            sort_order INTEGER NOT NULL,
+            name TEXT NOT NULL
+        );
+        CREATE TABLE progress (
+            unit_id INTEGER NOT NULL,
+            task_id INTEGER NOT NULL,
+            value TEXT NOT NULL,
+            updated_by INTEGER,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (unit_id, task_id)
+        );
+        CREATE TABLE unit_extra (
+            unit_id INTEGER PRIMARY KEY,
+            initial_check TEXT NOT NULL DEFAULT '',
+            recheck_1 TEXT NOT NULL DEFAULT '',
+            recheck_2 TEXT NOT NULL DEFAULT '',
+            handover TEXT NOT NULL DEFAULT 'X',
+            updated_by INTEGER,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE extra_fields (
+            id INTEGER PRIMARY KEY,
+            sheet_id INTEGER NOT NULL,
+            field_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            field_type TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            is_builtin INTEGER NOT NULL,
+            active INTEGER NOT NULL
+        );
+        CREATE TABLE unit_extra_values (
+            unit_id INTEGER NOT NULL,
+            field_key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            updated_by INTEGER,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (unit_id, field_key)
+        );
+        CREATE TABLE vendor_contacts (
+            id INTEGER PRIMARY KEY,
+            sheet_id INTEGER NOT NULL,
+            vendor_name TEXT NOT NULL,
+            contact_name TEXT NOT NULL,
+            contact_phone TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(sheet_id, vendor_name)
+        );
+        CREATE TABLE vendor_work_entries (
+            id INTEGER PRIMARY KEY,
+            sheet_id INTEGER NOT NULL,
+            vendor_name TEXT NOT NULL,
+            business_date TEXT NOT NULL,
+            planned_at TEXT NOT NULL,
+            planned_headcount INTEGER NOT NULL,
+            actual_headcount INTEGER NOT NULL,
+            work_content TEXT NOT NULL,
+            work_headcount INTEGER NOT NULL,
+            entry_order INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute("INSERT INTO meta (key, value) VALUES ('site_title', 'demo')")
+    conn.execute("INSERT INTO meta (key, value) VALUES ('excel_seeded', '2026-06-27T00:00:00')")
+    conn.execute(
+        "INSERT INTO users (id, username, display_name, password_hash, role, created_at) VALUES (1, 'admin', 'Admin', 'hash', 'admin', '2026-06-27T00:00:00')"
+    )
+    conn.execute(
+        "INSERT INTO sheets (id, name, sort_order, created_at) VALUES (1, 'Sheet A', 1, '2026-06-27T00:00:00')"
+    )
+    conn.execute(
+        "INSERT INTO tasks (id, sheet_id, col_index, vendor, location, name) VALUES (1, 1, 4, 'VendorA', 'Room', 'Task')"
+    )
+    conn.execute(
+        "INSERT INTO floors (id, sheet_id, sort_order, name, block_name, unit_count) VALUES (1, 1, 1, '1F', 'A', 1)"
+    )
+    conn.execute("INSERT INTO units (id, floor_id, sort_order, name) VALUES (1, 1, 1, '101')")
+    conn.execute(
+        "INSERT INTO progress (unit_id, task_id, value, updated_by, updated_at) VALUES (1, 1, 'X', 1, '2026-06-27T00:00:00')"
+    )
+    conn.execute(
+        "INSERT INTO unit_extra (unit_id, initial_check, recheck_1, recheck_2, handover, updated_by, updated_at) VALUES (1, '', '', '', 'X', 1, '2026-06-27T00:00:00')"
+    )
+    conn.execute(
+        "INSERT INTO extra_fields (id, sheet_id, field_key, name, field_type, sort_order, is_builtin, active) VALUES (1, 1, 'handover', 'Handover', 'status', 1, 1, 1)"
+    )
+    conn.execute(
+        "INSERT INTO unit_extra_values (unit_id, field_key, value, updated_by, updated_at) VALUES (1, 'handover', 'X', 1, '2026-06-27T00:00:00')"
+    )
+    conn.execute(
+        "INSERT INTO vendor_contacts (id, sheet_id, vendor_name, contact_name, contact_phone, created_at, updated_at) VALUES (1, 1, 'VendorA', 'Alice', '0900000001', '2026-06-27T00:00:00', '2026-06-27T00:00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+
+def run_crew_schema_smoke_v2(app_db_path: Path) -> None:
+    if app_db_path.exists():
+        app_db_path.unlink()
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from datetime import datetime
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "vendor_contacts" not in tables:
+        raise SystemExit("vendor_contacts table should exist after bootstrap")
+    if "vendor_work_entries" not in tables:
+        raise SystemExit("vendor_work_entries table should exist after bootstrap")
+
+    vendor_contacts_columns = [row["name"] for row in conn.execute("PRAGMA table_info(vendor_contacts)").fetchall()]
+    for required in (
+        "id", "sheet_id", "vendor_name", "contact_name", "contact_title",
+        "contact_phone", "is_primary", "contact_order", "created_at", "updated_at",
+    ):
+        if required not in vendor_contacts_columns:
+            raise SystemExit(f"vendor_contacts missing required column: {required}")
+
+    vendor_work_entries_columns = [row["name"] for row in conn.execute("PRAGMA table_info(vendor_work_entries)").fetchall()]
+    for required in (
+        "id", "sheet_id", "vendor_name", "business_date", "planned_at",
+        "planned_headcount", "actual_headcount", "work_content", "work_headcount",
+        "entry_order", "created_at", "updated_at",
+    ):
+        if required not in vendor_work_entries_columns:
+            raise SystemExit(f"vendor_work_entries missing required column: {required}")
+
+    contact_indexes = conn.execute("PRAGMA index_list(vendor_contacts)").fetchall()
+    contact_index_names = {row["name"] for row in contact_indexes}
+    for required in ("idx_vendor_contacts_sheet_id", "idx_vendor_contacts_sheet_vendor", "idx_vendor_contacts_sheet_vendor_order"):
+        if required not in contact_index_names:
+            raise SystemExit(f"vendor_contacts missing expected index: {required}")
+
+    for row in contact_indexes:
+        if row["unique"]:
+            cols = tuple(index_row["name"] for index_row in conn.execute(f"PRAGMA index_info({row['name']})").fetchall())
+            if cols == ("sheet_id", "vendor_name"):
+                raise SystemExit("vendor_contacts should not enforce legacy UNIQUE(sheet_id, vendor_name)")
+
+    conn.execute(
+        "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (1, "Vendor", "Alice", "", "0900000001", 1, 0),
+    )
+    conn.execute(
+        "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (1, "Vendor", "Bob", "Lead", "0900000002", 0, 1),
+    )
+    vendor_contact_count = conn.execute(
+        "SELECT COUNT(*) FROM vendor_contacts WHERE sheet_id = 1 AND vendor_name = ?",
+        ("Vendor",),
+    ).fetchone()[0]
+    if vendor_contact_count != 2:
+        raise SystemExit("vendor_contacts should allow multiple rows for the same sheet/vendor")
+
+if module.resolve_crew_business_date(datetime(2026, 6, 29, 8, 29, 0)) != "2026-06-28":
+    raise SystemExit("resolve_crew_business_date should use previous day before 08:30")
+if module.resolve_crew_business_date(datetime(2026, 6, 29, 8, 30, 0)) != "2026-06-29":
+    raise SystemExit("resolve_crew_business_date should use same day at 08:30")
+if module.resolve_crew_business_date(datetime(2026, 6, 29, 23, 59, 0)) != "2026-06-29":
+    raise SystemExit("resolve_crew_business_date should use same day late night")
+
+print("crew schema smoke v2 PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "crew schema smoke v2 PASS" not in result.stdout:
+        raise AssertionError("crew schema smoke v2 subprocess did not report PASS.")
+
+
+def run_crew_schema_migration_smoke(app_db_path: Path) -> None:
+    if app_db_path.exists():
+        app_db_path.unlink()
+    create_legacy_vendor_contacts_sqlite(app_db_path)
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    migrated = conn.execute(
+        "SELECT sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order FROM vendor_contacts ORDER BY id"
+    ).fetchall()
+    if len(migrated) != 1:
+        raise SystemExit("legacy vendor_contacts migration should preserve row count")
+    row = migrated[0]
+    if row["contact_title"] != "":
+        raise SystemExit("legacy vendor_contacts migration should default contact_title to empty string")
+    if row["is_primary"] != 1:
+        raise SystemExit("legacy vendor_contacts migration should default is_primary to 1")
+    if row["contact_order"] != 0:
+        raise SystemExit("legacy vendor_contacts migration should default contact_order to 0")
+
+    contact_indexes = conn.execute("PRAGMA index_list(vendor_contacts)").fetchall()
+    for index_row in contact_indexes:
+        if index_row["unique"]:
+            cols = tuple(
+                info_row["name"] for info_row in conn.execute(f"PRAGMA index_info({index_row['name']})").fetchall()
+            )
+            if cols == ("sheet_id", "vendor_name"):
+                raise SystemExit("legacy unique(sheet_id, vendor_name) should be removed after migration")
+
+    work_columns = [col["name"] for col in conn.execute("PRAGMA table_info(vendor_work_entries)").fetchall()]
+    for required in ("sheet_id", "vendor_name", "business_date", "entry_order"):
+        if required not in work_columns:
+            raise SystemExit("vendor_work_entries should remain intact after vendor_contacts migration")
+
+print("crew schema migration smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "crew schema migration smoke PASS" not in result.stdout:
+        raise AssertionError("crew schema migration smoke subprocess did not report PASS.")
 
 
 def run_crew_readonly_render_smoke(app_db_path: Path) -> None:
@@ -2198,7 +2522,7 @@ def main() -> int:
 
         if list(counts) != TABLE_ORDER:
             raise AssertionError("Table order changed unexpectedly.")
-        expected_counts = {"users": 2, "vendor_contacts": 0, "vendor_work_entries": 0}
+        expected_counts = {"meta": 1, "users": 2, "vendor_contacts": 0, "vendor_work_entries": 0}
         if any(count != expected_counts.get(table_name, 1) for table_name, count in counts.items()):
             raise AssertionError(f"Unexpected sample counts: {counts}")
 
@@ -2215,7 +2539,8 @@ def main() -> int:
         run_users_read_inventory_smoke()
         run_users_read_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_users_read_compare_readiness_smoke(Path(tmpdir) / "app-smoke.db")
-        run_crew_schema_smoke(Path(tmpdir) / "crew-schema-smoke.db")
+        run_crew_schema_smoke_v2(Path(tmpdir) / "crew-schema-smoke.db")
+        run_crew_schema_migration_smoke(Path(tmpdir) / "crew-schema-migration-smoke.db")
         run_crew_api_smoke(Path(tmpdir) / "crew-api-smoke.db")
         run_crew_readonly_render_smoke(Path(tmpdir) / "crew-readonly-smoke.db")
         run_users_id_allocation_smoke(db_path)

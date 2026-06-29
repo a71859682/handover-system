@@ -1213,25 +1213,31 @@ def get_pending_items_by_vendor(sheet_id: int) -> dict[str, list[str]]:
 def fetch_vendor_contact_map(conn: sqlite3.Connection, sheet_id: int) -> dict[str, dict[str, object]]:
     rows = conn.execute(
         """
-        SELECT id, sheet_id, vendor_name, contact_name, contact_phone, created_at, updated_at
+        SELECT id, sheet_id, vendor_name, contact_name, contact_title, contact_phone,
+               is_primary, contact_order, created_at, updated_at
         FROM vendor_contacts
         WHERE sheet_id = ?
-        ORDER BY vendor_name, id
+        ORDER BY vendor_name, is_primary DESC, contact_order ASC, id ASC
         """,
         (sheet_id,),
     ).fetchall()
-    return {
-        row["vendor_name"]: {
+    contact_map: dict[str, dict[str, object]] = {}
+    for row in rows:
+        if row["vendor_name"] in contact_map:
+            continue
+        contact_map[row["vendor_name"]] = {
             "id": row["id"],
             "sheet_id": row["sheet_id"],
             "vendor_name": row["vendor_name"],
             "contact_name": row["contact_name"],
+            "contact_title": row["contact_title"],
             "contact_phone": row["contact_phone"],
+            "is_primary": row["is_primary"],
+            "contact_order": row["contact_order"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
-        for row in rows
-    }
+    return contact_map
 
 
 def fetch_vendor_work_entries(
@@ -1394,10 +1400,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
             sheet_id INTEGER NOT NULL,
             vendor_name TEXT NOT NULL,
             contact_name TEXT NOT NULL DEFAULT '',
+            contact_title TEXT NOT NULL DEFAULT '',
             contact_phone TEXT NOT NULL DEFAULT '',
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            contact_order INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(sheet_id, vendor_name),
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
         );
 
@@ -1420,12 +1428,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
     )
     conn.executescript(
         """
-        CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_id
-        ON vendor_contacts (sheet_id);
-
-        CREATE INDEX IF NOT EXISTS idx_vendor_contacts_vendor_name
-        ON vendor_contacts (vendor_name);
-
         CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
         ON vendor_work_entries (sheet_id, business_date);
 
@@ -1436,6 +1438,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ON vendor_work_entries (business_date);
         """
     )
+    ensure_vendor_contacts_schema(conn)
 
 
 def seed_admin(conn: sqlite3.Connection) -> None:
@@ -1446,6 +1449,148 @@ def seed_admin(conn: sqlite3.Connection) -> None:
         "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
         ("admin", "管理員", generate_password_hash("admin"), "admin"),
     )
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+
+
+def _vendor_contacts_has_legacy_unique(conn: sqlite3.Connection) -> bool:
+    for row in conn.execute("PRAGMA index_list(vendor_contacts)"):
+        if row["unique"]:
+            cols = tuple(index_row["name"] for index_row in conn.execute(f"PRAGMA index_info({row['name']})"))
+            if cols == ("sheet_id", "vendor_name"):
+                return True
+    return False
+
+
+def ensure_vendor_contacts_schema(conn: sqlite3.Connection) -> None:
+    existing_tables = {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "vendor_contacts" not in existing_tables:
+        conn.executescript(
+            """
+            CREATE TABLE vendor_contacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet_id INTEGER NOT NULL,
+                vendor_name TEXT NOT NULL,
+                contact_name TEXT NOT NULL DEFAULT '',
+                contact_title TEXT NOT NULL DEFAULT '',
+                contact_phone TEXT NOT NULL DEFAULT '',
+                is_primary INTEGER NOT NULL DEFAULT 0,
+                contact_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_id
+            ON vendor_contacts (sheet_id);
+
+            CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_vendor
+            ON vendor_contacts (sheet_id, vendor_name);
+
+            CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_vendor_order
+            ON vendor_contacts (sheet_id, vendor_name, contact_order);
+            """
+        )
+        return
+
+    vendor_contacts_columns = _table_columns(conn, "vendor_contacts")
+    has_multi_contact_columns = {"contact_title", "is_primary", "contact_order"}.issubset(vendor_contacts_columns)
+    has_legacy_unique = _vendor_contacts_has_legacy_unique(conn)
+    if has_multi_contact_columns and not has_legacy_unique:
+        if "vendor_contacts_old" in existing_tables:
+            conn.execute("DROP TABLE vendor_contacts_old")
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_id
+            ON vendor_contacts (sheet_id);
+
+            CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_vendor
+            ON vendor_contacts (sheet_id, vendor_name);
+
+            CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_vendor_order
+            ON vendor_contacts (sheet_id, vendor_name, contact_order);
+            """
+        )
+        return
+
+    old_row_count = conn.execute("SELECT COUNT(*) AS count FROM vendor_contacts").fetchone()["count"]
+    conn.executescript(
+        """
+        DROP INDEX IF EXISTS idx_vendor_contacts_sheet_id;
+        DROP INDEX IF EXISTS idx_vendor_contacts_vendor_name;
+        DROP INDEX IF EXISTS idx_vendor_contacts_sheet_vendor;
+        DROP INDEX IF EXISTS idx_vendor_contacts_sheet_vendor_order;
+        """
+    )
+    conn.execute("ALTER TABLE vendor_contacts RENAME TO vendor_contacts_old")
+    conn.executescript(
+        """
+        CREATE TABLE vendor_contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sheet_id INTEGER NOT NULL,
+            vendor_name TEXT NOT NULL,
+            contact_name TEXT NOT NULL DEFAULT '',
+            contact_title TEXT NOT NULL DEFAULT '',
+            contact_phone TEXT NOT NULL DEFAULT '',
+            is_primary INTEGER NOT NULL DEFAULT 0,
+            contact_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+        );
+        """
+    )
+    old_columns = _table_columns(conn, "vendor_contacts_old")
+    select_contact_title = "contact_title" if "contact_title" in old_columns else "''"
+    select_is_primary = "is_primary" if "is_primary" in old_columns else "1"
+    select_contact_order = "contact_order" if "contact_order" in old_columns else "0"
+    conn.execute(
+        f"""
+        INSERT INTO vendor_contacts (
+            sheet_id,
+            vendor_name,
+            contact_name,
+            contact_title,
+            contact_phone,
+            is_primary,
+            contact_order,
+            created_at,
+            updated_at
+        )
+        SELECT
+            sheet_id,
+            vendor_name,
+            contact_name,
+            {select_contact_title},
+            contact_phone,
+            {select_is_primary},
+            {select_contact_order},
+            created_at,
+            updated_at
+        FROM vendor_contacts_old
+        ORDER BY id
+        """
+    )
+    new_row_count = conn.execute("SELECT COUNT(*) AS count FROM vendor_contacts").fetchone()["count"]
+    if new_row_count != old_row_count:
+        raise RuntimeError("vendor_contacts_row_count_mismatch_after_migration")
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_id
+        ON vendor_contacts (sheet_id);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_vendor
+        ON vendor_contacts (sheet_id, vendor_name);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_vendor_order
+        ON vendor_contacts (sheet_id, vendor_name, contact_order);
+        """
+    )
+    conn.execute("DROP TABLE vendor_contacts_old")
 
 
 def get_setting(conn: sqlite3.Connection, key: str) -> str:
@@ -1599,18 +1744,6 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         conn.execute("UPDATE floors SET sheet_id = ?", (default_sheet_id,))
     conn.executescript(
         """
-        CREATE TABLE IF NOT EXISTS vendor_contacts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            sheet_id INTEGER NOT NULL,
-            vendor_name TEXT NOT NULL,
-            contact_name TEXT NOT NULL DEFAULT '',
-            contact_phone TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(sheet_id, vendor_name),
-            FOREIGN KEY (sheet_id) REFERENCES sheets(id)
-        );
-
         CREATE TABLE IF NOT EXISTS vendor_work_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sheet_id INTEGER NOT NULL,
@@ -1627,12 +1760,6 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
         );
 
-        CREATE INDEX IF NOT EXISTS idx_vendor_contacts_sheet_id
-        ON vendor_contacts (sheet_id);
-
-        CREATE INDEX IF NOT EXISTS idx_vendor_contacts_vendor_name
-        ON vendor_contacts (vendor_name);
-
         CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
         ON vendor_work_entries (sheet_id, business_date);
 
@@ -1643,6 +1770,7 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         ON vendor_work_entries (business_date);
         """
     )
+    ensure_vendor_contacts_schema(conn)
 
 
 def normalize_progress_values(conn: sqlite3.Connection) -> None:
@@ -2171,22 +2299,43 @@ def api_vendor_contact():
             require_sheet_exists(conn, sheet_id)
         except LookupError:
             return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
-        conn.execute(
+        existing_contact = conn.execute(
             """
-            INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_phone)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(sheet_id, vendor_name) DO UPDATE SET
-                contact_name = excluded.contact_name,
-                contact_phone = excluded.contact_phone,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (sheet_id, vendor_name, contact_name, contact_phone),
-        )
-        row = conn.execute(
-            """
-            SELECT id, sheet_id, vendor_name, contact_name, contact_phone, created_at, updated_at
+            SELECT id
             FROM vendor_contacts
             WHERE sheet_id = ? AND vendor_name = ?
+            ORDER BY is_primary DESC, contact_order ASC, id ASC
+            LIMIT 1
+            """,
+            (sheet_id, vendor_name),
+        ).fetchone()
+        if existing_contact:
+            conn.execute(
+                """
+                UPDATE vendor_contacts
+                SET contact_name = ?, contact_phone = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (contact_name, contact_phone, existing_contact["id"]),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO vendor_contacts (
+                    sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order
+                )
+                VALUES (?, ?, ?, '', ?, 1, 0)
+                """,
+                (sheet_id, vendor_name, contact_name, contact_phone),
+            )
+        row = conn.execute(
+            """
+            SELECT id, sheet_id, vendor_name, contact_name, contact_title, contact_phone,
+                   is_primary, contact_order, created_at, updated_at
+            FROM vendor_contacts
+            WHERE sheet_id = ? AND vendor_name = ?
+            ORDER BY is_primary DESC, contact_order ASC, id ASC
+            LIMIT 1
             """,
             (sheet_id, vendor_name),
         ).fetchone()

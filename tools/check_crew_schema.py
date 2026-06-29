@@ -23,7 +23,10 @@ VENDOR_CONTACTS_COLUMNS = (
     "sheet_id",
     "vendor_name",
     "contact_name",
+    "contact_title",
     "contact_phone",
+    "is_primary",
+    "contact_order",
     "created_at",
     "updated_at",
 )
@@ -44,7 +47,8 @@ VENDOR_WORK_ENTRIES_COLUMNS = (
 EXPECTED_INDEXES = {
     "vendor_contacts": {
         "idx_vendor_contacts_sheet_id",
-        "idx_vendor_contacts_vendor_name",
+        "idx_vendor_contacts_sheet_vendor",
+        "idx_vendor_contacts_sheet_vendor_order",
     },
     "vendor_work_entries": {
         "idx_vendor_work_entries_sheet_business_date",
@@ -118,15 +122,15 @@ def main() -> int:
                 if missing_indexes:
                     issues.append(f"vendor_contacts_missing_indexes:{','.join(missing_indexes)}")
 
-                unique_ok = False
+                legacy_unique_present = False
                 for row in contact_indexes:
                     if row["unique"]:
                         if index_columns(conn, row["name"]) == ("sheet_id", "vendor_name"):
-                            unique_ok = True
+                            legacy_unique_present = True
                             break
-                print(f"vendor_contacts_unique_sheet_vendor: {str(unique_ok).lower()}")
-                if not unique_ok:
-                    issues.append("vendor_contacts_unique_sheet_vendor_missing")
+                print(f"vendor_contacts_unique_sheet_vendor: {str(legacy_unique_present).lower()}")
+                if legacy_unique_present:
+                    issues.append("vendor_contacts_legacy_unique_sheet_vendor_present")
 
             if "vendor_work_entries" in existing_tables:
                 vendor_work_entries_columns = fetch_table_columns(conn, "vendor_work_entries")
