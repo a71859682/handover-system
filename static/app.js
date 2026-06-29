@@ -1,6 +1,10 @@
 const syncState = document.getElementById("syncState");
 const table = document.getElementById("controlTable");
 const columnFilterStyle = document.getElementById("columnFilterStyle");
+const crewFormShell = document.querySelector(".crew-form-shell");
+const crewVendorList = document.getElementById("crewVendorList");
+const crewBusinessDate = document.getElementById("crewBusinessDate");
+const crewFormError = document.getElementById("crewFormError");
 const progressControls = new Map();
 const extraControls = new Map();
 const parentCells = new Map();
@@ -22,6 +26,109 @@ let activeDateInput = null;
 
 function key(...parts) {
   return parts.join(":");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function formatCrewDate(value) {
+  if (!value) return "";
+  const match = String(value).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return escapeHtml(value);
+  return `${match[1]}年${match[2]}月${match[3]}日`;
+}
+
+function formatCrewDateTime(value) {
+  if (!value) return "";
+  const text = String(value).trim();
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})(?:[T\s](\d{2}:\d{2}))?/);
+  if (!match) return escapeHtml(value);
+  const formattedDate = formatCrewDate(match[1]);
+  return match[2] ? `${formattedDate} ${match[2]}` : formattedDate;
+}
+
+function renderCrewFormError(error) {
+  if (crewFormError) {
+    crewFormError.textContent = error || "工班資料載入失敗";
+    crewFormError.classList.remove("hidden");
+  }
+  if (crewVendorList) {
+    crewVendorList.innerHTML = '<div class="crew-error-state">工班資料目前無法顯示，請稍後再試。</div>';
+  }
+}
+
+function renderCrewForms(data) {
+  if (!crewFormShell || !crewVendorList) return;
+  if (crewFormError) {
+    crewFormError.textContent = "";
+    crewFormError.classList.add("hidden");
+  }
+  if (crewBusinessDate) {
+    crewBusinessDate.textContent = formatCrewDate(data?.business_date || "");
+  }
+
+  const vendors = Array.isArray(data?.active_vendors) ? data.active_vendors : [];
+  if (vendors.length === 0) {
+    crewVendorList.innerHTML = '<div class="crew-empty-state">尚無今日工班資料</div>';
+    return;
+  }
+
+  crewVendorList.innerHTML = vendors
+    .map((vendor) => {
+      const contact = vendor.contact || {};
+      const entries = Array.isArray(vendor.work_entries) ? vendor.work_entries : [];
+      const entryMarkup =
+        entries.length > 0
+          ? entries
+              .map(
+                (entry) => `
+          <div class="crew-entry-row">
+            <div><span class="crew-label">預計進場</span><strong>${escapeHtml(formatCrewDateTime(entry.planned_at || "")) || "—"}</strong></div>
+            <div><span class="crew-label">預計進場人數</span><strong>${escapeHtml(entry.planned_headcount ?? 0)}</strong></div>
+            <div><span class="crew-label">實際進場人數</span><strong>${escapeHtml(entry.actual_headcount ?? 0)}</strong></div>
+            <div><span class="crew-label">施作內容</span><strong>${escapeHtml(entry.work_content || "—")}</strong></div>
+            <div><span class="crew-label">各項目施作人數</span><strong>${escapeHtml(entry.work_headcount ?? 0)}</strong></div>
+          </div>
+        `,
+              )
+              .join("")
+          : '<div class="crew-empty-state">尚無今日工班資料</div>';
+
+      return `
+        <article class="crew-vendor-card" data-vendor-name="${escapeHtml(vendor.vendor_name || "")}">
+          <div class="crew-vendor-card-header">
+            <h3>${escapeHtml(vendor.vendor_name || "未命名廠商")}</h3>
+            <p>${escapeHtml(vendor.pending_items?.join("、") || "目前無待完成工項")}</p>
+          </div>
+          <div class="crew-vendor-meta">
+            <div><span class="crew-label">聯絡人姓名</span><strong>${escapeHtml(contact.contact_name || "—")}</strong></div>
+            <div><span class="crew-label">聯絡電話</span><strong>${escapeHtml(contact.contact_phone || "—")}</strong></div>
+          </div>
+          <div class="crew-entry-list">${entryMarkup}</div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+async function loadCrewForms(sheetId) {
+  if (!crewFormShell || !sheetId) return;
+  try {
+    const response = await fetch(`/api/crew-forms?sheet_id=${encodeURIComponent(sheetId)}`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      throw new Error(data?.error?.message || "crew forms request failed");
+    }
+    renderCrewForms(data);
+  } catch (error) {
+    renderCrewFormError(error?.message || "crew forms request failed");
+  }
 }
 
 function setSyncState(text, className = "") {
@@ -372,4 +479,7 @@ document.addEventListener("change", (event) => {
 
 buildDomCache();
 updatePrintDate();
+if (crewFormShell?.dataset.sheetId) {
+  loadCrewForms(crewFormShell.dataset.sheetId);
+}
 setInterval(refreshGrid, 10000);

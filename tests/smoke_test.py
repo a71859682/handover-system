@@ -611,6 +611,112 @@ print("crew API smoke PASS")
         raise AssertionError("crew API smoke subprocess did not report PASS.")
 
 
+def run_crew_readonly_render_smoke(app_db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import re
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
+js_text = (Path(root_dir) / "static" / "app.js").read_text(encoding="utf-8")
+
+if '<section class="crew-form-shell"' not in template_text:
+    raise SystemExit("sheet.html should render a .crew-form-shell section")
+if 'data-mode="readonly"' not in template_text:
+    raise SystemExit("crew readonly shell should expose data-mode=readonly")
+if not re.search(r'<section class="table-shell">.*?</section>\\s*<section class="crew-form-shell"', template_text, re.S):
+    raise SystemExit(".crew-form-shell should be a sibling after .table-shell, not nested inside it")
+
+required_entities = (
+    "crewFollowupsBtn",
+    "crewDailySummaryBtn",
+    "crewMissingBtn",
+    "disabled",
+    "&#24453;&#32879;&#32363;",
+    "&#20170;&#26085;&#20986;&#24037;&#32113;&#35336;&#65288;8&#40670;30&#37325;&#32622;&#65289;",
+    "&#26410;&#36914;&#22580;&#24037;&#29677;&#26597;&#35426;",
+)
+for snippet in required_entities:
+    if snippet not in template_text:
+        raise SystemExit(f"sheet.html missing readonly crew snippet: {snippet}")
+
+if "/api/vendor-contact" in template_text or "/api/vendor-work-entry" in template_text:
+    raise SystemExit("sheet.html readonly crew render should not contain crew POST endpoints")
+
+for required in (
+    "async function loadCrewForms",
+    "function renderCrewForms",
+    "function renderCrewFormError",
+    "function formatCrewDate",
+    "function formatCrewDateTime",
+    "/api/crew-forms?sheet_id=",
+):
+    if required not in js_text:
+        raise SystemExit(f"app.js missing readonly crew helper: {required}")
+
+for forbidden in (
+    'fetch("/api/vendor-contact"',
+    "fetch('/api/vendor-contact'",
+    'fetch("/api/vendor-work-entry"',
+    "fetch('/api/vendor-work-entry'",
+):
+    if forbidden in js_text:
+        raise SystemExit(f"readonly crew frontend should not send crew POST requests: {forbidden}")
+
+if 'return `${match[1]}年${match[2]}月${match[3]}日`;' not in js_text:
+    raise SystemExit("formatCrewDate should render YYYY年MM月DD日")
+if 'return match[2] ? `${formattedDate} ${match[2]}` : formattedDate;' not in js_text:
+    raise SystemExit("formatCrewDateTime should append HH:MM when present")
+
+with module.app.test_client() as client:
+    login_response = client.post(
+        "/login",
+        data={"username": "admin", "display_name": "Admin", "password": "admin"},
+        follow_redirects=False,
+    )
+    if login_response.status_code != 302:
+        raise SystemExit("login route did not redirect for crew readonly smoke")
+
+    sheet_response = client.get("/sheet")
+    if sheet_response.status_code != 200:
+        raise SystemExit("/sheet GET should render successfully with crew readonly shell")
+    html = sheet_response.get_data(as_text=True)
+    for snippet in ('class="crew-form-shell"', 'data-mode="readonly"', 'id="crewVendorList"'):
+        if snippet not in html:
+            raise SystemExit(f"rendered /sheet missing crew readonly markup: {snippet}")
+
+    crew_forms_response = client.get("/api/crew-forms?sheet_id=1")
+    if crew_forms_response.status_code != 200:
+        raise SystemExit("/api/crew-forms?sheet_id=1 should remain healthy for readonly crew render")
+
+print("crew readonly render smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "crew readonly render smoke PASS" not in result.stdout:
+        raise AssertionError("crew readonly render smoke subprocess did not report PASS.")
+
+
 def run_sheet_endpoint_smoke(app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -2111,6 +2217,7 @@ def main() -> int:
         run_users_read_compare_readiness_smoke(Path(tmpdir) / "app-smoke.db")
         run_crew_schema_smoke(Path(tmpdir) / "crew-schema-smoke.db")
         run_crew_api_smoke(Path(tmpdir) / "crew-api-smoke.db")
+        run_crew_readonly_render_smoke(Path(tmpdir) / "crew-readonly-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
         run_users_sqlite_sequence_apply_guard_smoke()

@@ -134,6 +134,34 @@
   </table>
 </section>
 
+<section class="crew-form-shell" data-mode="readonly" data-sheet-id="{{ grid.current_sheet.id }}">
+  <div class="crew-form-header">
+    <div>
+      <h2>&#24037;&#29677;&#36914;&#22580;&#34920;</h2>
+      <p>
+        <span>&#30070;&#21069;&#24037;&#29677;&#26085;&#26399;</span>
+        <strong id="crewBusinessDate"></strong>
+      </p>
+    </div>
+    <div class="crew-form-status">
+      <span class="crew-form-badge">&#21482;&#35712;&#38928;&#35261;</span>
+      <span class="crew-form-hint">&#19979;&#19968;&#38542;&#27573;&#21855;&#29992;</span>
+    </div>
+  </div>
+
+  <div class="crew-form-toolbar">
+    <button type="button" id="crewFollowupsBtn" disabled>&#24453;&#32879;&#32363;</button>
+    <button type="button" id="crewDailySummaryBtn" disabled>&#20170;&#26085;&#20986;&#24037;&#32113;&#35336;&#65288;8&#40670;30&#37325;&#32622;&#65289;</button>
+    <button type="button" id="crewMissingBtn" disabled>&#26410;&#36914;&#22580;&#24037;&#29677;&#26597;&#35426;</button>
+    <span class="crew-toolbar-note">readonly preview，&#19979;&#19968;&#38542;&#27573;&#21855;&#29992;</span>
+  </div>
+
+  <div class="crew-error-state hidden" id="crewFormError"></div>
+  <div class="crew-vendor-list" id="crewVendorList">
+    <div class="crew-empty-state">&#27491;&#22312;&#36617;&#20837;&#24037;&#29677;&#36039;&#26009;...</div>
+  </div>
+</section>
+
 <div class="date-popover hidden" id="datePopover">
   <button type="button" id="dateClearBtn">清除</button>
   <button type="button" id="dateConfirmBtn">確定</button>
