@@ -94,7 +94,7 @@
             <option value="O" {{ 'selected' if extra.get(field.field_key) == 'O' else '' }}>O</option>
           </select>
           {% else %}
-          <input class="extra-input" type="datetime-local" data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}" value="{{ extra.get(field.field_key) or '' }}">
+          <input class="extra-input" type="date" data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}" value="{{ extra.get(field.field_key) or '' }}">
           {% endif %}
         </td>
         {% endfor %}

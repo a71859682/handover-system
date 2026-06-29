@@ -498,6 +498,120 @@ print("handover reset separation smoke PASS")
         raise AssertionError("handover reset separation smoke subprocess did not report PASS.")
 
 
+def run_handover_route_regression_smoke(app_db_path: Path) -> None:
+    if app_db_path.exists():
+        app_db_path.unlink()
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
+if 'type="datetime-local"' in template_text:
+    raise SystemExit("sheet.html should not use datetime-local for extra date fields")
+if 'type="date"' not in template_text:
+    raise SystemExit("sheet.html should render extra date fields with type=date")
+
+with module.app.test_client() as client:
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "Admin"
+        session["role"] = "admin"
+
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        target_unit = conn.execute(
+            "SELECT u.id AS unit_id, f.sheet_id "
+            "FROM units u "
+            "JOIN floors f ON f.id = u.floor_id "
+            "ORDER BY u.id "
+            "LIMIT 1"
+        ).fetchone()
+        if target_unit is None:
+            raise SystemExit("expected at least one unit for handover route smoke")
+        conn.execute(
+            "INSERT OR IGNORE INTO unit_extra (unit_id, handover) VALUES (?, ?)",
+            (target_unit["unit_id"], "X"),
+        )
+        conn.execute(
+            '''
+            UPDATE unit_extra
+            SET initial_check = ?, recheck_1 = ?, recheck_2 = ?, handover = ?, updated_by = 1, updated_at = CURRENT_TIMESTAMP
+            WHERE unit_id = ?
+            ''',
+            ("2026-06-20", "2026-06-21", "2026-06-22", "X", target_unit["unit_id"]),
+        )
+
+    response = client.post(
+        "/api/unit-extra",
+        json={"unit_id": int(target_unit["unit_id"]), "field": "handover", "value": "O"},
+    )
+    if response.status_code != 200:
+        raise SystemExit("/api/unit-extra handover update should succeed")
+    data = response.get_json()
+    if not data.get("ok"):
+        raise SystemExit("/api/unit-extra should report ok=true")
+
+    extra = data["grid"]["extras"][str(target_unit["unit_id"])]
+    if extra.get("initial_check") != "2026-06-20":
+        raise SystemExit("api/unit-extra should preserve initial_check")
+    if extra.get("recheck_1") != "2026-06-21":
+        raise SystemExit("api/unit-extra should preserve recheck_1")
+    if extra.get("recheck_2") != "2026-06-22":
+        raise SystemExit("api/unit-extra should preserve recheck_2")
+    if extra.get("handover") != "O":
+        raise SystemExit("api/unit-extra should update handover to O")
+
+    extra_summary = data["grid"]["extra_summary"]
+    if extra_summary["initial_check"]["done"] < 1:
+        raise SystemExit("initial_check summary should count done when recheck_1 exists or handover=O")
+    if extra_summary["recheck_1"]["done"] < 1:
+        raise SystemExit("recheck_1 summary should count done when recheck_2 exists or handover=O")
+    if extra_summary["recheck_2"]["done"] < 1:
+        raise SystemExit("recheck_2 summary should count done when recheck_2 exists or handover=O")
+    if extra_summary["handover"]["done"] < 1:
+        raise SystemExit("handover summary should count done when handover=O")
+
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT initial_check, recheck_1, recheck_2, handover FROM unit_extra WHERE unit_id = ?",
+            (target_unit["unit_id"],),
+        ).fetchone()
+    if row["initial_check"] != "2026-06-20" or row["recheck_1"] != "2026-06-21" or row["recheck_2"] != "2026-06-22":
+        raise SystemExit("api/unit-extra should not clear persisted date fields")
+    if row["handover"] != "O":
+        raise SystemExit("api/unit-extra should persist handover=O")
+
+print("handover route regression smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "handover route regression smoke PASS" not in result.stdout:
+        raise AssertionError("handover route regression smoke subprocess did not report PASS.")
+
+
 def run_floor_helper_smoke(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -1621,6 +1735,7 @@ def main() -> int:
         run_sheet_endpoint_smoke(Path(tmpdir) / "app-smoke.db")
         run_table_admin_endpoint_and_formula_smoke(Path(tmpdir) / "app-smoke.db")
         run_handover_reset_separation_smoke(Path(tmpdir) / "handover-smoke.db")
+        run_handover_route_regression_smoke(Path(tmpdir) / "handover-route-smoke.db")
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 
