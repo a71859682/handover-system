@@ -2364,6 +2364,259 @@ print("admin current-site floor write smoke PASS")
         raise AssertionError("admin current-site floor write smoke subprocess did not report PASS.")
 
 
+def run_admin_current_site_unit_write_smoke(app_db_path: Path) -> None:
+    if app_db_path.exists():
+        app_db_path.unlink()
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    site_a = module.get_default_site_id(conn)
+    if site_a is None:
+        raise SystemExit("default site missing")
+    site_b = conn.execute(
+        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+        ("__admin_unit_site_b__", "unit-site-b"),
+    ).fetchone()["id"]
+    sheet_a = conn.execute("SELECT id FROM sheets ORDER BY id LIMIT 1").fetchone()["id"]
+    floor_a = conn.execute("SELECT id FROM floors WHERE sheet_id = ? ORDER BY id LIMIT 1", (sheet_a,)).fetchone()["id"]
+    sheet_b = conn.execute(
+        "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?) RETURNING id",
+        ("Unit Sheet B", 920, site_b),
+    ).fetchone()["id"]
+    floor_b = conn.execute(
+        "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, 1) RETURNING id",
+        (sheet_b, 921, "B1", "B"),
+    ).fetchone()["id"]
+    unit_b = conn.execute(
+        "INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?) RETURNING id",
+        (floor_b, 1, "B101"),
+    ).fetchone()["id"]
+    task_b = conn.execute(
+        "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?) RETURNING id",
+        (sheet_b, 922, "Vendor B", "Location B", "Task B"),
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO progress (unit_id, task_id, value) VALUES (?, ?, ?)",
+        (unit_b, task_b, module.WORKING_VALUE),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO unit_extra (unit_id, handover) VALUES (?, ?)",
+        (unit_b, module.WORKING_VALUE),
+    )
+    conn.execute(
+        "INSERT INTO unit_extra_values (unit_id, field_key, value, updated_by, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        (unit_b, "custom_field", "demo", 1),
+    )
+    conn.commit()
+
+client = module.app.test_client()
+
+def set_admin_session(*, current_site_id=None, current_site_name=None):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "Admin"
+        session["role"] = "admin"
+        if current_site_id is not None:
+            session["current_site_id"] = int(current_site_id)
+            session["current_site_name"] = current_site_name or f"site-{current_site_id}"
+            session["site_selection_required"] = False
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+with module.db() as conn:
+    before_snapshot = {
+        "units": conn.execute("SELECT COUNT(*) FROM units WHERE floor_id = ?", (floor_a,)).fetchone()[0],
+        "progress": conn.execute(
+            "SELECT COUNT(*) FROM progress WHERE unit_id IN (SELECT id FROM units WHERE floor_id = ?)",
+            (floor_a,),
+        ).fetchone()[0],
+        "unit_extra": conn.execute(
+            "SELECT COUNT(*) FROM unit_extra WHERE unit_id IN (SELECT id FROM units WHERE floor_id = ?)",
+            (floor_a,),
+        ).fetchone()[0],
+        "unit_extra_values": conn.execute(
+            "SELECT COUNT(*) FROM unit_extra_values WHERE unit_id IN (SELECT id FROM units WHERE floor_id = ?)",
+            (floor_a,),
+        ).fetchone()[0],
+        "unit_count": conn.execute("SELECT unit_count FROM floors WHERE id = ?", (floor_a,)).fetchone()[0],
+        "task_count": conn.execute("SELECT COUNT(*) FROM tasks WHERE sheet_id = ?", (sheet_a,)).fetchone()[0],
+    }
+add_unit_ok = client.post(
+    f"/admin/table?sheet_id={sheet_a}",
+    data={"action": f"add_unit:{floor_a}", f"new_unit_name_{floor_a}": "102"},
+    follow_redirects=False,
+)
+if add_unit_ok.status_code != 302:
+    raise SystemExit("add_unit current site should redirect")
+with module.db() as conn:
+    after_units = conn.execute("SELECT COUNT(*) FROM units WHERE floor_id = ?", (floor_a,)).fetchone()[0]
+    added_unit = conn.execute(
+        "SELECT id FROM units WHERE floor_id = ? AND name = ? ORDER BY id DESC LIMIT 1",
+        (floor_a, "102"),
+    ).fetchone()
+    after_progress = conn.execute(
+        "SELECT COUNT(*) FROM progress WHERE unit_id = ?",
+        (added_unit["id"],),
+    ).fetchone()[0] if added_unit is not None else 0
+    after_unit_extra = conn.execute(
+        "SELECT COUNT(*) FROM unit_extra WHERE unit_id = ?",
+        (added_unit["id"],),
+    ).fetchone()[0] if added_unit is not None else 0
+    after_unit_count = conn.execute("SELECT unit_count FROM floors WHERE id = ?", (floor_a,)).fetchone()[0]
+if after_units != before_snapshot["units"] + 1:
+    raise SystemExit("add_unit current site should add one unit")
+if added_unit is None:
+    raise SystemExit("add_unit current site should create unit row")
+if after_progress != before_snapshot["task_count"]:
+    raise SystemExit("add_unit current site should add progress rows for each task")
+if after_unit_extra != 1:
+    raise SystemExit("add_unit current site should initialize unit_extra")
+if after_unit_count != before_snapshot["unit_count"] + 1:
+    raise SystemExit("add_unit current site should update unit_count")
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+with module.db() as conn:
+    before_cross = {
+        "units": conn.execute("SELECT COUNT(*) FROM units WHERE floor_id = ?", (floor_b,)).fetchone()[0],
+        "progress": conn.execute(
+            "SELECT COUNT(*) FROM progress WHERE unit_id IN (SELECT id FROM units WHERE floor_id = ?)",
+            (floor_b,),
+        ).fetchone()[0],
+        "unit_extra": conn.execute(
+            "SELECT COUNT(*) FROM unit_extra WHERE unit_id IN (SELECT id FROM units WHERE floor_id = ?)",
+            (floor_b,),
+        ).fetchone()[0],
+        "unit_extra_values": conn.execute(
+            "SELECT COUNT(*) FROM unit_extra_values WHERE unit_id IN (SELECT id FROM units WHERE floor_id = ?)",
+            (floor_b,),
+        ).fetchone()[0],
+        "unit_count": conn.execute("SELECT unit_count FROM floors WHERE id = ?", (floor_b,)).fetchone()[0],
+    }
+add_unit_cross = client.post(
+    f"/admin/table?sheet_id={sheet_b}",
+    data={"action": f"add_unit:{floor_b}", f"new_unit_name_{floor_b}": "Should Not Add"},
+    follow_redirects=False,
+)
+if add_unit_cross.status_code != 302 or "/admin/table?sheet_id=" not in add_unit_cross.headers.get("Location", ""):
+    raise SystemExit("add_unit cross-site should redirect back to /admin/table")
+with module.db() as conn:
+    after_cross = {
+        "units": conn.execute("SELECT COUNT(*) FROM units WHERE floor_id = ?", (floor_b,)).fetchone()[0],
+        "progress": conn.execute(
+            "SELECT COUNT(*) FROM progress WHERE unit_id IN (SELECT id FROM units WHERE floor_id = ?)",
+            (floor_b,),
+        ).fetchone()[0],
+        "unit_extra": conn.execute(
+            "SELECT COUNT(*) FROM unit_extra WHERE unit_id IN (SELECT id FROM units WHERE floor_id = ?)",
+            (floor_b,),
+        ).fetchone()[0],
+        "unit_extra_values": conn.execute(
+            "SELECT COUNT(*) FROM unit_extra_values WHERE unit_id IN (SELECT id FROM units WHERE floor_id = ?)",
+            (floor_b,),
+        ).fetchone()[0],
+        "unit_count": conn.execute("SELECT unit_count FROM floors WHERE id = ?", (floor_b,)).fetchone()[0],
+    }
+    unexpected_unit = conn.execute(
+        "SELECT 1 FROM units WHERE floor_id = ? AND name = ?",
+        (floor_b, "Should Not Add"),
+    ).fetchone()
+if before_cross != after_cross:
+    raise SystemExit("add_unit cross-site should not change related rows")
+if unexpected_unit is not None:
+    raise SystemExit("add_unit cross-site should not create unit row")
+
+delete_unit_id = int(added_unit["id"])
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+with module.db() as conn:
+    before_delete = {
+        "units": conn.execute("SELECT COUNT(*) FROM units WHERE id = ?", (delete_unit_id,)).fetchone()[0],
+        "progress": conn.execute("SELECT COUNT(*) FROM progress WHERE unit_id = ?", (delete_unit_id,)).fetchone()[0],
+        "unit_extra": conn.execute("SELECT COUNT(*) FROM unit_extra WHERE unit_id = ?", (delete_unit_id,)).fetchone()[0],
+        "unit_extra_values": conn.execute("SELECT COUNT(*) FROM unit_extra_values WHERE unit_id = ?", (delete_unit_id,)).fetchone()[0],
+        "unit_count": conn.execute("SELECT unit_count FROM floors WHERE id = ?", (floor_a,)).fetchone()[0],
+    }
+delete_unit_ok = client.post(
+    f"/admin/table?sheet_id={sheet_a}",
+    data={"action": f"delete_unit:{delete_unit_id}"},
+    follow_redirects=False,
+)
+if delete_unit_ok.status_code != 302:
+    raise SystemExit("delete_unit current site should redirect")
+with module.db() as conn:
+    after_delete = {
+        "units": conn.execute("SELECT COUNT(*) FROM units WHERE id = ?", (delete_unit_id,)).fetchone()[0],
+        "progress": conn.execute("SELECT COUNT(*) FROM progress WHERE unit_id = ?", (delete_unit_id,)).fetchone()[0],
+        "unit_extra": conn.execute("SELECT COUNT(*) FROM unit_extra WHERE unit_id = ?", (delete_unit_id,)).fetchone()[0],
+        "unit_extra_values": conn.execute("SELECT COUNT(*) FROM unit_extra_values WHERE unit_id = ?", (delete_unit_id,)).fetchone()[0],
+        "unit_count": conn.execute("SELECT unit_count FROM floors WHERE id = ?", (floor_a,)).fetchone()[0],
+    }
+if before_delete["units"] != 1:
+    raise SystemExit("delete_unit current site precondition failed")
+if after_delete["units"] != 0 or after_delete["progress"] != 0 or after_delete["unit_extra"] != 0 or after_delete["unit_extra_values"] != 0:
+    raise SystemExit("delete_unit current site should remove unit and related rows")
+if after_delete["unit_count"] != before_delete["unit_count"] - 1:
+    raise SystemExit("delete_unit current site should decrement unit_count")
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+with module.db() as conn:
+    before_cross_delete = {
+        "units": conn.execute("SELECT COUNT(*) FROM units WHERE id = ?", (unit_b,)).fetchone()[0],
+        "progress": conn.execute("SELECT COUNT(*) FROM progress WHERE unit_id = ?", (unit_b,)).fetchone()[0],
+        "unit_extra": conn.execute("SELECT COUNT(*) FROM unit_extra WHERE unit_id = ?", (unit_b,)).fetchone()[0],
+        "unit_extra_values": conn.execute("SELECT COUNT(*) FROM unit_extra_values WHERE unit_id = ?", (unit_b,)).fetchone()[0],
+        "unit_count": conn.execute("SELECT unit_count FROM floors WHERE id = ?", (floor_b,)).fetchone()[0],
+    }
+delete_unit_cross = client.post(
+    f"/admin/table?sheet_id={sheet_b}",
+    data={"action": f"delete_unit:{unit_b}"},
+    follow_redirects=False,
+)
+if delete_unit_cross.status_code != 302 or "/admin/table?sheet_id=" not in delete_unit_cross.headers.get("Location", ""):
+    raise SystemExit("delete_unit cross-site should redirect back to /admin/table")
+with module.db() as conn:
+    after_cross_delete = {
+        "units": conn.execute("SELECT COUNT(*) FROM units WHERE id = ?", (unit_b,)).fetchone()[0],
+        "progress": conn.execute("SELECT COUNT(*) FROM progress WHERE unit_id = ?", (unit_b,)).fetchone()[0],
+        "unit_extra": conn.execute("SELECT COUNT(*) FROM unit_extra WHERE unit_id = ?", (unit_b,)).fetchone()[0],
+        "unit_extra_values": conn.execute("SELECT COUNT(*) FROM unit_extra_values WHERE unit_id = ?", (unit_b,)).fetchone()[0],
+        "unit_count": conn.execute("SELECT unit_count FROM floors WHERE id = ?", (floor_b,)).fetchone()[0],
+    }
+if before_cross_delete != after_cross_delete:
+    raise SystemExit("delete_unit cross-site should not change related rows")
+
+print("admin current-site unit write smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "admin current-site unit write smoke PASS" not in result.stdout:
+        raise AssertionError("admin current-site unit write smoke subprocess did not report PASS.")
+
+
 def run_handover_reset_separation_smoke(app_db_path: Path) -> None:
     if app_db_path.exists():
         app_db_path.unlink()
@@ -4921,6 +5174,8 @@ def run_admin_write_model_readiness_smoke() -> None:
         "delete_task",
         "add_floor",
         "delete_floor",
+        "add_unit",
+        "delete_unit",
         "save",
         "MIXED",
         "status: ENFORCED",
@@ -4928,6 +5183,7 @@ def run_admin_write_model_readiness_smoke() -> None:
         "writes new sheet to current_site_id",
         "task delete validates task_id belongs to route sheet",
         "floor delete validates floor_id belongs to route sheet",
+        "unit delete validates unit_id belongs to route sheet",
         "/api/reset-sheet",
     )
     for fragment in required_fragments:
@@ -4984,6 +5240,7 @@ def main() -> int:
         run_admin_current_site_sheet_write_smoke(Path(tmpdir) / "admin-current-site-sheet-write.db")
         run_admin_current_site_task_write_smoke(Path(tmpdir) / "admin-current-site-task-write.db")
         run_admin_current_site_floor_write_smoke(Path(tmpdir) / "admin-current-site-floor-write.db")
+        run_admin_current_site_unit_write_smoke(Path(tmpdir) / "admin-current-site-unit-write.db")
         run_handover_reset_separation_smoke(Path(tmpdir) / "handover-smoke.db")
         run_handover_route_regression_smoke(Path(tmpdir) / "handover-route-smoke.db")
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
@@ -5088,8 +5345,8 @@ def main() -> int:
         if fragment not in site_write_isolation_result.stdout:
             raise AssertionError(f"check_site_write_isolation_readiness.py missing expected inventory fragment: {fragment}")
     admin_write_model_result = run_script("check_admin_write_model_readiness.py", env={"DATABASE_URL": ""})
-    if "admin_write_model_readiness_scope: create_delete_sheet_task_floor_enforced" not in admin_write_model_result.stdout:
-        raise AssertionError("check_admin_write_model_readiness.py did not report expected create/delete/task/floor enforcement scope.")
+    if "admin_write_model_readiness_scope: create_delete_sheet_task_floor_unit_enforced" not in admin_write_model_result.stdout:
+        raise AssertionError("check_admin_write_model_readiness.py did not report expected create/delete/task/floor/unit enforcement scope.")
     if "PASS admin write model readiness check passed." not in admin_write_model_result.stdout:
         raise AssertionError("check_admin_write_model_readiness.py did not report expected PASS output.")
     for fragment in (
@@ -5099,6 +5356,8 @@ def main() -> int:
         "delete_task",
         "add_floor",
         "delete_floor",
+        "add_unit",
+        "delete_unit",
         "save",
         "MIXED",
         "status: ENFORCED",
@@ -5106,6 +5365,7 @@ def main() -> int:
         "writes new sheet to current_site_id",
         "task delete validates task_id belongs to route sheet",
         "floor delete validates floor_id belongs to route sheet",
+        "unit delete validates unit_id belongs to route sheet",
         "/api/reset-sheet",
     ):
         if fragment not in admin_write_model_result.stdout:

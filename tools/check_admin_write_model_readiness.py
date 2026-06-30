@@ -180,27 +180,38 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="add_unit",
         target_tables=("units", "progress", "unit_extra"),
         category="SITE_SCOPED",
-        status="INVENTORY ONLY",
-        uses_current_site="no",
-        current_site_enforced="no",
-        can_cross_site_today="yes",
-        recommendation="Future admin current-site aware site-content action.",
+        status="ENFORCED",
+        uses_current_site="yes",
+        current_site_enforced="yes",
+        can_cross_site_today="no",
+        recommendation="Unit create is now blocked unless the target floor belongs to route sheet and current_site_id.",
         risk="medium",
         notes=(),
-        source_markers=('if action.startswith("add_unit:"):', 'INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?)'),
+        source_markers=(
+            'if action.startswith("add_unit:"):',
+            'floor_row = resolve_floor_sheet_for_admin_write(conn, floor_id=floor_id)',
+            'INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?)',
+            'INSERT INTO unit_extra (unit_id, handover) VALUES (?, ?)',
+            'UPDATE floors SET unit_count = (SELECT COUNT(*) FROM units WHERE floor_id = ?) WHERE id = ?',
+        ),
     ),
     AdminWriteItem(
         action="delete_unit",
         target_tables=("units", "progress", "unit_extra", "unit_extra_values"),
         category="SITE_SCOPED",
-        status="INVENTORY ONLY",
-        uses_current_site="no",
-        current_site_enforced="no",
-        can_cross_site_today="yes",
-        recommendation="Treat as future admin current-site aware destructive action; do not enforce in P-3C-1.",
+        status="ENFORCED",
+        uses_current_site="yes",
+        current_site_enforced="yes",
+        can_cross_site_today="no",
+        recommendation="Unit delete is now blocked unless the target unit belongs to route sheet and current_site_id.",
         risk="high",
-        notes=(),
-        source_markers=('if action.startswith("delete_unit:"):', 'DELETE FROM units WHERE id = ?'),
+        notes=("unit delete validates unit_id belongs to route sheet",),
+        source_markers=(
+            'if action.startswith("delete_unit:"):',
+            'unit_row = resolve_unit_sheet_for_admin_write(conn, unit_id=unit_id)',
+            'raise LookupError("unit_sheet_mismatch")',
+            'DELETE FROM units WHERE id = ?',
+        ),
     ),
 )
 
@@ -234,12 +245,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Check admin write model readiness inventory.")
     parser.parse_args()
 
-    print("admin_write_model_readiness_scope: create_delete_sheet_task_floor_enforced")
+    print("admin_write_model_readiness_scope: create_delete_sheet_task_floor_unit_enforced")
     print(f"app_source: {APP_PATH}")
-    print("WARNING P-3C-2B-2A enforces current-site aware behavior for create_sheet, delete_sheet, add_task, delete_task, add_floor, and delete_floor only")
-    print("WARNING admin current-site aware behavior is partially implemented for create_sheet, delete_sheet, add_task, delete_task, add_floor, and delete_floor only")
+    print("WARNING P-3C-2B-2B enforces current-site aware behavior for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, and delete_unit only")
+    print("WARNING admin current-site aware behavior is partially implemented for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, and delete_unit only")
     print("WARNING mixed save split is deferred")
-    print("WARNING production behavior changed only for create_sheet, delete_sheet, add_task, delete_task, add_floor, and delete_floor")
+    print("WARNING production behavior changed only for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, and delete_unit")
 
     source = APP_PATH.read_text(encoding="utf-8")
     issues: list[str] = []

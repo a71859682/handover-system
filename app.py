@@ -1394,6 +1394,31 @@ def resolve_floor_sheet_for_admin_write(conn: sqlite3.Connection, *, floor_id: i
     }
 
 
+def resolve_unit_sheet_for_admin_write(conn: sqlite3.Connection, *, unit_id: int) -> dict[str, int]:
+    row = conn.execute(
+        """
+        SELECT u.id AS unit_id, u.floor_id AS floor_id, f.sheet_id AS sheet_id
+        FROM units u
+        LEFT JOIN floors f ON f.id = u.floor_id
+        WHERE u.id = ?
+        """,
+        (unit_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError("unit_not_found")
+    floor_id = row["floor_id"]
+    if floor_id in (None, ""):
+        raise LookupError("unit_floor_missing")
+    sheet_id = row["sheet_id"]
+    if sheet_id in (None, ""):
+        raise LookupError("unit_sheet_missing")
+    return {
+        "unit_id": int(row["unit_id"]),
+        "floor_id": int(floor_id),
+        "sheet_id": int(sheet_id),
+    }
+
+
 def _handle_admin_site_write_lookup_error(exc: LookupError, *, sheet_id: int | None = None):
     code = str(exc)
     if code == "site_context_invalid":
@@ -1415,6 +1440,11 @@ def _handle_admin_site_write_lookup_error(exc: LookupError, *, sheet_id: int | N
             return redirect(url_for("table_admin", sheet_id=sheet_id))
         return redirect(url_for("table_admin"))
     if code in {"floor_not_found", "floor_sheet_missing", "floor_sheet_mismatch"}:
+        flash("\u627e\u4e0d\u5230\u76ee\u6a19\u8cc7\u6599\u3002", "error")
+        if sheet_id is not None:
+            return redirect(url_for("table_admin", sheet_id=sheet_id))
+        return redirect(url_for("table_admin"))
+    if code in {"unit_not_found", "unit_floor_missing", "unit_sheet_missing", "unit_sheet_mismatch"}:
         flash("\u627e\u4e0d\u5230\u76ee\u6a19\u8cc7\u6599\u3002", "error")
         if sheet_id is not None:
             return redirect(url_for("table_admin", sheet_id=sheet_id))
@@ -4267,6 +4297,13 @@ def table_admin():
                 return redirect(url_for("table_admin", sheet_id=sheet_id))
             if action.startswith("add_unit:"):
                 floor_id = int(action.split(":", 1)[1])
+                try:
+                    floor_row = resolve_floor_sheet_for_admin_write(conn, floor_id=floor_id)
+                    if int(floor_row["sheet_id"]) != int(sheet_id):
+                        raise LookupError("floor_sheet_mismatch")
+                    authorize_admin_site_scoped_write(conn, sheet_id=int(floor_row["sheet_id"]))
+                except LookupError as exc:
+                    return _handle_admin_site_write_lookup_error(exc, sheet_id=sheet_id)
                 next_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM units WHERE floor_id = ?", (floor_id,)).fetchone()[0]
                 cur = conn.execute(
                     "INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?)",
@@ -4280,13 +4317,21 @@ def table_admin():
                 return redirect(url_for("table_admin", sheet_id=sheet_id))
             if action.startswith("delete_unit:"):
                 unit_id = int(action.split(":", 1)[1])
-                floor = conn.execute("SELECT floor_id FROM units WHERE id = ?", (unit_id,)).fetchone()
+                try:
+                    unit_row = resolve_unit_sheet_for_admin_write(conn, unit_id=unit_id)
+                    if int(unit_row["sheet_id"]) != int(sheet_id):
+                        raise LookupError("unit_sheet_mismatch")
+                    authorize_admin_site_scoped_write(conn, sheet_id=int(unit_row["sheet_id"]))
+                except LookupError as exc:
+                    return _handle_admin_site_write_lookup_error(exc, sheet_id=sheet_id)
                 conn.execute("DELETE FROM progress WHERE unit_id = ?", (unit_id,))
                 conn.execute("DELETE FROM unit_extra WHERE unit_id = ?", (unit_id,))
                 conn.execute("DELETE FROM unit_extra_values WHERE unit_id = ?", (unit_id,))
                 conn.execute("DELETE FROM units WHERE id = ?", (unit_id,))
-                if floor:
-                    conn.execute("UPDATE floors SET unit_count = (SELECT COUNT(*) FROM units WHERE floor_id = ?) WHERE id = ?", (floor["floor_id"], floor["floor_id"]))
+                conn.execute(
+                    "UPDATE floors SET unit_count = (SELECT COUNT(*) FROM units WHERE floor_id = ?) WHERE id = ?",
+                    (unit_row["floor_id"], unit_row["floor_id"]),
+                )
                 flash("??????", "success")
                 return redirect(url_for("table_admin", sheet_id=sheet_id))
 
