@@ -145,27 +145,36 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="add_floor",
         target_tables=("floors",),
         category="SITE_SCOPED",
-        status="INVENTORY ONLY",
-        uses_current_site="no",
-        current_site_enforced="no",
-        can_cross_site_today="yes",
-        recommendation="Future admin current-site aware site-content action.",
+        status="ENFORCED",
+        uses_current_site="yes",
+        current_site_enforced="yes",
+        can_cross_site_today="no",
+        recommendation="Floor create is now blocked unless the target sheet belongs to current_site_id.",
         risk="medium",
         notes=(),
-        source_markers=('if action == "add_floor":', 'INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, 0)'),
+        source_markers=(
+            'if action == "add_floor":',
+            'authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)',
+            'INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, 0)',
+        ),
     ),
     AdminWriteItem(
         action="delete_floor",
         target_tables=("floors", "units", "progress", "unit_extra", "unit_extra_values"),
         category="SITE_SCOPED",
-        status="INVENTORY ONLY",
-        uses_current_site="no",
-        current_site_enforced="no",
-        can_cross_site_today="yes",
-        recommendation="Treat as future admin current-site aware destructive action; do not enforce in P-3C-1.",
+        status="ENFORCED",
+        uses_current_site="yes",
+        current_site_enforced="yes",
+        can_cross_site_today="no",
+        recommendation="Floor delete is now blocked unless the target floor belongs to route sheet and current_site_id.",
         risk="high",
-        notes=(),
-        source_markers=('if action.startswith("delete_floor:"):', 'DELETE FROM floors WHERE id = ? AND sheet_id = ?'),
+        notes=("floor delete validates floor_id belongs to route sheet",),
+        source_markers=(
+            'if action.startswith("delete_floor:"):',
+            'floor_row = resolve_floor_sheet_for_admin_write(conn, floor_id=floor_id)',
+            'raise LookupError("floor_sheet_mismatch")',
+            'DELETE FROM floors WHERE id = ? AND sheet_id = ?',
+        ),
     ),
     AdminWriteItem(
         action="add_unit",
@@ -225,12 +234,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Check admin write model readiness inventory.")
     parser.parse_args()
 
-    print("admin_write_model_readiness_scope: create_delete_sheet_task_enforced")
+    print("admin_write_model_readiness_scope: create_delete_sheet_task_floor_enforced")
     print(f"app_source: {APP_PATH}")
-    print("WARNING P-3C-2B-1 enforces current-site aware behavior for create_sheet, delete_sheet, add_task, and delete_task only")
-    print("WARNING admin current-site aware behavior is partially implemented for create_sheet, delete_sheet, add_task, and delete_task only")
+    print("WARNING P-3C-2B-2A enforces current-site aware behavior for create_sheet, delete_sheet, add_task, delete_task, add_floor, and delete_floor only")
+    print("WARNING admin current-site aware behavior is partially implemented for create_sheet, delete_sheet, add_task, delete_task, add_floor, and delete_floor only")
     print("WARNING mixed save split is deferred")
-    print("WARNING production behavior changed only for create_sheet, delete_sheet, add_task, and delete_task")
+    print("WARNING production behavior changed only for create_sheet, delete_sheet, add_task, delete_task, add_floor, and delete_floor")
 
     source = APP_PATH.read_text(encoding="utf-8")
     issues: list[str] = []
