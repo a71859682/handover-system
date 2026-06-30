@@ -360,11 +360,11 @@ with module.db() as conn:
         raise SystemExit("default site id missing")
 
     secondary_site = conn.execute(
-        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id, site_name, site_code, is_active",
         ("__smoke_secondary_site__", "secondary"),
     ).fetchone()
     inactive_site = conn.execute(
-        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 0) RETURNING id",
+        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 0) RETURNING id, site_name, site_code, is_active",
         ("__smoke_inactive_site__", "inactive"),
     ).fetchone()
 
@@ -378,6 +378,10 @@ with module.db() as conn:
     single = create_user("__smoke_single__")
     multi = create_user("__smoke_multi__")
     zero = create_user("__smoke_zero__")
+    conn.execute(
+        "UPDATE users SET password_hash = ? WHERE username = 'admin'",
+        (module.generate_password_hash("admin"),),
+    )
     admin = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
 
     conn.executemany(
@@ -442,6 +446,69 @@ with module.app.test_request_context("/"):
         raise SystemExit("zero-site user should not keep current site")
 
 client = module.app.test_client()
+with client.session_transaction() as session:
+    session.clear()
+
+admin_login = client.post(
+    "/login",
+    data={"username": "admin", "display_name": "Admin", "password": "admin"},
+    follow_redirects=False,
+)
+if admin_login.status_code != 302 or not admin_login.headers.get("Location", "").endswith("/sheet"):
+    raise SystemExit("admin login should keep redirect to /sheet")
+with client.session_transaction() as session:
+    if session.get("current_site_id") != default_site_id:
+        raise SystemExit("admin login should write default current_site_id")
+    if session.get("current_site_name") != module.DEFAULT_SITE_NAME:
+        raise SystemExit("admin login should write default current_site_name")
+    if session.get("site_selection_required"):
+        raise SystemExit("admin login should not require site selection")
+
+single_login = client.post(
+    "/login",
+    data={"username": single["username"], "display_name": single["display_name"], "password": "x"},
+    follow_redirects=False,
+)
+if single_login.status_code != 302 or not single_login.headers.get("Location", "").endswith("/sheet"):
+    raise SystemExit("single-site login should keep redirect to /sheet")
+with client.session_transaction() as session:
+    if session.get("current_site_id") != secondary_site["id"]:
+        raise SystemExit("single-site login should auto-select sole accessible site")
+    if session.get("current_site_name") != secondary_site["site_name"]:
+        raise SystemExit("single-site login should write sole site name")
+    if session.get("site_selection_required"):
+        raise SystemExit("single-site login should not require site selection")
+
+multi_login = client.post(
+    "/login",
+    data={"username": multi["username"], "display_name": multi["display_name"], "password": "x"},
+    follow_redirects=False,
+)
+if multi_login.status_code != 302 or not multi_login.headers.get("Location", "").endswith("/sheet"):
+    raise SystemExit("multi-site login should keep redirect to /sheet")
+with client.session_transaction() as session:
+    if session.get("current_site_id") is not None:
+        raise SystemExit("multi-site login should not guess current_site_id")
+    if session.get("current_site_name") is not None:
+        raise SystemExit("multi-site login should not write current_site_name")
+    if session.get("site_selection_required") is not True:
+        raise SystemExit("multi-site login should set site_selection_required")
+
+zero_login = client.post(
+    "/login",
+    data={"username": zero["username"], "display_name": zero["display_name"], "password": "x"},
+    follow_redirects=False,
+)
+if zero_login.status_code != 302 or not zero_login.headers.get("Location", "").endswith("/sheet"):
+    raise SystemExit("zero-site login should keep redirect to /sheet in this stage")
+with client.session_transaction() as session:
+    if session.get("current_site_id") is not None:
+        raise SystemExit("zero-site login should not set current_site_id")
+    if session.get("current_site_name") is not None:
+        raise SystemExit("zero-site login should not set current_site_name")
+    if session.get("site_selection_required") is not None:
+        raise SystemExit("zero-site login should not set site_selection_required")
+
 with client.session_transaction() as session:
     session["user_id"] = admin["id"]
     session["username"] = "admin"

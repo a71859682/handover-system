@@ -2568,6 +2568,7 @@ def login():
             session["username"] = user["username"]
             session["display_name"] = user["display_name"] or user["username"]
             session["role"] = user["role"]
+            normalize_current_site_for_user(user)
             return redirect(url_for("sheet"))
         flash("帳號或密碼錯誤。", "error")
     return render_template("login.html", settings=settings)

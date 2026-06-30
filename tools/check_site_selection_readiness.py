@@ -48,6 +48,49 @@ def expect(condition: bool, message: str, issues: list[str]) -> None:
         issues.append(message)
 
 
+def expect_login_wiring(
+    module,
+    *,
+    user: sqlite3.Row,
+    password: str,
+    expected_site_id: int | None,
+    expected_site_name: str | None,
+    expected_site_selection_required: bool | None,
+    issues: list[str],
+    label: str,
+) -> None:
+    client = module.app.test_client()
+    response = client.post(
+        "/login",
+        data={
+            "username": user["username"],
+            "display_name": user["display_name"] or user["username"],
+            "password": password,
+        },
+        follow_redirects=False,
+    )
+    expect(response.status_code == 302, f"{label}_login_not_redirected", issues)
+    expect(response.headers.get("Location", "").endswith("/sheet"), f"{label}_login_redirect_changed", issues)
+    with client.session_transaction() as session:
+        expect(session.get("user_id") == user["id"], f"{label}_user_id_missing", issues)
+        expect(session.get("username") == user["username"], f"{label}_username_missing", issues)
+        expect(session.get("role") == user["role"], f"{label}_role_missing", issues)
+        expect(session.get("current_site_id") == expected_site_id, f"{label}_current_site_id_mismatch", issues)
+        expect(session.get("current_site_name") == expected_site_name, f"{label}_current_site_name_mismatch", issues)
+        if expected_site_selection_required is None:
+            expect(
+                session.get("site_selection_required") is None,
+                f"{label}_site_selection_required_should_be_absent",
+                issues,
+            )
+        else:
+            expect(
+                bool(session.get("site_selection_required")) is expected_site_selection_required,
+                f"{label}_site_selection_required_mismatch",
+                issues,
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check internal site selection readiness.")
     parser.parse_args()
@@ -225,6 +268,49 @@ def main() -> int:
                 issues,
             )
             expect(module.get_current_site_id() is None, "zero_site_user_should_not_keep_current_site", issues)
+
+        print("login_wiring_checks: start")
+        expect_login_wiring(
+            module,
+            user=admin,
+            password="admin",
+            expected_site_id=default_site_id,
+            expected_site_name=module.DEFAULT_SITE_NAME,
+            expected_site_selection_required=False,
+            issues=issues,
+            label="admin",
+        )
+        expect_login_wiring(
+            module,
+            user=single_user,
+            password="x",
+            expected_site_id=int(secondary_site["id"]),
+            expected_site_name=str(secondary_site["site_name"]),
+            expected_site_selection_required=False,
+            issues=issues,
+            label="single_site",
+        )
+        expect_login_wiring(
+            module,
+            user=multi_user,
+            password="x",
+            expected_site_id=None,
+            expected_site_name=None,
+            expected_site_selection_required=True,
+            issues=issues,
+            label="multi_site",
+        )
+        expect_login_wiring(
+            module,
+            user=zero_user,
+            password="x",
+            expected_site_id=None,
+            expected_site_name=None,
+            expected_site_selection_required=None,
+            issues=issues,
+            label="zero_site",
+        )
+        print("login_wiring_checks: complete")
 
         conn.close()
 
