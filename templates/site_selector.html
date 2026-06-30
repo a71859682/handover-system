@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}&#20999;&#25563;&#24037;&#22320;{% endblock %}
+{% block content %}
+<section class="page">
+  <h1>&#30446;&#21069;&#24037;&#22320;&#31649;&#29702;</h1>
+  <p>&#35531;&#24478;&#20320;&#21487;&#36914;&#20837;&#30340;&#24037;&#22320;&#20013;&#36984;&#25799;&#30446;&#21069;&#24037;&#22320;&#12290;</p>
+
+  <div class="card">
+    <p><strong>&#30446;&#21069;&#24037;&#22320;&#65306;</strong>{{ current_site.site_name if current_site else "&#23578;&#26410;&#36984;&#25799;" }}</p>
+    <p><strong>&#21487;&#36914;&#20837;&#24037;&#22320;&#25976;&#65306;</strong>{{ accessible_sites|length }}</p>
+  </div>
+
+  {% if selector_error %}
+  <div class="message error">{{ selector_error }}</div>
+  {% endif %}
+
+  <form method="post">
+    <fieldset>
+      <legend>&#36984;&#25799;&#24037;&#22320;</legend>
+      {% for site in accessible_sites %}
+      <label style="display:block; margin-bottom:0.5rem;">
+        <input
+          type="radio"
+          name="site_id"
+          value="{{ site.id }}"
+          {% if current_site and current_site.id == site.id %}checked{% endif %}
+          {% if not current_site and loop.first %}checked{% endif %}
+        >
+        {{ site.site_name }}
+      </label>
+      {% endfor %}
+    </fieldset>
+    <div style="margin-top:1rem; display:flex; gap:0.75rem; align-items:center;">
+      <button type="submit">&#22871;&#29992;&#30446;&#21069;&#24037;&#22320;</button>
+      <a href="{{ url_for('sheet') }}">&#36820;&#22238;&#31649;&#21046;&#34920;</a>
+    </div>
+  </form>
+</section>
+{% endblock %}

@@ -15,6 +15,8 @@
     </div>
     <nav class="nav">
       <a href="{{ url_for('sheet') }}">&#31649;&#21046;&#34920;</a>
+      <span class="user">&#30446;&#21069;&#24037;&#22320;&#65306;{{ session.get("current_site_name") or "&#23578;&#26410;&#36984;&#25799;" }}</span>
+      <a href="{{ url_for('site_selector') }}">&#20999;&#25563;&#24037;&#22320;</a>
       {% if session.get("role") == "admin" %}
       <a href="{{ url_for('table_admin') }}">&#34920;&#26684;&#35373;&#23450;</a>
       <a href="{{ url_for('users') }}">&#25104;&#21729;&#31649;&#29702;</a>

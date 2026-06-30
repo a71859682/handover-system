@@ -1798,6 +1798,19 @@ def clear_current_site() -> None:
     session.pop("site_selection_required", None)
 
 
+def _site_selection_redirect_target(resolution: dict[str, object]) -> str:
+    if resolution["status"] == "site_selection_required":
+        return url_for("site_selector")
+    return url_for("sheet")
+
+
+def _current_internal_user():
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    return get_user_by_id(int(user_id))
+
+
 def is_global_admin(user) -> bool:
     if not user:
         return False
@@ -1974,6 +1987,35 @@ def normalize_current_site_for_user(user) -> dict[str, object]:
     else:
         clear_current_site()
     return resolution
+
+
+def _render_site_selector(*, user, status_code: int = 200, error_message: str = ""):
+    resolution = resolve_current_site_for_user(user)
+    accessible_sites = list(resolution.get("accessible_sites", []))
+    current_site = None
+    current_site_id = get_current_site_id()
+    if current_site_id is not None:
+        current_site = next(
+            (site for site in accessible_sites if int(site["id"]) == int(current_site_id)),
+            None,
+        )
+    settings = query_settings()
+    app.logger.info(
+        "selector_page_viewed user_id=%s current_site_id=%s accessible_site_count=%s",
+        user["id"],
+        current_site_id,
+        len(accessible_sites),
+    )
+    return (
+        render_template(
+            "site_selector.html",
+            settings=settings,
+            accessible_sites=accessible_sites,
+            current_site=current_site,
+            selector_error=error_message,
+        ),
+        status_code,
+    )
 
 
 def _vendor_contacts_has_legacy_unique(conn: sqlite3.Connection) -> bool:
@@ -2568,8 +2610,23 @@ def login():
             session["username"] = user["username"]
             session["display_name"] = user["display_name"] or user["username"]
             session["role"] = user["role"]
-            normalize_current_site_for_user(user)
-            return redirect(url_for("sheet"))
+            resolution = normalize_current_site_for_user(user)
+            status = str(resolution["status"])
+            if status == "access_denied_no_site_permission":
+                app.logger.info("zero_site_login_blocked user_id=%s", user["id"])
+                session.clear()
+                flash("您目前沒有可進入的工地", "error")
+                return redirect(url_for("login"))
+            if status == "site_selection_required":
+                app.logger.info("login_requires_site_selection user_id=%s", user["id"])
+            elif status == "resolved":
+                app.logger.info(
+                    "login_auto_selected_site user_id=%s site_id=%s reason=%s",
+                    user["id"],
+                    resolution["site_id"],
+                    resolution.get("reason", ""),
+                )
+            return redirect(_site_selection_redirect_target(resolution))
         flash("帳號或密碼錯誤。", "error")
     return render_template("login.html", settings=settings)
 
@@ -2586,10 +2643,59 @@ def logout():
     return redirect(url_for("login"))
 
 
+@app.route("/site-selector", methods=["GET", "POST"])
+@login_required
+def site_selector():
+    user = _current_internal_user()
+    if user is None:
+        session.clear()
+        return redirect(url_for("login"))
+
+    resolution = resolve_current_site_for_user(user)
+    if resolution["status"] == "access_denied_no_site_permission":
+        app.logger.info("zero_site_login_blocked user_id=%s route=site_selector", user["id"])
+        session.clear()
+        flash("您目前沒有可進入的工地", "error")
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        raw_site_id = request.form.get("site_id", "").strip()
+        try:
+            site_id = int(raw_site_id)
+        except (TypeError, ValueError):
+            app.logger.info(
+                "invalid_site_selection user_id=%s site_id=%s reason=invalid_integer",
+                user["id"],
+                raw_site_id,
+            )
+            return _render_site_selector(user=user, status_code=400, error_message="請選擇有效的工地")
+
+        if not user_can_access_site(int(user["id"]), site_id):
+            app.logger.info(
+                "invalid_site_selection user_id=%s site_id=%s reason=not_accessible",
+                user["id"],
+                site_id,
+            )
+            return _render_site_selector(user=user, status_code=403, error_message="你沒有這個工地的使用權限")
+
+        set_current_site_id(site_id)
+        session["site_selection_required"] = False
+        app.logger.info("site_switched user_id=%s site_id=%s", user["id"], site_id)
+        return redirect(url_for("sheet"))
+
+    return _render_site_selector(user=user)
+
+
 @app.route("/sheet")
 @app.route("/sheet/<int:sheet_id>")
 @login_required
 def sheet(sheet_id: int | None = None):
+    if session.get("site_selection_required") is True:
+        app.logger.info(
+            "current_site_cleared user_id=%s reason=sheet_recovery_redirect",
+            session.get("user_id"),
+        )
+        return redirect(url_for("site_selector"))
     with db() as conn:
         resolved = resolve_sheet_id(conn, sheet_id)
     session["sheet_id"] = resolved

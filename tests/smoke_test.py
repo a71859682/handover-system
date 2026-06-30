@@ -464,6 +464,19 @@ with client.session_transaction() as session:
     if session.get("site_selection_required"):
         raise SystemExit("admin login should not require site selection")
 
+admin_selector = client.get("/site-selector")
+if admin_selector.status_code != 200:
+    raise SystemExit("admin should be able to open /site-selector")
+admin_selector_html = admin_selector.get_data(as_text=True)
+if 'name="site_id"' not in admin_selector_html or 'method="post"' not in admin_selector_html:
+    raise SystemExit("site selector page should render site selection form")
+admin_sheet = client.get("/sheet")
+if admin_sheet.status_code != 200:
+    raise SystemExit("admin should be able to open /sheet after login")
+admin_sheet_html = admin_sheet.get_data(as_text=True)
+if "/site-selector" not in admin_sheet_html or module.DEFAULT_SITE_NAME not in admin_sheet_html:
+    raise SystemExit("header should show current site and switch-site entry")
+
 single_login = client.post(
     "/login",
     data={"username": single["username"], "display_name": single["display_name"], "password": "x"},
@@ -479,13 +492,23 @@ with client.session_transaction() as session:
     if session.get("site_selection_required"):
         raise SystemExit("single-site login should not require site selection")
 
+single_selector = client.get("/site-selector")
+if single_selector.status_code != 200:
+    raise SystemExit("single-site user should be able to open /site-selector")
+single_selector_html = single_selector.get_data(as_text=True)
+if 'name="site_id"' not in single_selector_html or secondary_site["site_name"] not in single_selector_html:
+    raise SystemExit("single-site selector should show sole accessible site")
+single_selector_post = client.post("/site-selector", data={"site_id": secondary_site["id"]}, follow_redirects=False)
+if single_selector_post.status_code != 302 or not single_selector_post.headers.get("Location", "").endswith("/sheet"):
+    raise SystemExit("single-site selector submit should return /sheet")
+
 multi_login = client.post(
     "/login",
     data={"username": multi["username"], "display_name": multi["display_name"], "password": "x"},
     follow_redirects=False,
 )
-if multi_login.status_code != 302 or not multi_login.headers.get("Location", "").endswith("/sheet"):
-    raise SystemExit("multi-site login should keep redirect to /sheet")
+if multi_login.status_code != 302 or not multi_login.headers.get("Location", "").endswith("/site-selector"):
+    raise SystemExit("multi-site login should redirect to /site-selector")
 with client.session_transaction() as session:
     if session.get("current_site_id") is not None:
         raise SystemExit("multi-site login should not guess current_site_id")
@@ -494,20 +517,83 @@ with client.session_transaction() as session:
     if session.get("site_selection_required") is not True:
         raise SystemExit("multi-site login should set site_selection_required")
 
+multi_selector = client.get("/site-selector")
+if multi_selector.status_code != 200:
+    raise SystemExit("multi-site user should be able to open /site-selector")
+multi_selector_post = client.post("/site-selector", data={"site_id": secondary_site["id"]}, follow_redirects=False)
+if multi_selector_post.status_code != 302 or not multi_selector_post.headers.get("Location", "").endswith("/sheet"):
+    raise SystemExit("multi-site selector submit should return /sheet")
+with client.session_transaction() as session:
+    if session.get("current_site_id") != secondary_site["id"]:
+        raise SystemExit("multi-site selector should write selected current_site_id")
+    if session.get("current_site_name") != secondary_site["site_name"]:
+        raise SystemExit("multi-site selector should write selected current_site_name")
+    if session.get("site_selection_required"):
+        raise SystemExit("multi-site selector should clear selector flag")
+
 zero_login = client.post(
     "/login",
     data={"username": zero["username"], "display_name": zero["display_name"], "password": "x"},
     follow_redirects=False,
 )
-if zero_login.status_code != 302 or not zero_login.headers.get("Location", "").endswith("/sheet"):
-    raise SystemExit("zero-site login should keep redirect to /sheet in this stage")
+if zero_login.status_code != 302 or not zero_login.headers.get("Location", "").endswith("/login"):
+    raise SystemExit("zero-site login should return to /login")
 with client.session_transaction() as session:
+    if session.get("user_id") is not None:
+        raise SystemExit("zero-site login should not retain authenticated session")
+    if session.get("username") is not None:
+        raise SystemExit("zero-site login should not retain username")
+    if session.get("role") is not None:
+        raise SystemExit("zero-site login should not retain role")
     if session.get("current_site_id") is not None:
         raise SystemExit("zero-site login should not set current_site_id")
     if session.get("current_site_name") is not None:
         raise SystemExit("zero-site login should not set current_site_name")
     if session.get("site_selection_required") is not None:
         raise SystemExit("zero-site login should not set site_selection_required")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["user_id"] = multi["id"]
+    session["username"] = multi["username"]
+    session["display_name"] = multi["display_name"] or multi["username"]
+    session["role"] = multi["role"]
+    session["site_selection_required"] = True
+sheet_recovery = client.get("/sheet", follow_redirects=False)
+if sheet_recovery.status_code != 302 or not sheet_recovery.headers.get("Location", "").endswith("/site-selector"):
+    raise SystemExit("/sheet should recover stale multi-site session by redirecting to /site-selector")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["user_id"] = multi["id"]
+    session["username"] = multi["username"]
+    session["display_name"] = multi["display_name"] or multi["username"]
+    session["role"] = multi["role"]
+    session["site_selection_required"] = True
+invalid_selector_post = client.post("/site-selector", data={"site_id": "invalid"}, follow_redirects=False)
+if invalid_selector_post.status_code != 400:
+    raise SystemExit("invalid selector submission should return 400")
+with client.session_transaction() as session:
+    if session.get("current_site_id") is not None or session.get("current_site_name") is not None:
+        raise SystemExit("invalid selector submission should not write current site")
+    if session.get("site_selection_required") is not True:
+        raise SystemExit("invalid selector submission should keep selector flag")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["user_id"] = single["id"]
+    session["username"] = single["username"]
+    session["display_name"] = single["display_name"] or single["username"]
+    session["role"] = single["role"]
+    session["current_site_id"] = secondary_site["id"]
+    session["current_site_name"] = secondary_site["site_name"]
+    session["site_selection_required"] = False
+forbidden_selector_post = client.post("/site-selector", data={"site_id": default_site_id}, follow_redirects=False)
+if forbidden_selector_post.status_code != 403:
+    raise SystemExit("non-accessible selector submission should return 403")
+with client.session_transaction() as session:
+    if session.get("current_site_id") != secondary_site["id"] or session.get("current_site_name") != secondary_site["site_name"]:
+        raise SystemExit("forbidden selector submission should keep existing current site")
 
 with client.session_transaction() as session:
     session["user_id"] = admin["id"]
