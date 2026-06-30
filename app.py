@@ -1328,6 +1328,10 @@ def _handle_grid_read_lookup_error(exc: LookupError):
     raise exc
 
 
+def progress_api_error(message: str, *, status: int = 400):
+    return jsonify({"ok": False, "message": message}), status
+
+
 def authorize_sheet_read(conn: sqlite3.Connection, sheet_id: int) -> None:
     sheet_row = _get_sheet_row(conn, int(sheet_id))
     if sheet_row is None:
@@ -1337,6 +1341,71 @@ def authorize_sheet_read(conn: sqlite3.Connection, sheet_id: int) -> None:
         return
     if int(sheet_row["site_id"] or 0) != int(current_site_id):
         raise LookupError("sheet_not_in_current_site")
+
+
+def resolve_progress_write_context(conn: sqlite3.Connection, *, unit_id: int, task_id: int) -> dict[str, int]:
+    unit_row = conn.execute(
+        """
+        SELECT u.id AS unit_id, f.sheet_id AS sheet_id, s.site_id AS site_id
+        FROM units u
+        JOIN floors f ON f.id = u.floor_id
+        JOIN sheets s ON s.id = f.sheet_id
+        WHERE u.id = ?
+        """,
+        (unit_id,),
+    ).fetchone()
+    if unit_row is None:
+        raise LookupError("unit_not_found")
+
+    task_row = conn.execute(
+        "SELECT id, sheet_id FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task_row is None:
+        raise LookupError("task_not_found")
+
+    if int(task_row["sheet_id"] or 0) != int(unit_row["sheet_id"] or 0):
+        raise LookupError("unit_task_sheet_mismatch")
+
+    return {
+        "unit_id": int(unit_row["unit_id"]),
+        "task_id": int(task_row["id"]),
+        "sheet_id": int(unit_row["sheet_id"]),
+        "site_id": int(unit_row["site_id"]),
+    }
+
+
+def authorize_progress_write(conn: sqlite3.Connection, *, unit_id: int, task_id: int) -> dict[str, int]:
+    context = resolve_progress_write_context(conn, unit_id=unit_id, task_id=task_id)
+    user = _current_internal_user()
+    if user is None:
+        raise LookupError("auth_required")
+    if is_global_admin(user):
+        return context
+
+    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    if int(context["site_id"]) != int(current_site_id):
+        raise LookupError("write_target_not_in_current_site")
+    return context
+
+
+def _handle_progress_write_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "unit_not_found":
+        return progress_api_error("unit_id was not found.", status=404)
+    if code == "task_not_found":
+        return progress_api_error("task_id was not found.", status=404)
+    if code == "unit_task_sheet_mismatch":
+        return progress_api_error("unit_id and task_id do not belong to the same sheet.", status=409)
+    if code == "site_context_invalid":
+        return progress_api_error("current_site_id is missing or invalid.", status=403)
+    if code == "site_permission_missing":
+        return progress_api_error("current user no longer has permission for the current site.", status=403)
+    if code == "write_target_not_in_current_site":
+        return progress_api_error("write target does not belong to the current site.", status=403)
+    if code == "auth_required":
+        return progress_api_error("authentication is required.", status=403)
+    raise exc
 
 
 def normalize_vendor_name(value: str) -> str:
@@ -2996,6 +3065,10 @@ def api_progress():
     if value not in (DONE_VALUE, WORKING_VALUE):
         return jsonify({"ok": False, "message": "狀態只能是 O 或 X。"}), 400
     with db() as conn:
+        try:
+            progress_context = authorize_progress_write(conn, unit_id=unit_id, task_id=task_id)
+        except LookupError as exc:
+            return _handle_progress_write_lookup_error(exc)
         conn.execute(
             """
             INSERT INTO progress (unit_id, task_id, value, updated_by, updated_at)
@@ -3007,11 +3080,7 @@ def api_progress():
             """,
             (unit_id, task_id, value, session["user_id"]),
         )
-    sheet_row = query_one(
-        "SELECT f.sheet_id FROM units u JOIN floors f ON f.id = u.floor_id WHERE u.id = ?",
-        (unit_id,),
-    )
-    return jsonify({"ok": True, "grid": render_grid_payload(sheet_row["sheet_id"] if sheet_row else session.get("sheet_id"))})
+    return jsonify({"ok": True, "grid": render_grid_payload(progress_context["sheet_id"])})
 
 
 @app.route("/api/unit-extra", methods=["POST"])

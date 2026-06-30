@@ -3388,6 +3388,158 @@ def run_site_read_isolation_smoke(db_path: Path) -> None:
         raise AssertionError("check_site_read_isolation.py smoke subprocess did not report PASS.")
 
 
+def run_progress_write_isolation_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+from pathlib import Path
+import sqlite3
+import sys
+
+sample_db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = sample_db_path
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+
+conn = sqlite3.connect(sample_db_path)
+conn.row_factory = sqlite3.Row
+default_site_id = module.ensure_site_foundation_schema(conn)
+default_site_name = conn.execute("SELECT site_name FROM sites WHERE id = ?", (default_site_id,)).fetchone()["site_name"]
+secondary_site_id = conn.execute(
+    "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+    ("__write_iso_secondary__", "write-iso-secondary"),
+).fetchone()["id"]
+secondary_sheet_id = conn.execute(
+    "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+    ("__write_iso_sheet__", 99, secondary_site_id),
+).fetchone()["id"]
+secondary_floor_id = conn.execute(
+    "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, ?)",
+    (secondary_sheet_id, 99, "9F", "B", 1),
+).lastrowid
+secondary_unit_id = conn.execute(
+    "INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?)",
+    (secondary_floor_id, 1, "901"),
+).lastrowid
+secondary_task_id = conn.execute(
+    "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)",
+    (secondary_sheet_id, 5, "Vendor B", "Room B", "Task B"),
+).lastrowid
+conn.execute(
+    "INSERT INTO progress (unit_id, task_id, value, updated_by, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+    (secondary_unit_id, secondary_task_id, module.WORKING_VALUE, 1),
+)
+password_hash = module.generate_password_hash("x")
+conn.execute(
+    "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+    ("write_member", "write_member", password_hash, "member"),
+)
+member_id = conn.execute("SELECT id FROM users WHERE username = 'write_member'").fetchone()["id"]
+conn.execute(
+    "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+    (member_id, default_site_id, "member"),
+)
+conn.commit()
+
+client = module.app.test_client()
+
+def set_member_session(*, with_current_site=True):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = int(member_id)
+        session["username"] = "write_member"
+        session["display_name"] = "write_member"
+        session["role"] = "member"
+        if with_current_site:
+            session["current_site_id"] = int(default_site_id)
+            session["current_site_name"] = str(default_site_name)
+            session["site_selection_required"] = False
+
+set_member_session()
+same_site_response = client.post(
+    "/api/progress",
+    json={"unit_id": 1, "task_id": 1, "value": module.DONE_VALUE},
+)
+if same_site_response.status_code != 200:
+    raise SystemExit("same-site progress write should succeed")
+same_site_value = conn.execute(
+    "SELECT value FROM progress WHERE unit_id = 1 AND task_id = 1"
+).fetchone()["value"]
+if same_site_value != module.DONE_VALUE:
+    raise SystemExit("same-site progress write should update progress row")
+
+set_member_session()
+cross_site_response = client.post(
+    "/api/progress",
+    json={"unit_id": int(secondary_unit_id), "task_id": int(secondary_task_id), "value": module.DONE_VALUE},
+)
+if cross_site_response.status_code != 403:
+    raise SystemExit("cross-site progress write should be rejected with 403")
+cross_site_value = conn.execute(
+    "SELECT value FROM progress WHERE unit_id = ? AND task_id = ?",
+    (secondary_unit_id, secondary_task_id),
+).fetchone()["value"]
+if cross_site_value != module.WORKING_VALUE:
+    raise SystemExit("cross-site progress write must not change progress row")
+
+set_member_session(with_current_site=False)
+missing_site_response = client.post(
+    "/api/progress",
+    json={"unit_id": 1, "task_id": 1, "value": module.WORKING_VALUE},
+)
+if missing_site_response.status_code != 403:
+    raise SystemExit("missing current site should be rejected with 403")
+
+set_member_session()
+conn.execute("DELETE FROM user_site_permissions WHERE user_id = ?", (member_id,))
+conn.commit()
+permission_removed_response = client.post(
+    "/api/progress",
+    json={"unit_id": 1, "task_id": 1, "value": module.WORKING_VALUE},
+)
+if permission_removed_response.status_code != 403:
+    raise SystemExit("permission removed should be rejected with 403")
+post_permission_removed_value = conn.execute(
+    "SELECT value FROM progress WHERE unit_id = 1 AND task_id = 1"
+).fetchone()["value"]
+if post_permission_removed_value != module.DONE_VALUE:
+    raise SystemExit("permission-removed progress write must not change stored value")
+
+conn.execute(
+    "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+    (member_id, default_site_id, "member"),
+)
+conn.commit()
+set_member_session()
+unit_task_mismatch_response = client.post(
+    "/api/progress",
+    json={"unit_id": 1, "task_id": int(secondary_task_id), "value": module.WORKING_VALUE},
+)
+if unit_task_mismatch_response.status_code != 409:
+    raise SystemExit("unit/task mismatch should be rejected with 409")
+
+conn.close()
+print("progress write isolation smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "progress write isolation smoke PASS" not in result.stdout:
+        raise AssertionError("progress write isolation smoke subprocess did not report PASS.")
+
+
 def run_site_write_isolation_readiness_smoke() -> None:
     script_path = TOOLS_DIR / "check_site_write_isolation_readiness.py"
     if not script_path.exists():
@@ -3405,6 +3557,7 @@ def run_site_write_isolation_readiness_smoke() -> None:
     )
     required_fragments = (
         "PASS site write isolation readiness check passed.",
+        "status: ENFORCED",
         "/api/progress",
         "/api/unit-extra",
         "/api/vendor-contact",
@@ -3467,6 +3620,7 @@ def main() -> int:
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_site_permission_management_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_site_read_isolation_smoke(db_path)
+        run_progress_write_isolation_smoke(db_path)
         run_site_write_isolation_readiness_smoke()
 
     if redact_database_url("postgresql://user:secret@localhost:5432/demo") != "postgresql://user:***@localhost:5432/demo":
@@ -3549,10 +3703,12 @@ def main() -> int:
     if "site_read_isolation_scope: sqlite_only" not in site_read_isolation_result.stdout or "PASS site read isolation check passed." not in site_read_isolation_result.stdout:
         raise AssertionError("check_site_read_isolation.py did not report expected PASS output.")
     site_write_isolation_result = run_script("check_site_write_isolation_readiness.py", env={"DATABASE_URL": ""})
-    if "site_write_isolation_readiness_scope: inventory_only" not in site_write_isolation_result.stdout:
-        raise AssertionError("check_site_write_isolation_readiness.py did not report expected inventory-only scope.")
+    if "site_write_isolation_readiness_scope: staged_enforcement" not in site_write_isolation_result.stdout:
+        raise AssertionError("check_site_write_isolation_readiness.py did not report expected staged enforcement scope.")
     if "PASS site write isolation readiness check passed." not in site_write_isolation_result.stdout:
         raise AssertionError("check_site_write_isolation_readiness.py did not report expected PASS output.")
+    if "status: ENFORCED" not in site_write_isolation_result.stdout:
+        raise AssertionError("check_site_write_isolation_readiness.py did not report ENFORCED status for /api/progress.")
     for fragment in ("/api/progress", "/api/unit-extra", "/api/vendor-contact", "/api/vendor-work-entry"):
         if fragment not in site_write_isolation_result.stdout:
             raise AssertionError(f"check_site_write_isolation_readiness.py missing expected inventory fragment: {fragment}")

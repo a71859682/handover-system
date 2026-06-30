@@ -15,6 +15,7 @@ class InventoryItem:
     action: str
     target_tables: tuple[str, ...]
     category: str
+    status: str
     risk: str
     site_scoped: str
     current_site_enforced: str
@@ -29,18 +30,24 @@ HIGH_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="save_progress",
         target_tables=("progress",),
         category="high-risk non-admin site-scoped write path",
+        status="ENFORCED",
         risk="high",
         site_scoped="yes",
-        current_site_enforced="no",
+        current_site_enforced="yes",
         ownership_validation_required="yes",
-        recommendation="Add current_site + site permission + target ownership enforcement in a future write isolation stage.",
-        source_markers=('@app.route("/api/progress", methods=["POST"])',),
+        recommendation="Current-site, site permission, and unit/task ownership validation are enforced before progress writes.",
+        source_markers=(
+            '@app.route("/api/progress", methods=["POST"])',
+            'progress_context = authorize_progress_write(conn, unit_id=unit_id, task_id=task_id)',
+            'return _handle_progress_write_lookup_error(exc)',
+        ),
     ),
     InventoryItem(
         route="/api/unit-extra",
         action="save_unit_extra",
         target_tables=("unit_extra", "unit_extra_values"),
         category="high-risk non-admin site-scoped write path",
+        status="INVENTORY ONLY",
         risk="high",
         site_scoped="yes",
         current_site_enforced="no",
@@ -53,6 +60,7 @@ HIGH_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="save_vendor_contact",
         target_tables=("vendor_contacts",),
         category="high-risk non-admin site-scoped write path",
+        status="INVENTORY ONLY",
         risk="high",
         site_scoped="yes",
         current_site_enforced="no",
@@ -65,6 +73,7 @@ HIGH_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="save_vendor_work_entry",
         target_tables=("vendor_work_entries",),
         category="high-risk non-admin site-scoped write path",
+        status="INVENTORY ONLY",
         risk="high",
         site_scoped="yes",
         current_site_enforced="no",
@@ -81,6 +90,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="reset_sheet",
         target_tables=("progress", "unit_extra", "unit_extra_values"),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -93,6 +103,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="create_sheet",
         target_tables=("sheets", "extra_fields"),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -105,6 +116,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="delete_sheet",
         target_tables=("sheets", "tasks", "floors", "units", "progress", "unit_extra", "unit_extra_values", "extra_fields"),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -117,6 +129,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="add_task",
         target_tables=("tasks", "progress"),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -129,6 +142,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="delete_task",
         target_tables=("tasks", "progress"),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -141,6 +155,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="add_extra_field",
         target_tables=("extra_fields",),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -153,6 +168,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="delete_extra_field",
         target_tables=("extra_fields",),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -165,6 +181,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="add_floor",
         target_tables=("floors",),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -177,6 +194,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="delete_floor",
         target_tables=("floors", "units", "progress", "unit_extra", "unit_extra_values"),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -189,6 +207,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="add_unit",
         target_tables=("units", "progress", "unit_extra"),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -201,6 +220,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="delete_unit",
         target_tables=("units", "progress", "unit_extra", "unit_extra_values"),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -213,6 +233,7 @@ MEDIUM_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="default_save",
         target_tables=("sheets", "meta", "tasks", "extra_fields", "floors", "units"),
         category="medium-risk admin global/site-scoped write path",
+        status="INVENTORY ONLY",
         risk="medium",
         site_scoped="yes",
         current_site_enforced="not_applicable",
@@ -229,6 +250,7 @@ EXCLUDED_ITEMS: tuple[InventoryItem, ...] = (
         action="create_user",
         target_tables=("users",),
         category="excluded non-goal path",
+        status="EXCLUDED",
         risk="low",
         site_scoped="no",
         current_site_enforced="not_applicable",
@@ -241,6 +263,7 @@ EXCLUDED_ITEMS: tuple[InventoryItem, ...] = (
         action="update_user",
         target_tables=("users",),
         category="excluded non-goal path",
+        status="EXCLUDED",
         risk="low",
         site_scoped="no",
         current_site_enforced="not_applicable",
@@ -253,6 +276,7 @@ EXCLUDED_ITEMS: tuple[InventoryItem, ...] = (
         action="delete_user",
         target_tables=("users", "user_site_permissions"),
         category="excluded non-goal path",
+        status="EXCLUDED",
         risk="low",
         site_scoped="no",
         current_site_enforced="not_applicable",
@@ -265,6 +289,7 @@ EXCLUDED_ITEMS: tuple[InventoryItem, ...] = (
         action="add_site_permission",
         target_tables=("user_site_permissions",),
         category="excluded non-goal path",
+        status="EXCLUDED",
         risk="low",
         site_scoped="no",
         current_site_enforced="not_applicable",
@@ -277,6 +302,7 @@ EXCLUDED_ITEMS: tuple[InventoryItem, ...] = (
         action="update_site_permission",
         target_tables=("user_site_permissions",),
         category="excluded non-goal path",
+        status="EXCLUDED",
         risk="low",
         site_scoped="no",
         current_site_enforced="not_applicable",
@@ -289,6 +315,7 @@ EXCLUDED_ITEMS: tuple[InventoryItem, ...] = (
         action="delete_site_permission",
         target_tables=("user_site_permissions",),
         category="excluded non-goal path",
+        status="EXCLUDED",
         risk="low",
         site_scoped="no",
         current_site_enforced="not_applicable",
@@ -301,6 +328,7 @@ EXCLUDED_ITEMS: tuple[InventoryItem, ...] = (
         action="login_session",
         target_tables=("session",),
         category="excluded non-goal path",
+        status="EXCLUDED",
         risk="low",
         site_scoped="no",
         current_site_enforced="not_applicable",
@@ -313,6 +341,7 @@ EXCLUDED_ITEMS: tuple[InventoryItem, ...] = (
         action="logout_session_clear",
         target_tables=("session",),
         category="excluded non-goal path",
+        status="EXCLUDED",
         risk="low",
         site_scoped="no",
         current_site_enforced="not_applicable",
@@ -325,6 +354,7 @@ EXCLUDED_ITEMS: tuple[InventoryItem, ...] = (
         action="set_current_site",
         target_tables=("session",),
         category="excluded non-goal path",
+        status="EXCLUDED",
         risk="low",
         site_scoped="no",
         current_site_enforced="not_applicable",
@@ -349,6 +379,7 @@ def render_item(item: InventoryItem) -> None:
     print(f"action: {item.action}")
     print(f"target_tables: {', '.join(item.target_tables)}")
     print(f"category: {item.category}")
+    print(f"status: {item.status}")
     print(f"risk: {item.risk}")
     print(f"site_scoped: {item.site_scoped}")
     print(f"current_site_enforced: {item.current_site_enforced}")
@@ -360,10 +391,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Check site write isolation readiness inventory.")
     parser.parse_args()
 
-    print("site_write_isolation_readiness_scope: inventory_only")
+    print("site_write_isolation_readiness_scope: staged_enforcement")
     print(f"app_source: {APP_PATH}")
-    print("WARNING P-3B-1 is inventory-only")
-    print("WARNING high-risk paths are not yet enforced")
+    print("WARNING P-3B-2A applies enforcement only to /api/progress")
+    print("WARNING remaining high-risk paths are not yet enforced")
     print("WARNING formal write isolation is deferred to a later stage")
 
     source = APP_PATH.read_text(encoding="utf-8")
