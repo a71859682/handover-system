@@ -1500,6 +1500,109 @@ def normalize_vendor_name(value: str) -> str:
     return vendor_name
 
 
+def validate_vendor_belongs_to_sheet(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    vendor_name: str,
+) -> None:
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM tasks
+        WHERE sheet_id = ? AND TRIM(COALESCE(vendor, '')) = ?
+        LIMIT 1
+        """,
+        (sheet_id, vendor_name),
+    ).fetchone()
+    if row is None:
+        raise LookupError("vendor_not_in_sheet")
+
+
+def resolve_vendor_contact_write_context(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    vendor_name: str,
+    contact_id: int | None = None,
+) -> dict[str, object]:
+    sheet_row = conn.execute("SELECT id, site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+    if sheet_row is None:
+        raise LookupError("sheet_not_found")
+
+    validate_vendor_belongs_to_sheet(conn, sheet_id=sheet_id, vendor_name=vendor_name)
+
+    existing_contact_order: int | None = None
+    if contact_id is not None:
+        existing_contact = conn.execute(
+            """
+            SELECT id, sheet_id, vendor_name, contact_order
+            FROM vendor_contacts
+            WHERE id = ?
+            """,
+            (contact_id,),
+        ).fetchone()
+        if existing_contact is None:
+            raise LookupError("contact_not_found")
+        if int(existing_contact["sheet_id"] or 0) != int(sheet_id):
+            raise LookupError("cross_sheet_update_not_allowed")
+        existing_contact_order = int(existing_contact["contact_order"] or 0)
+
+    return {
+        "sheet_id": int(sheet_row["id"]),
+        "site_id": int(sheet_row["site_id"]),
+        "vendor_name": vendor_name,
+        "contact_id": contact_id,
+        "existing_contact_order": existing_contact_order,
+    }
+
+
+def authorize_vendor_contact_write(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    vendor_name: str,
+    contact_id: int | None = None,
+) -> dict[str, object]:
+    context = resolve_vendor_contact_write_context(
+        conn,
+        sheet_id=sheet_id,
+        vendor_name=vendor_name,
+        contact_id=contact_id,
+    )
+    user = _current_internal_user()
+    if user is None:
+        raise LookupError("auth_required")
+    if is_global_admin(user):
+        return context
+
+    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    if int(context["site_id"]) != int(current_site_id):
+        raise LookupError("write_target_not_in_current_site")
+    return context
+
+
+def _handle_vendor_contact_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "sheet_not_found":
+        return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+    if code == "vendor_not_in_sheet":
+        return crew_api_error("vendor_not_in_sheet", "vendor_name does not belong to the requested sheet.", status=404)
+    if code == "contact_not_found":
+        return crew_api_error("contact_not_found", "contact id was not found.", status=404)
+    if code == "cross_sheet_update_not_allowed":
+        return crew_api_error("cross_sheet_update_not_allowed", "contact does not belong to the requested sheet.", status=400)
+    if code == "site_context_invalid":
+        return crew_api_error("site_context_invalid", "current_site_id is missing or invalid.", status=403)
+    if code == "site_permission_missing":
+        return crew_api_error("site_permission_missing", "current user no longer has permission for the current site.", status=403)
+    if code == "write_target_not_in_current_site":
+        return crew_api_error("write_target_not_in_current_site", "write target does not belong to the current site.", status=403)
+    if code == "auth_required":
+        return crew_api_error("auth_required", "authentication is required.", status=403)
+    raise exc
+
+
 def get_active_crew_vendors(sheet_id: int) -> list[str]:
     with db() as conn:
         tasks = conn.execute(
@@ -3346,28 +3449,17 @@ def api_vendor_contact():
 
     with db() as conn:
         try:
-            require_sheet_exists(conn, sheet_id)
-        except LookupError:
-            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+            vendor_contact_context = authorize_vendor_contact_write(
+                conn,
+                sheet_id=sheet_id,
+                vendor_name=vendor_name,
+                contact_id=contact_id,
+            )
+        except LookupError as exc:
+            return _handle_vendor_contact_lookup_error(exc)
         if contact_id is not None:
-            existing_contact = conn.execute(
-                """
-                SELECT id, sheet_id, vendor_name
-                FROM vendor_contacts
-                WHERE id = ?
-                """,
-                (contact_id,),
-            ).fetchone()
-            if existing_contact is None:
-                return crew_api_error("contact_not_found", "contact id was not found.", status=404)
-            if existing_contact["sheet_id"] != sheet_id:
-                return crew_api_error("cross_sheet_update_not_allowed", "contact does not belong to the requested sheet.", status=400)
             if contact_order is None:
-                current_order = conn.execute(
-                    "SELECT contact_order FROM vendor_contacts WHERE id = ?",
-                    (contact_id,),
-                ).fetchone()
-                contact_order = int(current_order["contact_order"]) if current_order else 0
+                contact_order = int(vendor_contact_context["existing_contact_order"] or 0)
             conn.execute(
                 """
                 UPDATE vendor_contacts
@@ -3386,9 +3478,10 @@ def api_vendor_contact():
             cur = conn.execute(
                 """
                 INSERT INTO vendor_contacts (
-                    sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order
+                    sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                 (sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order),
             )

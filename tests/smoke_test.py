@@ -802,6 +802,24 @@ with module.db() as conn:
         "UPDATE progress SET value = ? WHERE task_id = ?",
         (module.DONE_VALUE, task_ids[3]),
     )
+    next_col_index = conn.execute("SELECT COALESCE(MAX(col_index), 0) FROM tasks").fetchone()[0]
+    for vendor_name in ("VendorZ", "VendorTitleOnly", "VendorNameOnly", "VendorEmptyDisplay"):
+        next_col_index += 1
+        conn.execute(
+            '''
+            INSERT INTO tasks (sheet_id, col_index, vendor, location, name)
+            VALUES (?, ?, ?, ?, ?)
+            ''',
+            (sheet_id, next_col_index, vendor_name, "Room", f"{vendor_name} Placeholder"),
+        )
+    next_col_index += 1
+    conn.execute(
+        '''
+        INSERT INTO tasks (sheet_id, col_index, vendor, location, name)
+        VALUES (?, ?, ?, ?, ?)
+        ''',
+        (2, next_col_index, "VendorZ", "Room", "VendorZ Cross Sheet Placeholder"),
+    )
 
     conn.execute(
         "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_phone) VALUES (?, ?, ?, ?)",
@@ -3405,6 +3423,7 @@ module.app.testing = True
 
 conn = sqlite3.connect(sample_db_path)
 conn.row_factory = sqlite3.Row
+module.ensure_vendor_contacts_schema(conn)
 default_site_id = module.ensure_site_foundation_schema(conn)
 default_site_name = conn.execute("SELECT site_name FROM sites WHERE id = ?", (default_site_id,)).fetchone()["site_name"]
 secondary_site_id = conn.execute(
@@ -3557,6 +3576,7 @@ module.app.testing = True
 
 conn = sqlite3.connect(sample_db_path)
 conn.row_factory = sqlite3.Row
+module.ensure_vendor_contacts_schema(conn)
 default_site_id = module.ensure_site_foundation_schema(conn)
 default_site_name = conn.execute("SELECT site_name FROM sites WHERE id = ?", (default_site_id,)).fetchone()["site_name"]
 secondary_site_id = conn.execute(
@@ -3711,6 +3731,287 @@ print("unit-extra write isolation smoke PASS")
         raise AssertionError("unit-extra write isolation smoke subprocess did not report PASS.")
 
 
+def run_vendor_contact_write_isolation_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+from pathlib import Path
+import sqlite3
+import sys
+
+sample_db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = sample_db_path
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+
+conn = sqlite3.connect(sample_db_path)
+conn.row_factory = sqlite3.Row
+module.ensure_vendor_contacts_schema(conn)
+default_site_id = module.ensure_site_foundation_schema(conn)
+default_site_name = conn.execute("SELECT site_name FROM sites WHERE id = ?", (default_site_id,)).fetchone()["site_name"]
+secondary_site_id = conn.execute(
+    "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+    ("__vendor_contact_secondary__", "vendor-contact-secondary"),
+).fetchone()["id"]
+secondary_sheet_id = conn.execute(
+    "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+    ("__vendor_contact_sheet__", 97, secondary_site_id),
+).fetchone()["id"]
+max_col_index = conn.execute("SELECT COALESCE(MAX(col_index), 0) FROM tasks").fetchone()[0]
+conn.execute(
+    "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)",
+    (1, max_col_index + 1, "VendorAllowedDefault", "Room A", "Vendor Default Task"),
+)
+conn.execute(
+    "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)",
+    (secondary_sheet_id, max_col_index + 2, "VendorAllowedSecondary", "Room B", "Vendor Secondary Task"),
+)
+password_hash = module.generate_password_hash("x")
+conn.execute(
+    "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+    ("vendor_contact_member", "vendor_contact_member", password_hash, "member"),
+)
+member_id = conn.execute("SELECT id FROM users WHERE username = 'vendor_contact_member'").fetchone()["id"]
+conn.execute(
+    "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+    (member_id, default_site_id, "member"),
+)
+conn.execute(
+    '''
+    INSERT INTO vendor_contacts (
+        sheet_id, vendor_name, contact_name, contact_title, contact_phone,
+        is_primary, contact_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ''',
+    (1, "VendorAllowedDefault", "Default Contact", "Lead", "0900000001", 1, 0),
+)
+default_contact_id = conn.execute(
+    "SELECT id FROM vendor_contacts WHERE sheet_id = 1 AND vendor_name = ?",
+    ("VendorAllowedDefault",),
+).fetchone()["id"]
+conn.execute(
+    '''
+    INSERT INTO vendor_contacts (
+        sheet_id, vendor_name, contact_name, contact_title, contact_phone,
+        is_primary, contact_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ''',
+    (secondary_sheet_id, "VendorAllowedSecondary", "Secondary Contact", "Lead", "0900000002", 1, 0),
+)
+secondary_contact_id = conn.execute(
+    "SELECT id FROM vendor_contacts WHERE sheet_id = ? AND vendor_name = ?",
+    (secondary_sheet_id, "VendorAllowedSecondary"),
+).fetchone()["id"]
+conn.commit()
+
+client = module.app.test_client()
+
+def set_member_session(*, with_current_site=True):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = int(member_id)
+        session["username"] = "vendor_contact_member"
+        session["display_name"] = "vendor_contact_member"
+        session["role"] = "member"
+        if with_current_site:
+            session["current_site_id"] = int(default_site_id)
+            session["current_site_name"] = str(default_site_name)
+            session["site_selection_required"] = False
+
+def count_contacts(sheet_id, vendor_name):
+    return conn.execute(
+        "SELECT COUNT(*) FROM vendor_contacts WHERE sheet_id = ? AND vendor_name = ?",
+        (sheet_id, vendor_name),
+    ).fetchone()[0]
+
+def fetch_contact(contact_id):
+    return conn.execute(
+        "SELECT vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order FROM vendor_contacts WHERE id = ?",
+        (contact_id,),
+    ).fetchone()
+
+set_member_session()
+same_site_create = client.post(
+    "/api/vendor-contact",
+    json={
+        "sheet_id": 1,
+        "vendor_name": "VendorAllowedDefault",
+        "contact_name": "Create Contact",
+        "contact_title": "Supervisor",
+        "contact_phone": "0900000010",
+        "is_primary": 0,
+    },
+)
+if same_site_create.status_code != 200 or not same_site_create.get_json().get("ok"):
+    raise SystemExit("same-site vendor-contact create should succeed")
+if count_contacts(1, "VendorAllowedDefault") != 2:
+    raise SystemExit("same-site vendor-contact create should insert a new row")
+
+set_member_session()
+same_site_update = client.post(
+    "/api/vendor-contact",
+    json={
+        "id": int(default_contact_id),
+        "sheet_id": 1,
+        "vendor_name": "VendorAllowedDefault",
+        "contact_name": "Updated Contact",
+        "contact_title": "Coordinator",
+        "contact_phone": "0900000011",
+        "is_primary": 1,
+        "contact_order": 0,
+    },
+)
+if same_site_update.status_code != 200 or not same_site_update.get_json().get("ok"):
+    raise SystemExit("same-site vendor-contact update should succeed")
+updated_default = fetch_contact(default_contact_id)
+if updated_default["contact_name"] != "Updated Contact" or updated_default["contact_title"] != "Coordinator":
+    raise SystemExit("same-site vendor-contact update should persist updated values")
+
+set_member_session()
+before_cross_site_create = count_contacts(secondary_sheet_id, "VendorAllowedSecondary")
+cross_site_create = client.post(
+    "/api/vendor-contact",
+    json={
+        "sheet_id": int(secondary_sheet_id),
+        "vendor_name": "VendorAllowedSecondary",
+        "contact_name": "Cross Site Create",
+        "contact_title": "",
+        "contact_phone": "0900000099",
+        "is_primary": 0,
+    },
+)
+if cross_site_create.status_code != 403:
+    raise SystemExit("cross-site vendor-contact create should be rejected with 403")
+if count_contacts(secondary_sheet_id, "VendorAllowedSecondary") != before_cross_site_create:
+    raise SystemExit("cross-site vendor-contact create must not change row count")
+
+set_member_session()
+before_cross_site_update = dict(fetch_contact(secondary_contact_id))
+cross_site_update = client.post(
+    "/api/vendor-contact",
+    json={
+        "id": int(secondary_contact_id),
+        "sheet_id": int(secondary_sheet_id),
+        "vendor_name": "VendorAllowedSecondary",
+        "contact_name": "Cross Site Update",
+        "contact_title": "Blocked",
+        "contact_phone": "0900000022",
+        "is_primary": 1,
+        "contact_order": 0,
+    },
+)
+if cross_site_update.status_code != 403:
+    raise SystemExit("cross-site vendor-contact update should be rejected with 403")
+after_cross_site_update = dict(fetch_contact(secondary_contact_id))
+if after_cross_site_update != before_cross_site_update:
+    raise SystemExit("cross-site vendor-contact update must not modify stored row")
+
+set_member_session(with_current_site=False)
+before_missing_site = count_contacts(1, "VendorAllowedDefault")
+missing_site = client.post(
+    "/api/vendor-contact",
+    json={
+        "sheet_id": 1,
+        "vendor_name": "VendorAllowedDefault",
+        "contact_name": "Missing Site",
+        "contact_title": "",
+        "contact_phone": "0900000012",
+        "is_primary": 0,
+    },
+)
+if missing_site.status_code != 403:
+    raise SystemExit("missing current site should reject vendor-contact write with 403")
+if count_contacts(1, "VendorAllowedDefault") != before_missing_site:
+    raise SystemExit("missing current site must not change contact rows")
+
+set_member_session()
+conn.execute("DELETE FROM user_site_permissions WHERE user_id = ?", (member_id,))
+conn.commit()
+before_permission_removed = count_contacts(1, "VendorAllowedDefault")
+permission_removed = client.post(
+    "/api/vendor-contact",
+    json={
+        "sheet_id": 1,
+        "vendor_name": "VendorAllowedDefault",
+        "contact_name": "Permission Removed",
+        "contact_title": "",
+        "contact_phone": "0900000013",
+        "is_primary": 0,
+    },
+)
+if permission_removed.status_code != 403:
+    raise SystemExit("permission removed should reject vendor-contact write with 403")
+if count_contacts(1, "VendorAllowedDefault") != before_permission_removed:
+    raise SystemExit("permission removed must not change contact rows")
+
+conn.execute(
+    "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+    (member_id, default_site_id, "member"),
+)
+conn.commit()
+set_member_session()
+before_vendor_not_in_sheet = count_contacts(1, "VendorAllowedDefault")
+vendor_not_in_sheet = client.post(
+    "/api/vendor-contact",
+    json={
+        "sheet_id": 1,
+        "vendor_name": "VendorMissing",
+        "contact_name": "Unknown Vendor",
+        "contact_title": "",
+        "contact_phone": "0900000014",
+        "is_primary": 0,
+    },
+)
+if vendor_not_in_sheet.status_code != 404:
+    raise SystemExit("vendor not in sheet should be rejected with 404")
+if count_contacts(1, "VendorAllowedDefault") != before_vendor_not_in_sheet:
+    raise SystemExit("vendor-not-in-sheet rejection must not affect existing rows")
+
+set_member_session()
+before_contact_mismatch = dict(fetch_contact(default_contact_id))
+contact_mismatch = client.post(
+    "/api/vendor-contact",
+    json={
+        "id": int(default_contact_id),
+        "sheet_id": int(secondary_sheet_id),
+        "vendor_name": "VendorAllowedSecondary",
+        "contact_name": "Wrong Sheet",
+        "contact_title": "",
+        "contact_phone": "0900000015",
+        "is_primary": 0,
+        "contact_order": 0,
+    },
+)
+if contact_mismatch.status_code != 400:
+    raise SystemExit("contact mismatch should be rejected with 400")
+if contact_mismatch.get_json()["error"]["code"] != "cross_sheet_update_not_allowed":
+    raise SystemExit("contact mismatch should preserve cross_sheet_update_not_allowed error code")
+after_contact_mismatch = dict(fetch_contact(default_contact_id))
+if after_contact_mismatch != before_contact_mismatch:
+    raise SystemExit("contact mismatch must not modify stored row")
+
+conn.close()
+print("vendor-contact write isolation smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "vendor-contact write isolation smoke PASS" not in result.stdout:
+        raise AssertionError("vendor-contact write isolation smoke subprocess did not report PASS.")
+
+
 def run_site_write_isolation_readiness_smoke() -> None:
     script_path = TOOLS_DIR / "check_site_write_isolation_readiness.py"
     if not script_path.exists():
@@ -3793,6 +4094,7 @@ def main() -> int:
         run_site_read_isolation_smoke(db_path)
         run_progress_write_isolation_smoke(db_path)
         run_unit_extra_write_isolation_smoke(db_path)
+        run_vendor_contact_write_isolation_smoke(db_path)
         run_site_write_isolation_readiness_smoke()
 
     if redact_database_url("postgresql://user:secret@localhost:5432/demo") != "postgresql://user:***@localhost:5432/demo":
@@ -3879,8 +4181,8 @@ def main() -> int:
         raise AssertionError("check_site_write_isolation_readiness.py did not report expected staged enforcement scope.")
     if "PASS site write isolation readiness check passed." not in site_write_isolation_result.stdout:
         raise AssertionError("check_site_write_isolation_readiness.py did not report expected PASS output.")
-    if site_write_isolation_result.stdout.count("status: ENFORCED") < 2:
-        raise AssertionError("check_site_write_isolation_readiness.py did not report ENFORCED status for both enforced write paths.")
+    if site_write_isolation_result.stdout.count("status: ENFORCED") < 3:
+        raise AssertionError("check_site_write_isolation_readiness.py did not report ENFORCED status for all enforced write paths.")
     for fragment in ("/api/progress", "/api/unit-extra", "/api/vendor-contact", "/api/vendor-work-entry"):
         if fragment not in site_write_isolation_result.stdout:
             raise AssertionError(f"check_site_write_isolation_readiness.py missing expected inventory fragment: {fragment}")
