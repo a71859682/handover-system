@@ -3540,6 +3540,177 @@ print("progress write isolation smoke PASS")
         raise AssertionError("progress write isolation smoke subprocess did not report PASS.")
 
 
+def run_unit_extra_write_isolation_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+from pathlib import Path
+import sqlite3
+import sys
+
+sample_db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = sample_db_path
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+
+conn = sqlite3.connect(sample_db_path)
+conn.row_factory = sqlite3.Row
+default_site_id = module.ensure_site_foundation_schema(conn)
+default_site_name = conn.execute("SELECT site_name FROM sites WHERE id = ?", (default_site_id,)).fetchone()["site_name"]
+secondary_site_id = conn.execute(
+    "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+    ("__unit_extra_secondary__", "unit-extra-secondary"),
+).fetchone()["id"]
+secondary_sheet_id = conn.execute(
+    "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+    ("__unit_extra_sheet__", 98, secondary_site_id),
+).fetchone()["id"]
+secondary_floor_id = conn.execute(
+    "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, ?)",
+    (secondary_sheet_id, 98, "8F", "C", 1),
+).lastrowid
+secondary_unit_id = conn.execute(
+    "INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?)",
+    (secondary_floor_id, 1, "801"),
+).lastrowid
+conn.execute(
+    '''
+    INSERT INTO extra_fields (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''',
+    (secondary_sheet_id, "secondary_only_status", "Secondary Only", "status", 10, 0, 1),
+)
+conn.execute(
+    "INSERT INTO unit_extra (unit_id, handover, updated_by, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+    (secondary_unit_id, module.WORKING_VALUE, 1),
+)
+password_hash = module.generate_password_hash("x")
+conn.execute(
+    "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+    ("unit_extra_member", "unit_extra_member", password_hash, "member"),
+)
+member_id = conn.execute("SELECT id FROM users WHERE username = 'unit_extra_member'").fetchone()["id"]
+conn.execute(
+    "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+    (member_id, default_site_id, "member"),
+)
+conn.commit()
+
+client = module.app.test_client()
+
+def set_member_session(*, with_current_site=True):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = int(member_id)
+        session["username"] = "unit_extra_member"
+        session["display_name"] = "unit_extra_member"
+        session["role"] = "member"
+        if with_current_site:
+            session["current_site_id"] = int(default_site_id)
+            session["current_site_name"] = str(default_site_name)
+            session["site_selection_required"] = False
+
+def get_handover(unit_id):
+    return conn.execute(
+        "SELECT handover FROM unit_extra WHERE unit_id = ?",
+        (unit_id,),
+    ).fetchone()["handover"]
+
+set_member_session()
+same_site_response = client.post(
+    "/api/unit-extra",
+    json={"unit_id": 1, "field": "handover", "value": module.DONE_VALUE},
+)
+if same_site_response.status_code != 200:
+    raise SystemExit("same-site unit-extra write should succeed")
+if get_handover(1) != module.DONE_VALUE:
+    raise SystemExit("same-site unit-extra write should update handover")
+
+set_member_session()
+cross_site_response = client.post(
+    "/api/unit-extra",
+    json={"unit_id": int(secondary_unit_id), "field": "secondary_only_status", "value": module.DONE_VALUE},
+)
+if cross_site_response.status_code != 403:
+    raise SystemExit("cross-site unit-extra write should be rejected with 403")
+secondary_extra_value = conn.execute(
+    "SELECT value FROM unit_extra_values WHERE unit_id = ? AND field_key = ?",
+    (secondary_unit_id, "secondary_only_status"),
+).fetchone()
+if secondary_extra_value is not None:
+    raise SystemExit("cross-site unit-extra write must not create unit_extra_values rows")
+if get_handover(secondary_unit_id) != module.WORKING_VALUE:
+    raise SystemExit("cross-site unit-extra write must not change built-in rows")
+
+set_member_session(with_current_site=False)
+missing_site_response = client.post(
+    "/api/unit-extra",
+    json={"unit_id": 1, "field": "handover", "value": module.WORKING_VALUE},
+)
+if missing_site_response.status_code != 403:
+    raise SystemExit("missing current site should reject unit-extra write with 403")
+if get_handover(1) != module.DONE_VALUE:
+    raise SystemExit("missing current site must not change existing unit-extra row")
+
+set_member_session()
+conn.execute("DELETE FROM user_site_permissions WHERE user_id = ?", (member_id,))
+conn.commit()
+permission_removed_response = client.post(
+    "/api/unit-extra",
+    json={"unit_id": 1, "field": "handover", "value": module.WORKING_VALUE},
+)
+if permission_removed_response.status_code != 403:
+    raise SystemExit("permission removed should reject unit-extra write with 403")
+if get_handover(1) != module.DONE_VALUE:
+    raise SystemExit("permission-removed unit-extra write must not change stored row")
+
+conn.execute(
+    "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+    (member_id, default_site_id, "member"),
+)
+conn.commit()
+set_member_session()
+unit_field_mismatch_response = client.post(
+    "/api/unit-extra",
+    json={"unit_id": 1, "field": "secondary_only_status", "value": module.DONE_VALUE},
+)
+if unit_field_mismatch_response.status_code != 409:
+    raise SystemExit("unit/field sheet mismatch should be rejected with 409")
+if get_handover(1) != module.DONE_VALUE:
+    raise SystemExit("unit/field mismatch must not modify existing unit-extra row")
+
+set_member_session()
+invalid_status_value_response = client.post(
+    "/api/unit-extra",
+    json={"unit_id": 1, "field": "handover", "value": "INVALID"},
+)
+if invalid_status_value_response.status_code != 400:
+    raise SystemExit("invalid status value should be rejected with 400")
+if get_handover(1) != module.DONE_VALUE:
+    raise SystemExit("invalid status value must not modify existing unit-extra row")
+
+conn.close()
+print("unit-extra write isolation smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "unit-extra write isolation smoke PASS" not in result.stdout:
+        raise AssertionError("unit-extra write isolation smoke subprocess did not report PASS.")
+
+
 def run_site_write_isolation_readiness_smoke() -> None:
     script_path = TOOLS_DIR / "check_site_write_isolation_readiness.py"
     if not script_path.exists():
@@ -3621,6 +3792,7 @@ def main() -> int:
         run_site_permission_management_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_site_read_isolation_smoke(db_path)
         run_progress_write_isolation_smoke(db_path)
+        run_unit_extra_write_isolation_smoke(db_path)
         run_site_write_isolation_readiness_smoke()
 
     if redact_database_url("postgresql://user:secret@localhost:5432/demo") != "postgresql://user:***@localhost:5432/demo":
@@ -3707,8 +3879,8 @@ def main() -> int:
         raise AssertionError("check_site_write_isolation_readiness.py did not report expected staged enforcement scope.")
     if "PASS site write isolation readiness check passed." not in site_write_isolation_result.stdout:
         raise AssertionError("check_site_write_isolation_readiness.py did not report expected PASS output.")
-    if "status: ENFORCED" not in site_write_isolation_result.stdout:
-        raise AssertionError("check_site_write_isolation_readiness.py did not report ENFORCED status for /api/progress.")
+    if site_write_isolation_result.stdout.count("status: ENFORCED") < 2:
+        raise AssertionError("check_site_write_isolation_readiness.py did not report ENFORCED status for both enforced write paths.")
     for fragment in ("/api/progress", "/api/unit-extra", "/api/vendor-contact", "/api/vendor-work-entry"):
         if fragment not in site_write_isolation_result.stdout:
             raise AssertionError(f"check_site_write_isolation_readiness.py missing expected inventory fragment: {fragment}")

@@ -47,13 +47,17 @@ HIGH_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="save_unit_extra",
         target_tables=("unit_extra", "unit_extra_values"),
         category="high-risk non-admin site-scoped write path",
-        status="INVENTORY ONLY",
+        status="ENFORCED",
         risk="high",
         site_scoped="yes",
-        current_site_enforced="no",
+        current_site_enforced="yes",
         ownership_validation_required="yes",
-        recommendation="Add current_site + site permission + target ownership enforcement in a future write isolation stage.",
-        source_markers=('@app.route("/api/unit-extra", methods=["POST"])',),
+        recommendation="Current-site, site permission, and unit/field ownership validation are enforced before unit-extra writes.",
+        source_markers=(
+            '@app.route("/api/unit-extra", methods=["POST"])',
+            'unit_extra_context = authorize_unit_extra_write(conn, unit_id=unit_id, field_key=field)',
+            'return _handle_unit_extra_write_lookup_error(exc)',
+        ),
     ),
     InventoryItem(
         route="/api/vendor-contact",
@@ -393,7 +397,7 @@ def main() -> int:
 
     print("site_write_isolation_readiness_scope: staged_enforcement")
     print(f"app_source: {APP_PATH}")
-    print("WARNING P-3B-2A applies enforcement only to /api/progress")
+    print("WARNING P-3B-2B applies staged enforcement to /api/progress and /api/unit-extra only")
     print("WARNING remaining high-risk paths are not yet enforced")
     print("WARNING formal write isolation is deferred to a later stage")
 

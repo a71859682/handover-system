@@ -1408,6 +1408,89 @@ def _handle_progress_write_lookup_error(exc: LookupError):
     raise exc
 
 
+def unit_extra_api_error(message: str, *, status: int = 400):
+    return jsonify({"ok": False, "message": message}), status
+
+
+def resolve_unit_extra_write_context(conn: sqlite3.Connection, *, unit_id: int, field_key: str) -> dict[str, object]:
+    unit_row = conn.execute(
+        """
+        SELECT u.id AS unit_id, f.id AS floor_id, f.sheet_id AS sheet_id, s.site_id AS site_id
+        FROM units u
+        JOIN floors f ON f.id = u.floor_id
+        JOIN sheets s ON s.id = f.sheet_id
+        WHERE u.id = ?
+        """,
+        (unit_id,),
+    ).fetchone()
+    if unit_row is None:
+        raise LookupError("unit_not_found")
+
+    field_row = conn.execute(
+        """
+        SELECT id, sheet_id, field_key, field_type
+        FROM extra_fields
+        WHERE sheet_id = ? AND field_key = ? AND active = 1
+        """,
+        (int(unit_row["sheet_id"]), field_key),
+    ).fetchone()
+    if field_row is None:
+        any_field_row = conn.execute(
+            """
+            SELECT 1
+            FROM extra_fields
+            WHERE field_key = ? AND active = 1
+            """,
+            (field_key,),
+        ).fetchone()
+        if any_field_row is None:
+            raise LookupError("field_not_found")
+        raise LookupError("unit_field_sheet_mismatch")
+
+    return {
+        "unit_id": int(unit_row["unit_id"]),
+        "floor_id": int(unit_row["floor_id"]),
+        "sheet_id": int(unit_row["sheet_id"]),
+        "site_id": int(unit_row["site_id"]),
+        "field_id": int(field_row["id"]),
+        "field_key": str(field_row["field_key"]),
+        "field_type": str(field_row["field_type"]),
+    }
+
+
+def authorize_unit_extra_write(conn: sqlite3.Connection, *, unit_id: int, field_key: str) -> dict[str, object]:
+    context = resolve_unit_extra_write_context(conn, unit_id=unit_id, field_key=field_key)
+    user = _current_internal_user()
+    if user is None:
+        raise LookupError("auth_required")
+    if is_global_admin(user):
+        return context
+
+    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    if int(context["site_id"]) != int(current_site_id):
+        raise LookupError("write_target_not_in_current_site")
+    return context
+
+
+def _handle_unit_extra_write_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "unit_not_found":
+        return unit_extra_api_error("unit_id was not found.", status=404)
+    if code == "field_not_found":
+        return unit_extra_api_error("field was not found.", status=404)
+    if code == "unit_field_sheet_mismatch":
+        return unit_extra_api_error("unit_id and field do not belong to the same sheet.", status=409)
+    if code == "site_context_invalid":
+        return unit_extra_api_error("current_site_id is missing or invalid.", status=403)
+    if code == "site_permission_missing":
+        return unit_extra_api_error("current user no longer has permission for the current site.", status=403)
+    if code == "write_target_not_in_current_site":
+        return unit_extra_api_error("write target does not belong to the current site.", status=403)
+    if code == "auth_required":
+        return unit_extra_api_error("authentication is required.", status=403)
+    raise exc
+
+
 def normalize_vendor_name(value: str) -> str:
     vendor_name = value.strip()
     if not vendor_name:
@@ -3091,19 +3174,11 @@ def api_unit_extra():
     field = data.get("field", "")
     value = data.get("value", "")
     with db() as conn:
-        field_row = conn.execute(
-            """
-            SELECT ef.*
-            FROM extra_fields ef
-            JOIN floors f ON f.sheet_id = ef.sheet_id
-            JOIN units u ON u.floor_id = f.id
-            WHERE u.id = ? AND ef.field_key = ? AND ef.active = 1
-            """,
-            (unit_id, field),
-        ).fetchone()
-        if not field_row:
-            return jsonify({"ok": False, "message": "欄位錯誤。"}), 400
-        if field_row["field_type"] == "status" and value not in (DONE_VALUE, WORKING_VALUE):
+        try:
+            unit_extra_context = authorize_unit_extra_write(conn, unit_id=unit_id, field_key=field)
+        except LookupError as exc:
+            return _handle_unit_extra_write_lookup_error(exc)
+        if unit_extra_context["field_type"] == "status" and value not in (DONE_VALUE, WORKING_VALUE):
             return jsonify({"ok": False, "message": "O/X 欄位只能是 O 或 X。"}), 400
         conn.execute(
             "INSERT OR IGNORE INTO unit_extra (unit_id, handover) VALUES (?, ?)",
@@ -3130,11 +3205,7 @@ def api_unit_extra():
                 """,
                 (unit_id, field, value, session["user_id"]),
             )
-    sheet_row = query_one(
-        "SELECT f.sheet_id FROM units u JOIN floors f ON f.id = u.floor_id WHERE u.id = ?",
-        (unit_id,),
-    )
-    return jsonify({"ok": True, "grid": render_grid_payload(sheet_row["sheet_id"] if sheet_row else session.get("sheet_id"))})
+    return jsonify({"ok": True, "grid": render_grid_payload(int(unit_extra_context["sheet_id"]))})
 
 
 @app.route("/api/reset-sheet", methods=["POST"])
