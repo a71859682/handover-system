@@ -4012,6 +4012,365 @@ print("vendor-contact write isolation smoke PASS")
         raise AssertionError("vendor-contact write isolation smoke subprocess did not report PASS.")
 
 
+def run_vendor_work_entry_write_isolation_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+from pathlib import Path
+import sqlite3
+import sys
+
+sample_db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = sample_db_path
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+
+conn = sqlite3.connect(sample_db_path)
+conn.row_factory = sqlite3.Row
+module.ensure_vendor_contacts_schema(conn)
+default_site_id = module.ensure_site_foundation_schema(conn)
+default_site_name = conn.execute("SELECT site_name FROM sites WHERE id = ?", (default_site_id,)).fetchone()["site_name"]
+secondary_site_id = conn.execute(
+    "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+    ("__vendor_work_secondary__", "vendor-work-secondary"),
+).fetchone()["id"]
+secondary_sheet_id = conn.execute(
+    "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+    ("__vendor_work_sheet__", 96, secondary_site_id),
+).fetchone()["id"]
+max_col_index = conn.execute("SELECT COALESCE(MAX(col_index), 0) FROM tasks").fetchone()[0]
+conn.execute(
+    "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)",
+    (1, max_col_index + 1, "VendorAllowedDefaultEntry", "Room A", "Vendor Default Entry Task"),
+)
+conn.execute(
+    "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)",
+    (secondary_sheet_id, max_col_index + 2, "VendorAllowedSecondaryEntry", "Room B", "Vendor Secondary Entry Task"),
+)
+password_hash = module.generate_password_hash("x")
+conn.execute(
+    "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+    ("vendor_work_member", "vendor_work_member", password_hash, "member"),
+)
+member_id = conn.execute("SELECT id FROM users WHERE username = 'vendor_work_member'").fetchone()["id"]
+conn.execute(
+    "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+    (member_id, default_site_id, "member"),
+)
+business_date = module.resolve_crew_business_date()
+conn.execute(
+    '''
+    INSERT INTO vendor_work_entries (
+        sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+        actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ''',
+    (1, "VendorAllowedDefaultEntry", business_date, "2000-01-01 09:00", 3, 0, "Default Entry", 0, 0),
+)
+default_entry_id = conn.execute(
+    "SELECT id FROM vendor_work_entries WHERE sheet_id = 1 AND vendor_name = ?",
+    ("VendorAllowedDefaultEntry",),
+).fetchone()["id"]
+conn.execute(
+    '''
+    INSERT INTO vendor_work_entries (
+        sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+        actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    ''',
+    (secondary_sheet_id, "VendorAllowedSecondaryEntry", business_date, "2000-01-01 10:00", 2, 1, "Secondary Entry", 1, 0),
+)
+secondary_entry_id = conn.execute(
+    "SELECT id FROM vendor_work_entries WHERE sheet_id = ? AND vendor_name = ?",
+    (secondary_sheet_id, "VendorAllowedSecondaryEntry"),
+).fetchone()["id"]
+conn.commit()
+
+client = module.app.test_client()
+
+def set_member_session(*, with_current_site=True):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = int(member_id)
+        session["username"] = "vendor_work_member"
+        session["display_name"] = "vendor_work_member"
+        session["role"] = "member"
+        if with_current_site:
+            session["current_site_id"] = int(default_site_id)
+            session["current_site_name"] = str(default_site_name)
+            session["site_selection_required"] = False
+
+def count_entries(sheet_id, vendor_name):
+    return conn.execute(
+        "SELECT COUNT(*) FROM vendor_work_entries WHERE sheet_id = ? AND vendor_name = ?",
+        (sheet_id, vendor_name),
+    ).fetchone()[0]
+
+def fetch_entry(entry_id):
+    return conn.execute(
+        '''
+        SELECT vendor_name, business_date, planned_at, planned_headcount,
+               actual_headcount, work_content, work_headcount, entry_order
+        FROM vendor_work_entries
+        WHERE id = ?
+        ''',
+        (entry_id,),
+    ).fetchone()
+
+set_member_session()
+same_site_create = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "sheet_id": 1,
+        "vendor_name": "VendorAllowedDefaultEntry",
+        "business_date": business_date,
+        "planned_at": "",
+        "planned_headcount": 4,
+        "actual_headcount": 0,
+        "work_content": "Create Entry",
+        "work_headcount": 0,
+        "entry_order": 1,
+    },
+)
+if same_site_create.status_code != 200 or not same_site_create.get_json().get("ok"):
+    raise SystemExit("same-site vendor-work-entry create should succeed")
+if count_entries(1, "VendorAllowedDefaultEntry") != 2:
+    raise SystemExit("same-site vendor-work-entry create should insert a new row")
+
+set_member_session()
+same_site_update = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "id": int(default_entry_id),
+        "sheet_id": 1,
+        "vendor_name": "VendorAllowedDefaultEntry",
+        "business_date": business_date,
+        "planned_at": "2000-01-01 11:00",
+        "planned_headcount": 5,
+        "actual_headcount": 2,
+        "work_content": "Updated Entry",
+        "work_headcount": 2,
+        "entry_order": 0,
+    },
+)
+if same_site_update.status_code != 200 or not same_site_update.get_json().get("ok"):
+    raise SystemExit("same-site vendor-work-entry update should succeed")
+updated_default = fetch_entry(default_entry_id)
+if updated_default["work_content"] != "Updated Entry" or updated_default["actual_headcount"] != 2:
+    raise SystemExit("same-site vendor-work-entry update should persist updated values")
+
+set_member_session()
+before_cross_site_create = count_entries(secondary_sheet_id, "VendorAllowedSecondaryEntry")
+cross_site_create = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "sheet_id": int(secondary_sheet_id),
+        "vendor_name": "VendorAllowedSecondaryEntry",
+        "business_date": business_date,
+        "planned_at": "",
+        "planned_headcount": 1,
+        "actual_headcount": 0,
+        "work_content": "Cross Site Create",
+        "work_headcount": 0,
+        "entry_order": 1,
+    },
+)
+if cross_site_create.status_code != 403:
+    raise SystemExit("cross-site vendor-work-entry create should be rejected with 403")
+if count_entries(secondary_sheet_id, "VendorAllowedSecondaryEntry") != before_cross_site_create:
+    raise SystemExit("cross-site vendor-work-entry create must not change row count")
+
+set_member_session()
+before_cross_site_update = dict(fetch_entry(secondary_entry_id))
+cross_site_update = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "id": int(secondary_entry_id),
+        "sheet_id": int(secondary_sheet_id),
+        "vendor_name": "VendorAllowedSecondaryEntry",
+        "business_date": business_date,
+        "planned_at": "2000-01-01 12:00",
+        "planned_headcount": 3,
+        "actual_headcount": 1,
+        "work_content": "Blocked Update",
+        "work_headcount": 1,
+        "entry_order": 0,
+    },
+)
+if cross_site_update.status_code != 403:
+    raise SystemExit("cross-site vendor-work-entry update should be rejected with 403")
+after_cross_site_update = dict(fetch_entry(secondary_entry_id))
+if after_cross_site_update != before_cross_site_update:
+    raise SystemExit("cross-site vendor-work-entry update must not modify stored row")
+
+set_member_session(with_current_site=False)
+before_missing_site = dict(fetch_entry(default_entry_id))
+missing_site = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "id": int(default_entry_id),
+        "sheet_id": 1,
+        "vendor_name": "VendorAllowedDefaultEntry",
+        "business_date": business_date,
+        "planned_at": "",
+        "planned_headcount": 6,
+        "actual_headcount": 2,
+        "work_content": "Missing Site",
+        "work_headcount": 2,
+        "entry_order": 0,
+    },
+)
+if missing_site.status_code != 403:
+    raise SystemExit("missing current site should reject vendor-work-entry write with 403")
+after_missing_site = dict(fetch_entry(default_entry_id))
+if after_missing_site != before_missing_site:
+    raise SystemExit("missing current site must not change existing vendor-work-entry row")
+
+set_member_session()
+conn.execute("DELETE FROM user_site_permissions WHERE user_id = ?", (member_id,))
+conn.commit()
+before_permission_removed = dict(fetch_entry(default_entry_id))
+permission_removed = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "id": int(default_entry_id),
+        "sheet_id": 1,
+        "vendor_name": "VendorAllowedDefaultEntry",
+        "business_date": business_date,
+        "planned_at": "",
+        "planned_headcount": 7,
+        "actual_headcount": 2,
+        "work_content": "Permission Removed",
+        "work_headcount": 2,
+        "entry_order": 0,
+    },
+)
+if permission_removed.status_code != 403:
+    raise SystemExit("permission removed should reject vendor-work-entry write with 403")
+after_permission_removed = dict(fetch_entry(default_entry_id))
+if after_permission_removed != before_permission_removed:
+    raise SystemExit("permission removed must not change existing vendor-work-entry row")
+
+conn.execute(
+    "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+    (member_id, default_site_id, "member"),
+)
+conn.commit()
+set_member_session()
+before_vendor_not_in_sheet = count_entries(1, "VendorAllowedDefaultEntry")
+vendor_not_in_sheet = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "sheet_id": 1,
+        "vendor_name": "VendorMissing",
+        "business_date": business_date,
+        "planned_at": "",
+        "planned_headcount": 1,
+        "actual_headcount": 0,
+        "work_content": "Unknown Vendor",
+        "work_headcount": 0,
+        "entry_order": 0,
+    },
+)
+if vendor_not_in_sheet.status_code != 404:
+    raise SystemExit("vendor not in sheet should be rejected with 404")
+if count_entries(1, "VendorAllowedDefaultEntry") != before_vendor_not_in_sheet:
+    raise SystemExit("vendor-not-in-sheet rejection must not affect existing rows")
+
+set_member_session()
+before_entry_mismatch = dict(fetch_entry(default_entry_id))
+entry_mismatch = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "id": int(default_entry_id),
+        "sheet_id": int(secondary_sheet_id),
+        "vendor_name": "VendorAllowedSecondaryEntry",
+        "business_date": business_date,
+        "planned_at": "",
+        "planned_headcount": 1,
+        "actual_headcount": 0,
+        "work_content": "Wrong Sheet",
+        "work_headcount": 0,
+        "entry_order": 0,
+    },
+)
+if entry_mismatch.status_code != 409:
+    raise SystemExit("entry mismatch should be rejected with 409")
+if entry_mismatch.get_json()["error"]["code"] != "sheet_mismatch":
+    raise SystemExit("entry mismatch should preserve sheet_mismatch error code")
+after_entry_mismatch = dict(fetch_entry(default_entry_id))
+if after_entry_mismatch != before_entry_mismatch:
+    raise SystemExit("entry mismatch must not modify stored row")
+
+set_member_session()
+before_invalid_business_date = dict(fetch_entry(default_entry_id))
+invalid_business_date = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "sheet_id": 1,
+        "vendor_name": "VendorAllowedDefaultEntry",
+        "business_date": "not-a-date",
+        "planned_at": "",
+        "planned_headcount": 1,
+        "actual_headcount": 0,
+        "work_content": "Invalid Date",
+        "work_headcount": 0,
+        "entry_order": 0,
+    },
+)
+if invalid_business_date.status_code != 400:
+    raise SystemExit("invalid business_date should be rejected with 400")
+after_invalid_business_date = dict(fetch_entry(default_entry_id))
+if after_invalid_business_date != before_invalid_business_date:
+    raise SystemExit("invalid business_date must not modify existing vendor-work-entry row")
+
+set_member_session()
+before_invalid_headcount = dict(fetch_entry(default_entry_id))
+invalid_headcount = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "sheet_id": 1,
+        "vendor_name": "VendorAllowedDefaultEntry",
+        "business_date": business_date,
+        "planned_at": "",
+        "planned_headcount": -1,
+        "actual_headcount": 0,
+        "work_content": "Invalid Headcount",
+        "work_headcount": 0,
+        "entry_order": 0,
+    },
+)
+if invalid_headcount.status_code != 400:
+    raise SystemExit("invalid headcount should be rejected with 400")
+invalid_payload = invalid_headcount.get_json()
+if invalid_payload.get("ok") is not False or "error" not in invalid_payload:
+    raise SystemExit("invalid headcount should use standard error payload")
+after_invalid_headcount = dict(fetch_entry(default_entry_id))
+if after_invalid_headcount != before_invalid_headcount:
+    raise SystemExit("invalid headcount must not modify existing vendor-work-entry row")
+
+conn.close()
+print("vendor-work-entry write isolation smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "vendor-work-entry write isolation smoke PASS" not in result.stdout:
+        raise AssertionError("vendor-work-entry write isolation smoke subprocess did not report PASS.")
+
+
 def run_site_write_isolation_readiness_smoke() -> None:
     script_path = TOOLS_DIR / "check_site_write_isolation_readiness.py"
     if not script_path.exists():
@@ -4095,6 +4454,7 @@ def main() -> int:
         run_progress_write_isolation_smoke(db_path)
         run_unit_extra_write_isolation_smoke(db_path)
         run_vendor_contact_write_isolation_smoke(db_path)
+        run_vendor_work_entry_write_isolation_smoke(db_path)
         run_site_write_isolation_readiness_smoke()
 
     if redact_database_url("postgresql://user:secret@localhost:5432/demo") != "postgresql://user:***@localhost:5432/demo":
@@ -4177,11 +4537,11 @@ def main() -> int:
     if "site_read_isolation_scope: sqlite_only" not in site_read_isolation_result.stdout or "PASS site read isolation check passed." not in site_read_isolation_result.stdout:
         raise AssertionError("check_site_read_isolation.py did not report expected PASS output.")
     site_write_isolation_result = run_script("check_site_write_isolation_readiness.py", env={"DATABASE_URL": ""})
-    if "site_write_isolation_readiness_scope: staged_enforcement" not in site_write_isolation_result.stdout:
-        raise AssertionError("check_site_write_isolation_readiness.py did not report expected staged enforcement scope.")
+    if "site_write_isolation_readiness_scope: high_risk_group_full_enforcement" not in site_write_isolation_result.stdout:
+        raise AssertionError("check_site_write_isolation_readiness.py did not report expected high-risk group full enforcement scope.")
     if "PASS site write isolation readiness check passed." not in site_write_isolation_result.stdout:
         raise AssertionError("check_site_write_isolation_readiness.py did not report expected PASS output.")
-    if site_write_isolation_result.stdout.count("status: ENFORCED") < 3:
+    if site_write_isolation_result.stdout.count("status: ENFORCED") < 4:
         raise AssertionError("check_site_write_isolation_readiness.py did not report ENFORCED status for all enforced write paths.")
     for fragment in ("/api/progress", "/api/unit-extra", "/api/vendor-contact", "/api/vendor-work-entry"):
         if fragment not in site_write_isolation_result.stdout:

@@ -1603,6 +1603,87 @@ def _handle_vendor_contact_lookup_error(exc: LookupError):
     raise exc
 
 
+def resolve_vendor_work_entry_write_context(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    vendor_name: str,
+    entry_id: int | None = None,
+) -> dict[str, object]:
+    sheet_row = conn.execute("SELECT id, site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+    if sheet_row is None:
+        raise LookupError("sheet_not_found")
+
+    validate_vendor_belongs_to_sheet(conn, sheet_id=sheet_id, vendor_name=vendor_name)
+
+    if entry_id is not None:
+        existing_entry = conn.execute(
+            """
+            SELECT id, sheet_id
+            FROM vendor_work_entries
+            WHERE id = ?
+            """,
+            (entry_id,),
+        ).fetchone()
+        if existing_entry is None:
+            raise LookupError("entry_not_found")
+        if int(existing_entry["sheet_id"] or 0) != int(sheet_id):
+            raise LookupError("sheet_mismatch")
+
+    return {
+        "sheet_id": int(sheet_row["id"]),
+        "site_id": int(sheet_row["site_id"]),
+        "vendor_name": vendor_name,
+        "entry_id": entry_id,
+    }
+
+
+def authorize_vendor_work_entry_write(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    vendor_name: str,
+    entry_id: int | None = None,
+) -> dict[str, object]:
+    context = resolve_vendor_work_entry_write_context(
+        conn,
+        sheet_id=sheet_id,
+        vendor_name=vendor_name,
+        entry_id=entry_id,
+    )
+    user = _current_internal_user()
+    if user is None:
+        raise LookupError("auth_required")
+    if is_global_admin(user):
+        return context
+
+    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    if int(context["site_id"]) != int(current_site_id):
+        raise LookupError("write_target_not_in_current_site")
+    return context
+
+
+def _handle_vendor_work_entry_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "sheet_not_found":
+        return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+    if code == "vendor_not_in_sheet":
+        return crew_api_error("vendor_not_in_sheet", "vendor_name does not belong to the requested sheet.", status=404)
+    if code == "entry_not_found":
+        return crew_api_error("entry_not_found", "vendor work entry id was not found.", status=404)
+    if code == "sheet_mismatch":
+        return crew_api_error("sheet_mismatch", "vendor work entry belongs to a different sheet_id.", status=409)
+    if code == "site_context_invalid":
+        return crew_api_error("site_context_invalid", "current_site_id is missing or invalid.", status=403)
+    if code == "site_permission_missing":
+        return crew_api_error("site_permission_missing", "current user no longer has permission for the current site.", status=403)
+    if code == "write_target_not_in_current_site":
+        return crew_api_error("write_target_not_in_current_site", "write target does not belong to the current site.", status=403)
+    if code == "auth_required":
+        return crew_api_error("auth_required", "authentication is required.", status=403)
+    raise exc
+
+
 def get_active_crew_vendors(sheet_id: int) -> list[str]:
     with db() as conn:
         tasks = conn.execute(
@@ -3527,22 +3608,28 @@ def api_vendor_work_entry():
 
     with db() as conn:
         try:
-            require_sheet_exists(conn, sheet_id)
-        except LookupError:
-            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+            vendor_work_entry_context = authorize_vendor_work_entry_write(
+                conn,
+                sheet_id=sheet_id,
+                vendor_name=vendor_name,
+                entry_id=entry_id,
+            )
+        except LookupError as exc:
+            return _handle_vendor_work_entry_lookup_error(exc)
 
         if entry_id is None:
             cur = conn.execute(
                 """
                 INSERT INTO vendor_work_entries (
                     sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-                    actual_headcount, work_content, work_headcount, entry_order
+                    actual_headcount, work_content, work_headcount, entry_order,
+                    created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                 (
-                    sheet_id,
-                    vendor_name,
+                    int(vendor_work_entry_context["sheet_id"]),
+                    str(vendor_work_entry_context["vendor_name"]),
                     business_date,
                     planned_at,
                     planned_headcount,
@@ -3554,22 +3641,6 @@ def api_vendor_work_entry():
             )
             target_id = int(cur.lastrowid)
         else:
-            existing = conn.execute(
-                """
-                SELECT id, sheet_id
-                FROM vendor_work_entries
-                WHERE id = ?
-                """,
-                (entry_id,),
-            ).fetchone()
-            if existing is None:
-                return crew_api_error("entry_not_found", "vendor work entry id was not found.", status=404)
-            if int(existing["sheet_id"]) != sheet_id:
-                return crew_api_error(
-                    "sheet_mismatch",
-                    "vendor work entry belongs to a different sheet_id.",
-                    status=409,
-                )
             conn.execute(
                 """
                 UPDATE vendor_work_entries
@@ -3585,7 +3656,7 @@ def api_vendor_work_entry():
                 WHERE id = ? AND sheet_id = ?
                 """,
                 (
-                    vendor_name,
+                    str(vendor_work_entry_context["vendor_name"]),
                     business_date,
                     planned_at,
                     planned_headcount,
@@ -3594,7 +3665,7 @@ def api_vendor_work_entry():
                     work_headcount,
                     entry_order,
                     entry_id,
-                    sheet_id,
+                    int(vendor_work_entry_context["sheet_id"]),
                 ),
             )
             target_id = entry_id

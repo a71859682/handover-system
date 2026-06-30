@@ -82,13 +82,18 @@ HIGH_RISK_ITEMS: tuple[InventoryItem, ...] = (
         action="save_vendor_work_entry",
         target_tables=("vendor_work_entries",),
         category="high-risk non-admin site-scoped write path",
-        status="INVENTORY ONLY",
+        status="ENFORCED",
         risk="high",
         site_scoped="yes",
-        current_site_enforced="no",
+        current_site_enforced="yes",
         ownership_validation_required="yes",
-        recommendation="Add current_site + site permission + vendor ownership enforcement in a future write isolation stage.",
-        source_markers=('@app.route("/api/vendor-work-entry", methods=["POST"])',),
+        recommendation="Current-site, site permission, and sheet/vendor ownership validation are enforced before vendor-work-entry writes.",
+        source_markers=(
+            '@app.route("/api/vendor-work-entry", methods=["POST"])',
+            'vendor_work_entry_context = authorize_vendor_work_entry_write(',
+            'resolve_vendor_work_entry_write_context(',
+            'return _handle_vendor_work_entry_lookup_error(exc)',
+        ),
     ),
 )
 
@@ -400,11 +405,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Check site write isolation readiness inventory.")
     parser.parse_args()
 
-    print("site_write_isolation_readiness_scope: staged_enforcement")
+    print("site_write_isolation_readiness_scope: high_risk_group_full_enforcement")
     print(f"app_source: {APP_PATH}")
-    print("WARNING P-3B-2C applies staged enforcement to /api/progress, /api/unit-extra, and /api/vendor-contact only")
-    print("WARNING remaining high-risk paths are not yet enforced")
-    print("WARNING formal write isolation is deferred to a later stage")
+    print("WARNING P-3B-2D completes high-risk non-admin write isolation enforcement")
+    print("WARNING medium-risk admin/global write paths remain inventory only")
+    print("WARNING formal enforcement for medium-risk paths is deferred to a later stage")
 
     source = APP_PATH.read_text(encoding="utf-8")
     issues: list[str] = []
