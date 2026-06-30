@@ -4399,6 +4399,34 @@ def run_site_write_isolation_readiness_smoke() -> None:
             raise AssertionError(f"check_site_write_isolation_readiness.py output missing: {fragment}")
 
 
+def run_admin_write_model_readiness_smoke() -> None:
+    script_path = TOOLS_DIR / "check_admin_write_model_readiness.py"
+    if not script_path.exists():
+        raise AssertionError("check_admin_write_model_readiness.py does not exist.")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script_path),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    required_fragments = (
+        "PASS admin write model readiness check passed.",
+        "create_sheet",
+        "save",
+        "MIXED",
+        "default site",
+        "/api/reset-sheet",
+    )
+    for fragment in required_fragments:
+        if fragment not in result.stdout:
+            raise AssertionError(f"check_admin_write_model_readiness.py output missing: {fragment}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "sample.db"
@@ -4456,6 +4484,7 @@ def main() -> int:
         run_vendor_contact_write_isolation_smoke(db_path)
         run_vendor_work_entry_write_isolation_smoke(db_path)
         run_site_write_isolation_readiness_smoke()
+        run_admin_write_model_readiness_smoke()
 
     if redact_database_url("postgresql://user:secret@localhost:5432/demo") != "postgresql://user:***@localhost:5432/demo":
         raise AssertionError("DATABASE_URL redaction failed.")
@@ -4476,6 +4505,7 @@ def main() -> int:
     run_help("check_site_permission_readiness.py")
     run_help("check_site_read_isolation.py")
     run_help("check_site_write_isolation_readiness.py")
+    run_help("check_admin_write_model_readiness.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")
@@ -4546,6 +4576,14 @@ def main() -> int:
     for fragment in ("/api/progress", "/api/unit-extra", "/api/vendor-contact", "/api/vendor-work-entry"):
         if fragment not in site_write_isolation_result.stdout:
             raise AssertionError(f"check_site_write_isolation_readiness.py missing expected inventory fragment: {fragment}")
+    admin_write_model_result = run_script("check_admin_write_model_readiness.py", env={"DATABASE_URL": ""})
+    if "admin_write_model_readiness_scope: inventory_only" not in admin_write_model_result.stdout:
+        raise AssertionError("check_admin_write_model_readiness.py did not report expected inventory-only scope.")
+    if "PASS admin write model readiness check passed." not in admin_write_model_result.stdout:
+        raise AssertionError("check_admin_write_model_readiness.py did not report expected PASS output.")
+    for fragment in ("create_sheet", "save", "MIXED", "default site", "/api/reset-sheet"):
+        if fragment not in admin_write_model_result.stdout:
+            raise AssertionError(f"check_admin_write_model_readiness.py missing expected inventory fragment: {fragment}")
     persistence_result = run_script("check_sqlite_runtime_persistence.py", env={"DATABASE_URL": ""})
     if "resolved_sqlite_source_path:" not in persistence_result.stdout or "PASS" not in persistence_result.stdout:
         raise AssertionError("check_sqlite_runtime_persistence.py did not report expected PASS output.")
