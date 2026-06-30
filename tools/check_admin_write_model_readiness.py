@@ -84,27 +84,36 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="add_task",
         target_tables=("tasks", "progress"),
         category="SITE_SCOPED",
-        status="INVENTORY ONLY",
-        uses_current_site="no",
-        current_site_enforced="no",
-        can_cross_site_today="yes",
-        recommendation="Future admin current-site aware site-content action.",
+        status="ENFORCED",
+        uses_current_site="yes",
+        current_site_enforced="yes",
+        can_cross_site_today="no",
+        recommendation="Task create is now blocked unless the target sheet belongs to current_site_id.",
         risk="medium",
         notes=(),
-        source_markers=('if action == "add_task":', 'INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)'),
+        source_markers=(
+            'if action == "add_task":',
+            'authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)',
+            'INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)',
+        ),
     ),
     AdminWriteItem(
         action="delete_task",
         target_tables=("tasks", "progress"),
         category="SITE_SCOPED",
-        status="INVENTORY ONLY",
-        uses_current_site="no",
-        current_site_enforced="no",
-        can_cross_site_today="yes",
-        recommendation="Future admin current-site aware site-content action.",
+        status="ENFORCED",
+        uses_current_site="yes",
+        current_site_enforced="yes",
+        can_cross_site_today="no",
+        recommendation="Task delete is now blocked unless the target task belongs to route sheet and current_site_id.",
         risk="medium",
-        notes=(),
-        source_markers=('if action.startswith("delete_task:"):', 'DELETE FROM tasks WHERE id = ? AND sheet_id = ?'),
+        notes=("task delete validates task_id belongs to route sheet",),
+        source_markers=(
+            'if action.startswith("delete_task:"):',
+            'task_row = resolve_task_sheet_for_admin_write(conn, task_id=task_id)',
+            'raise LookupError("task_sheet_mismatch")',
+            'DELETE FROM tasks WHERE id = ? AND sheet_id = ?',
+        ),
     ),
     AdminWriteItem(
         action="add_extra_field",
@@ -216,12 +225,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Check admin write model readiness inventory.")
     parser.parse_args()
 
-    print("admin_write_model_readiness_scope: create_delete_sheet_enforced")
+    print("admin_write_model_readiness_scope: create_delete_sheet_task_enforced")
     print(f"app_source: {APP_PATH}")
-    print("WARNING P-3C-2A enforces current-site aware behavior for create_sheet and delete_sheet only")
-    print("WARNING admin current-site aware behavior is partially implemented for create_sheet and delete_sheet only")
+    print("WARNING P-3C-2B-1 enforces current-site aware behavior for create_sheet, delete_sheet, add_task, and delete_task only")
+    print("WARNING admin current-site aware behavior is partially implemented for create_sheet, delete_sheet, add_task, and delete_task only")
     print("WARNING mixed save split is deferred")
-    print("WARNING production behavior changed only for create_sheet and delete_sheet")
+    print("WARNING production behavior changed only for create_sheet, delete_sheet, add_task, and delete_task")
 
     source = APP_PATH.read_text(encoding="utf-8")
     issues: list[str] = []

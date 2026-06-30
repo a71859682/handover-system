@@ -1368,6 +1368,19 @@ def authorize_admin_create_sheet_site(conn: sqlite3.Connection) -> dict[str, int
     return {"site_id": int(current_site_id)}
 
 
+def resolve_task_sheet_for_admin_write(conn: sqlite3.Connection, *, task_id: int) -> dict[str, int]:
+    row = conn.execute("SELECT id, sheet_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise LookupError("task_not_found")
+    sheet_id = row["sheet_id"]
+    if sheet_id in (None, ""):
+        raise LookupError("task_sheet_missing")
+    return {
+        "task_id": int(row["id"]),
+        "sheet_id": int(sheet_id),
+    }
+
+
 def _handle_admin_site_write_lookup_error(exc: LookupError, *, sheet_id: int | None = None):
     code = str(exc)
     if code == "site_context_invalid":
@@ -1380,6 +1393,11 @@ def _handle_admin_site_write_lookup_error(exc: LookupError, *, sheet_id: int | N
         return redirect(url_for("table_admin"))
     if code in {"sheet_not_found", "sheet_site_missing"}:
         flash("\u627e\u4e0d\u5230\u76ee\u6a19\u8868\u55ae\u3002", "error")
+        if sheet_id is not None:
+            return redirect(url_for("table_admin", sheet_id=sheet_id))
+        return redirect(url_for("table_admin"))
+    if code in {"task_not_found", "task_sheet_missing", "task_sheet_mismatch"}:
+        flash("\u627e\u4e0d\u5230\u76ee\u6a19\u8cc7\u6599\u3002", "error")
         if sheet_id is not None:
             return redirect(url_for("table_admin", sheet_id=sheet_id))
         return redirect(url_for("table_admin"))
@@ -4148,6 +4166,10 @@ def table_admin():
                 flash("???????", "success")
                 return redirect(url_for("table_admin", sheet_id=next_sheet))
             if action == "add_task":
+                try:
+                    authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+                except LookupError as exc:
+                    return _handle_admin_site_write_lookup_error(exc, sheet_id=sheet_id)
                 next_col = conn.execute("SELECT COALESCE(MAX(col_index), 3) + 1 FROM tasks").fetchone()[0]
                 cur = conn.execute(
                     "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)",
@@ -4159,6 +4181,13 @@ def table_admin():
                 return redirect(url_for("table_admin", sheet_id=sheet_id))
             if action.startswith("delete_task:"):
                 task_id = int(action.split(":", 1)[1])
+                try:
+                    task_row = resolve_task_sheet_for_admin_write(conn, task_id=task_id)
+                    if int(task_row["sheet_id"]) != int(sheet_id):
+                        raise LookupError("task_sheet_mismatch")
+                    authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+                except LookupError as exc:
+                    return _handle_admin_site_write_lookup_error(exc, sheet_id=sheet_id)
                 conn.execute("DELETE FROM progress WHERE task_id = ?", (task_id,))
                 conn.execute("DELETE FROM tasks WHERE id = ? AND sheet_id = ?", (task_id, sheet_id))
                 flash("??????", "success")
