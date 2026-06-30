@@ -14,7 +14,9 @@ class AdminWriteItem:
     action: str
     target_tables: tuple[str, ...]
     category: str
+    status: str
     uses_current_site: str
+    current_site_enforced: str
     can_cross_site_today: str
     recommendation: str
     risk: str
@@ -27,15 +29,18 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="create_sheet",
         target_tables=("sheets", "extra_fields"),
         category="SITE_SCOPED",
-        uses_current_site="no",
-        can_cross_site_today="yes",
-        recommendation="Freeze current default-site behavior now; later stage should decide whether admin create_sheet becomes current-site aware.",
+        status="ENFORCED",
+        uses_current_site="yes",
+        current_site_enforced="yes",
+        can_cross_site_today="no",
+        recommendation="New sheets are now written to current_site_id for admin site-scoped content writes.",
         risk="medium",
-        notes=("create_sheet currently uses default site behavior",),
+        notes=("writes new sheet to current_site_id",),
         source_markers=(
             '@app.route("/admin/table", methods=["GET", "POST"])',
             'if action == "create_sheet":',
-            "default_site_id = ensure_site_foundation_schema(conn)",
+            'create_sheet_context = authorize_admin_create_sheet_site(conn)',
+            'def authorize_admin_create_sheet_site(conn: sqlite3.Connection) -> dict[str, int]:',
             'INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?)',
         ),
     ),
@@ -43,18 +48,27 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="delete_sheet",
         target_tables=("sheets", "tasks", "floors", "units", "progress", "unit_extra", "unit_extra_values", "extra_fields"),
         category="SITE_SCOPED",
-        uses_current_site="no",
-        can_cross_site_today="yes",
-        recommendation="Treat as future admin current-site aware destructive action; do not enforce in P-3C-1.",
+        status="ENFORCED",
+        uses_current_site="yes",
+        current_site_enforced="yes",
+        can_cross_site_today="no",
+        recommendation="Sheet delete is now blocked unless the target sheet belongs to current_site_id.",
         risk="high",
         notes=(),
-        source_markers=('if action == "delete_sheet":', 'DELETE FROM sheets WHERE id = ?'),
+        source_markers=(
+            'if action == "delete_sheet":',
+            'delete_sheet_context = authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)',
+            'def authorize_admin_site_scoped_write(conn: sqlite3.Connection, *, sheet_id: int) -> dict[str, int]:',
+            'DELETE FROM sheets WHERE id = ?',
+        ),
     ),
     AdminWriteItem(
         action="save",
         target_tables=("sheets", "meta", "tasks", "extra_fields", "floors", "units"),
         category="MIXED",
+        status="DEFERRED",
         uses_current_site="no",
+        current_site_enforced="no",
         can_cross_site_today="yes",
         recommendation="Split mixed save into global meta save and site-scoped content save before admin write isolation enforcement.",
         risk="high",
@@ -70,7 +84,9 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="add_task",
         target_tables=("tasks", "progress"),
         category="SITE_SCOPED",
+        status="INVENTORY ONLY",
         uses_current_site="no",
+        current_site_enforced="no",
         can_cross_site_today="yes",
         recommendation="Future admin current-site aware site-content action.",
         risk="medium",
@@ -81,7 +97,9 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="delete_task",
         target_tables=("tasks", "progress"),
         category="SITE_SCOPED",
+        status="INVENTORY ONLY",
         uses_current_site="no",
+        current_site_enforced="no",
         can_cross_site_today="yes",
         recommendation="Future admin current-site aware site-content action.",
         risk="medium",
@@ -92,7 +110,9 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="add_extra_field",
         target_tables=("extra_fields",),
         category="SITE_SCOPED",
+        status="INVENTORY ONLY",
         uses_current_site="no",
+        current_site_enforced="no",
         can_cross_site_today="yes",
         recommendation="Future admin current-site aware site-content action.",
         risk="medium",
@@ -103,7 +123,9 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="delete_extra_field",
         target_tables=("extra_fields",),
         category="SITE_SCOPED",
+        status="INVENTORY ONLY",
         uses_current_site="no",
+        current_site_enforced="no",
         can_cross_site_today="yes",
         recommendation="Future admin current-site aware site-content action.",
         risk="medium",
@@ -114,7 +136,9 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="add_floor",
         target_tables=("floors",),
         category="SITE_SCOPED",
+        status="INVENTORY ONLY",
         uses_current_site="no",
+        current_site_enforced="no",
         can_cross_site_today="yes",
         recommendation="Future admin current-site aware site-content action.",
         risk="medium",
@@ -125,7 +149,9 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="delete_floor",
         target_tables=("floors", "units", "progress", "unit_extra", "unit_extra_values"),
         category="SITE_SCOPED",
+        status="INVENTORY ONLY",
         uses_current_site="no",
+        current_site_enforced="no",
         can_cross_site_today="yes",
         recommendation="Treat as future admin current-site aware destructive action; do not enforce in P-3C-1.",
         risk="high",
@@ -136,7 +162,9 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="add_unit",
         target_tables=("units", "progress", "unit_extra"),
         category="SITE_SCOPED",
+        status="INVENTORY ONLY",
         uses_current_site="no",
+        current_site_enforced="no",
         can_cross_site_today="yes",
         recommendation="Future admin current-site aware site-content action.",
         risk="medium",
@@ -147,7 +175,9 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="delete_unit",
         target_tables=("units", "progress", "unit_extra", "unit_extra_values"),
         category="SITE_SCOPED",
+        status="INVENTORY ONLY",
         uses_current_site="no",
+        current_site_enforced="no",
         can_cross_site_today="yes",
         recommendation="Treat as future admin current-site aware destructive action; do not enforce in P-3C-1.",
         risk="high",
@@ -172,7 +202,9 @@ def render_item(item: AdminWriteItem) -> None:
     print(f"action: {item.action}")
     print(f"target_tables: {', '.join(item.target_tables)}")
     print(f"category: {item.category}")
+    print(f"status: {item.status}")
     print(f"uses_current_site: {item.uses_current_site}")
+    print(f"current_site_enforced: {item.current_site_enforced}")
     print(f"can_cross_site_today: {item.can_cross_site_today}")
     print(f"recommendation: {item.recommendation}")
     print(f"risk: {item.risk}")
@@ -184,12 +216,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Check admin write model readiness inventory.")
     parser.parse_args()
 
-    print("admin_write_model_readiness_scope: inventory_only")
+    print("admin_write_model_readiness_scope: create_delete_sheet_enforced")
     print(f"app_source: {APP_PATH}")
-    print("WARNING P-3C-1 is inventory-only")
-    print("WARNING admin current-site aware behavior is not yet implemented")
+    print("WARNING P-3C-2A enforces current-site aware behavior for create_sheet and delete_sheet only")
+    print("WARNING admin current-site aware behavior is partially implemented for create_sheet and delete_sheet only")
     print("WARNING mixed save split is deferred")
-    print("WARNING production behavior is unchanged")
+    print("WARNING production behavior changed only for create_sheet and delete_sheet")
 
     source = APP_PATH.read_text(encoding="utf-8")
     issues: list[str] = []
@@ -212,6 +244,7 @@ def main() -> int:
     print("future_candidates:")
     for candidate in FUTURE_CANDIDATES:
         print(f"- {candidate}")
+    print("reset_sheet_status: DEFERRED")
     expect('@app.route("/api/reset-sheet", methods=["POST"])' in source, "reset_sheet_route_missing", issues)
 
     print(f"issues_count: {len(issues)}")

@@ -1328,6 +1328,67 @@ def _handle_grid_read_lookup_error(exc: LookupError):
     raise exc
 
 
+def resolve_admin_current_site_id(conn: sqlite3.Connection) -> int:
+    user = _current_internal_user()
+    if user is None:
+        raise LookupError("auth_required")
+    current_site_id = get_current_site_id()
+    if current_site_id is None:
+        raise LookupError("site_context_invalid")
+    site_row = _fetch_site_row_by_id(conn, int(current_site_id))
+    if site_row is None or int(site_row["is_active"]) != 1:
+        raise LookupError("site_context_invalid")
+    return int(site_row["id"])
+
+
+def resolve_sheet_site_for_admin_write(conn: sqlite3.Connection, *, sheet_id: int) -> dict[str, int]:
+    row = conn.execute("SELECT id, site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+    if row is None:
+        raise LookupError("sheet_not_found")
+    site_id = row["site_id"]
+    if site_id in (None, ""):
+        raise LookupError("sheet_site_missing")
+    return {
+        "sheet_id": int(row["id"]),
+        "site_id": int(site_id),
+    }
+
+
+def authorize_admin_site_scoped_write(conn: sqlite3.Connection, *, sheet_id: int) -> dict[str, int]:
+    context = resolve_sheet_site_for_admin_write(conn, sheet_id=sheet_id)
+    current_site_id = resolve_admin_current_site_id(conn)
+    if int(context["site_id"]) != int(current_site_id):
+        raise LookupError("write_target_not_in_current_site")
+    context["current_site_id"] = int(current_site_id)
+    return context
+
+
+def authorize_admin_create_sheet_site(conn: sqlite3.Connection) -> dict[str, int]:
+    current_site_id = resolve_admin_current_site_id(conn)
+    return {"site_id": int(current_site_id)}
+
+
+def _handle_admin_site_write_lookup_error(exc: LookupError, *, sheet_id: int | None = None):
+    code = str(exc)
+    if code == "site_context_invalid":
+        flash("\u8acb\u5148\u9078\u64c7\u76ee\u524d\u5de5\u5730\u3002", "error")
+        return redirect(url_for("site_selector"))
+    if code == "write_target_not_in_current_site":
+        flash("\u76ee\u524d\u5de5\u5730\u4e0b\u4e0d\u53ef\u4fee\u6539\u5176\u4ed6\u5de5\u5730\u8cc7\u6599\u3002", "error")
+        if sheet_id is not None:
+            return redirect(url_for("table_admin", sheet_id=sheet_id))
+        return redirect(url_for("table_admin"))
+    if code in {"sheet_not_found", "sheet_site_missing"}:
+        flash("\u627e\u4e0d\u5230\u76ee\u6a19\u8868\u55ae\u3002", "error")
+        if sheet_id is not None:
+            return redirect(url_for("table_admin", sheet_id=sheet_id))
+        return redirect(url_for("table_admin"))
+    if code == "auth_required":
+        flash("\u8acb\u5148\u767b\u5165\u3002", "error")
+        return redirect(url_for("login"))
+    raise exc
+
+
 def progress_api_error(message: str, *, status: int = 400):
     return jsonify({"ok": False, "message": message}), status
 
@@ -4043,10 +4104,13 @@ def table_admin():
             if action == "create_sheet":
                 name = request.form.get("new_sheet_name", "").strip() or "????"
                 next_order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM sheets").fetchone()[0]
-                default_site_id = ensure_site_foundation_schema(conn)
+                try:
+                    create_sheet_context = authorize_admin_create_sheet_site(conn)
+                except LookupError as exc:
+                    return _handle_admin_site_write_lookup_error(exc)
                 cur = conn.execute(
                     "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?)",
-                    (name, next_order, default_site_id),
+                    (name, next_order, create_sheet_context["site_id"]),
                 )
                 for field_key, field in BUILTIN_EXTRA_FIELDS.items():
                     conn.execute(
@@ -4064,6 +4128,10 @@ def table_admin():
                 if count <= 1:
                     flash("????????????", "error")
                     return redirect(url_for("table_admin", sheet_id=sheet_id))
+                try:
+                    delete_sheet_context = authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+                except LookupError as exc:
+                    return _handle_admin_site_write_lookup_error(exc, sheet_id=sheet_id)
                 unit_ids = [row["id"] for row in conn.execute("SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ?", (sheet_id,))]
                 if unit_ids:
                     placeholders = ",".join("?" for _ in unit_ids)

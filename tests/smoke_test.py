@@ -1865,6 +1865,141 @@ print("table admin endpoint and formula smoke PASS")
         raise AssertionError("table admin endpoint and formula smoke subprocess did not report PASS.")
 
 
+def run_admin_current_site_sheet_write_smoke(app_db_path: Path) -> None:
+    if app_db_path.exists():
+        app_db_path.unlink()
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    site_a = module.get_default_site_id(conn)
+    if site_a is None:
+        raise SystemExit("default site missing")
+    site_b_row = conn.execute(
+        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+        ("__admin_write_site_b__", "site-b"),
+    ).fetchone()
+    site_b = int(site_b_row["id"])
+    sheet_a = conn.execute("SELECT id FROM sheets ORDER BY id LIMIT 1").fetchone()["id"]
+    sheet_b = conn.execute(
+        "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?) RETURNING id",
+        ("Sheet B", 999, site_b),
+    ).fetchone()["id"]
+    conn.commit()
+
+client = module.app.test_client()
+
+def set_admin_session(*, current_site_id=None, current_site_name=None):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "管理員"
+        session["role"] = "admin"
+        if current_site_id is not None:
+            session["current_site_id"] = int(current_site_id)
+            session["current_site_name"] = current_site_name or f"site-{current_site_id}"
+            session["site_selection_required"] = False
+
+with module.db() as conn:
+    before_count = conn.execute("SELECT COUNT(*) FROM sheets").fetchone()[0]
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+create_response = client.post(
+    "/admin/table",
+    data={"action": "create_sheet", "new_sheet_name": "Current Site Sheet"},
+    follow_redirects=False,
+)
+if create_response.status_code != 302:
+    raise SystemExit("create_sheet should redirect")
+with module.db() as conn:
+    after_count = conn.execute("SELECT COUNT(*) FROM sheets").fetchone()[0]
+    created_row = conn.execute(
+        "SELECT site_id FROM sheets WHERE name = ? ORDER BY id DESC LIMIT 1",
+        ("Current Site Sheet",),
+    ).fetchone()
+if after_count != before_count + 1:
+    raise SystemExit("create_sheet should add one sheet")
+if created_row is None or int(created_row["site_id"]) != int(site_a):
+    raise SystemExit("create_sheet should use current_site_id")
+
+set_admin_session()
+missing_create = client.post(
+    "/admin/table",
+    data={"action": "create_sheet", "new_sheet_name": "Should Not Exist"},
+    follow_redirects=False,
+)
+if missing_create.status_code != 302 or not missing_create.headers.get("Location", "").endswith("/site-selector"):
+    raise SystemExit("missing current site create_sheet should redirect to /site-selector")
+with module.db() as conn:
+    missing_row = conn.execute("SELECT 1 FROM sheets WHERE name = ?", ("Should Not Exist",)).fetchone()
+if missing_row is not None:
+    raise SystemExit("missing current site create_sheet should not add a sheet")
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+delete_current = client.post(f"/admin/table?sheet_id={sheet_a}", data={"action": "delete_sheet"}, follow_redirects=False)
+if delete_current.status_code != 302:
+    raise SystemExit("delete current-site sheet should redirect")
+with module.db() as conn:
+    deleted_row = conn.execute("SELECT 1 FROM sheets WHERE id = ?", (sheet_a,)).fetchone()
+    other_row = conn.execute("SELECT 1 FROM sheets WHERE id = ?", (sheet_b,)).fetchone()
+if deleted_row is not None:
+    raise SystemExit("delete current-site sheet should remove target sheet")
+if other_row is None:
+    raise SystemExit("delete current-site sheet should not remove other site sheet")
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+cross_site_before = sqlite3.connect(app_db_path)
+cross_site_before.row_factory = sqlite3.Row
+before_snapshot = cross_site_before.execute("SELECT COUNT(*) FROM sheets WHERE id = ?", (sheet_b,)).fetchone()[0]
+cross_site_before.close()
+cross_site_delete = client.post(f"/admin/table?sheet_id={sheet_b}", data={"action": "delete_sheet"}, follow_redirects=False)
+if cross_site_delete.status_code != 302 or "/admin/table?sheet_id=" not in cross_site_delete.headers.get("Location", ""):
+    raise SystemExit("cross-site delete should redirect back to /admin/table")
+with module.db() as conn:
+    after_snapshot = conn.execute("SELECT COUNT(*) FROM sheets WHERE id = ?", (sheet_b,)).fetchone()[0]
+if before_snapshot != after_snapshot:
+    raise SystemExit("cross-site delete should not remove target sheet")
+
+set_admin_session()
+missing_delete = client.post(f"/admin/table?sheet_id={sheet_b}", data={"action": "delete_sheet"}, follow_redirects=False)
+if missing_delete.status_code != 302 or not missing_delete.headers.get("Location", "").endswith("/site-selector"):
+    raise SystemExit("missing current site delete_sheet should redirect to /site-selector")
+with module.db() as conn:
+    final_snapshot = conn.execute("SELECT COUNT(*) FROM sheets WHERE id = ?", (sheet_b,)).fetchone()[0]
+if final_snapshot != after_snapshot:
+    raise SystemExit("missing current site delete should not remove target sheet")
+
+print("admin current-site sheet write smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "admin current-site sheet write smoke PASS" not in result.stdout:
+        raise AssertionError("admin current-site sheet write smoke subprocess did not report PASS.")
+
+
 def run_handover_reset_separation_smoke(app_db_path: Path) -> None:
     if app_db_path.exists():
         app_db_path.unlink()
@@ -4417,9 +4552,12 @@ def run_admin_write_model_readiness_smoke() -> None:
     required_fragments = (
         "PASS admin write model readiness check passed.",
         "create_sheet",
+        "delete_sheet",
         "save",
         "MIXED",
-        "default site",
+        "status: ENFORCED",
+        "current_site_enforced: yes",
+        "writes new sheet to current_site_id",
         "/api/reset-sheet",
     )
     for fragment in required_fragments:
@@ -4473,6 +4611,7 @@ def main() -> int:
         run_users_template_delete_ui_smoke()
         run_sheet_endpoint_smoke(Path(tmpdir) / "app-smoke.db")
         run_table_admin_endpoint_and_formula_smoke(Path(tmpdir) / "app-smoke.db")
+        run_admin_current_site_sheet_write_smoke(Path(tmpdir) / "admin-current-site-sheet-write.db")
         run_handover_reset_separation_smoke(Path(tmpdir) / "handover-smoke.db")
         run_handover_route_regression_smoke(Path(tmpdir) / "handover-route-smoke.db")
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
@@ -4577,11 +4716,11 @@ def main() -> int:
         if fragment not in site_write_isolation_result.stdout:
             raise AssertionError(f"check_site_write_isolation_readiness.py missing expected inventory fragment: {fragment}")
     admin_write_model_result = run_script("check_admin_write_model_readiness.py", env={"DATABASE_URL": ""})
-    if "admin_write_model_readiness_scope: inventory_only" not in admin_write_model_result.stdout:
-        raise AssertionError("check_admin_write_model_readiness.py did not report expected inventory-only scope.")
+    if "admin_write_model_readiness_scope: create_delete_sheet_enforced" not in admin_write_model_result.stdout:
+        raise AssertionError("check_admin_write_model_readiness.py did not report expected create/delete enforcement scope.")
     if "PASS admin write model readiness check passed." not in admin_write_model_result.stdout:
         raise AssertionError("check_admin_write_model_readiness.py did not report expected PASS output.")
-    for fragment in ("create_sheet", "save", "MIXED", "default site", "/api/reset-sheet"):
+    for fragment in ("create_sheet", "delete_sheet", "save", "MIXED", "status: ENFORCED", "current_site_enforced: yes", "writes new sheet to current_site_id", "/api/reset-sheet"):
         if fragment not in admin_write_model_result.stdout:
             raise AssertionError(f"check_admin_write_model_readiness.py missing expected inventory fragment: {fragment}")
     persistence_result = run_script("check_sqlite_runtime_persistence.py", env={"DATABASE_URL": ""})
