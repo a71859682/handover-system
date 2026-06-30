@@ -251,6 +251,12 @@ def run_users_template_delete_ui_smoke() -> None:
         "user.role != 'admin'",
         "users delete dual-write",
         "&#21034;&#38500;",
+        "Global Admin（全站可存取）",
+        "add_site_permission:{{ user.id }}",
+        "update_site_permission:{{ permission.id }}",
+        "delete_site_permission:{{ permission.id }}",
+        "site_permission_roles",
+        "active_sites",
     ]
     for snippet in required_snippets:
         if snippet not in template:
@@ -2257,12 +2263,20 @@ os.environ["APP_DB_PATH"] = app_db_path
 spec.loader.exec_module(module)
 conn = sqlite3.connect(sample_db_path)
 conn.row_factory = sqlite3.Row
+default_site_id = module.ensure_site_foundation_schema(conn)
+conn.execute(
+    "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+    (2, default_site_id, "member"),
+)
 deleted_user_row = module.delete_user_sqlite(conn, 2)
 conn.commit()
 row = conn.execute("SELECT COUNT(*) AS count FROM users WHERE id = 2").fetchone()
+permission_row = conn.execute("SELECT COUNT(*) AS count FROM user_site_permissions WHERE user_id = 2").fetchone()
 conn.close()
 if row["count"] != 0:
     raise SystemExit("user delete helper did not delete the target row")
+if permission_row["count"] != 0:
+    raise SystemExit("user delete helper did not delete related site permissions")
 if "password_hash" in deleted_user_row:
     raise SystemExit("user delete helper leaked password_hash")
 if deleted_user_row["username"] != "member" or deleted_user_row["role"] != "member":
@@ -3147,6 +3161,217 @@ print("admin user role update smoke PASS")
         raise AssertionError("admin user role update smoke subprocess did not report PASS.")
 
 
+def run_site_permission_management_smoke(db_path: Path, app_db_path: Path) -> None:
+    script = """
+import importlib.util
+from pathlib import Path
+import sqlite3
+import sys
+
+app_db_path, sample_db_path, root_dir = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+import os
+os.environ["APP_DB_PATH"] = sample_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+conn = sqlite3.connect(sample_db_path)
+conn.row_factory = sqlite3.Row
+default_site_id = module.ensure_site_foundation_schema(conn)
+secondary_site = conn.execute(
+    "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+    ("__perm_secondary__", "perm-secondary"),
+).fetchone()["id"]
+inactive_site = conn.execute(
+    "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 0) RETURNING id",
+    ("__perm_inactive__", "perm-inactive"),
+).fetchone()["id"]
+password_hash = module.generate_password_hash("x")
+conn.execute(
+    "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+    ("perm_member", "perm_member", password_hash, "member"),
+)
+conn.execute(
+    "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+    ("perm_other", "perm_other", password_hash, "member"),
+)
+member_id = conn.execute("SELECT id FROM users WHERE username = 'perm_member'").fetchone()["id"]
+other_member_id = conn.execute("SELECT id FROM users WHERE username = 'perm_other'").fetchone()["id"]
+conn.commit()
+conn.close()
+
+with module.app.test_client() as client:
+    with client.session_transaction() as session:
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "Admin"
+        session["role"] = "admin"
+
+    users_page = client.get("/admin/users")
+    page = users_page.get_data(as_text=True)
+    if users_page.status_code != 200:
+        raise SystemExit("/admin/users permission GET smoke failed")
+    if "Global Admin（全站可存取）" not in page:
+        raise SystemExit("admin compatibility text missing from /admin/users")
+    if "新增工地授權" not in page:
+        raise SystemExit("site permission add form missing from /admin/users")
+
+    add_response = client.post(
+        "/admin/users",
+        data={
+            "action": f"add_site_permission:{member_id}",
+            "site_id": str(secondary_site),
+            "site_role": "supervisor",
+        },
+        follow_redirects=False,
+    )
+    if add_response.status_code != 302:
+        raise SystemExit("add_site_permission request failed")
+
+    conn = sqlite3.connect(sample_db_path)
+    conn.row_factory = sqlite3.Row
+    permission_row = conn.execute(
+        "SELECT id, role FROM user_site_permissions WHERE user_id = ? AND site_id = ?",
+        (member_id, secondary_site),
+    ).fetchone()
+    if permission_row is None or permission_row["role"] != "supervisor":
+        raise SystemExit("add_site_permission did not persist expected role")
+
+    client.post(
+        "/admin/users",
+        data={
+            "action": f"add_site_permission:{member_id}",
+            "site_id": str(secondary_site),
+            "site_role": "member",
+        },
+        follow_redirects=False,
+    )
+    duplicate_count = conn.execute(
+        "SELECT COUNT(*) AS count FROM user_site_permissions WHERE user_id = ? AND site_id = ?",
+        (member_id, secondary_site),
+    ).fetchone()["count"]
+    if duplicate_count != 1:
+        raise SystemExit("duplicate site permission should be prevented")
+
+    client.post(
+        "/admin/users",
+        data={
+            "action": f"update_site_permission:{permission_row['id']}",
+            "site_role": "member",
+        },
+        follow_redirects=False,
+    )
+    updated_role = conn.execute(
+        "SELECT role FROM user_site_permissions WHERE id = ?",
+        (permission_row["id"],),
+    ).fetchone()["role"]
+    if updated_role != "member":
+        raise SystemExit("update_site_permission should update role only")
+
+    client.post(
+        "/admin/users",
+        data={
+            "action": f"add_site_permission:{other_member_id}",
+            "site_id": str(inactive_site),
+            "site_role": "member",
+        },
+        follow_redirects=False,
+    )
+    if conn.execute(
+        "SELECT 1 FROM user_site_permissions WHERE user_id = ? AND site_id = ?",
+        (other_member_id, inactive_site),
+    ).fetchone():
+        raise SystemExit("inactive site permission should be rejected")
+
+    client.post(
+        "/admin/users",
+        data={
+            "action": f"add_site_permission:{other_member_id}",
+            "site_id": str(secondary_site),
+            "site_role": "invalid",
+        },
+        follow_redirects=False,
+    )
+    if conn.execute(
+        "SELECT 1 FROM user_site_permissions WHERE user_id = ? AND site_id = ?",
+        (other_member_id, secondary_site),
+    ).fetchone():
+        raise SystemExit("invalid site role should be rejected")
+
+    client.post(
+        "/admin/users",
+        data={"action": f"delete_site_permission:{permission_row['id']}"},
+        follow_redirects=False,
+    )
+    if conn.execute("SELECT 1 FROM user_site_permissions WHERE id = ?", (permission_row["id"],)).fetchone():
+        raise SystemExit("delete_site_permission should remove row")
+
+    client.post(
+        "/admin/users",
+        data={
+            "action": f"add_site_permission:{other_member_id}",
+            "site_id": str(default_site_id),
+            "site_role": "member",
+        },
+        follow_redirects=False,
+    )
+    second_permission = conn.execute(
+        "SELECT id FROM user_site_permissions WHERE user_id = ? AND site_id = ?",
+        (other_member_id, default_site_id),
+    ).fetchone()
+    if second_permission is None:
+        raise SystemExit("site permission setup for delete-user integration failed")
+
+    client.post(
+        "/admin/users",
+        data={"action": f"delete_user:{other_member_id}"},
+        follow_redirects=False,
+    )
+    if conn.execute("SELECT 1 FROM users WHERE id = ?", (other_member_id,)).fetchone():
+        raise SystemExit("delete_user should still remove member")
+    if conn.execute("SELECT 1 FROM user_site_permissions WHERE user_id = ?", (other_member_id,)).fetchone():
+        raise SystemExit("delete_user should remove related site permissions")
+    conn.close()
+
+with module.app.test_client() as non_admin_client:
+    with non_admin_client.session_transaction() as session:
+        session["user_id"] = member_id
+        session["username"] = "perm_member"
+        session["display_name"] = "perm_member"
+        session["role"] = "member"
+    forbidden_response = non_admin_client.post(
+        "/admin/users",
+        data={
+            "action": f"add_site_permission:{member_id}",
+            "site_id": str(default_site_id),
+            "site_role": "member",
+        },
+        follow_redirects=False,
+    )
+    if forbidden_response.status_code not in (302, 403):
+        raise SystemExit("non-admin should not be able to modify site permissions")
+
+print("site permission management smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "site permission management smoke PASS" not in result.stdout:
+        raise AssertionError("site permission management smoke subprocess did not report PASS.")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "sample.db"
@@ -3197,6 +3422,7 @@ def main() -> int:
         run_handover_route_regression_smoke(Path(tmpdir) / "handover-route-smoke.db")
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
+        run_site_permission_management_smoke(db_path, Path(tmpdir) / "app-smoke.db")
 
     if redact_database_url("postgresql://user:secret@localhost:5432/demo") != "postgresql://user:***@localhost:5432/demo":
         raise AssertionError("DATABASE_URL redaction failed.")
@@ -3214,6 +3440,7 @@ def main() -> int:
     run_help("check_site_seed.py")
     run_help("check_sheet_site_backfill.py")
     run_help("check_site_selection_readiness.py")
+    run_help("check_site_permission_readiness.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")
@@ -3235,6 +3462,9 @@ def main() -> int:
     users_role_result = run_script("check_users_secondary_update.py", args=["--field", "role"], env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in users_role_result.stdout or "PASS" not in users_role_result.stdout:
         raise AssertionError("check_users_secondary_update.py --field role did not report expected PASS without DATABASE_URL.")
+    site_permission_result = run_script("check_site_permission_readiness.py")
+    if "PASS site permission readiness check passed." not in site_permission_result.stdout:
+        raise AssertionError("check_site_permission_readiness.py did not report PASS.")
     baseline_result = run_script("check_users_baseline_and_sequence.py", env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in baseline_result.stdout or "PASS" not in baseline_result.stdout:
         raise AssertionError("check_users_baseline_and_sequence.py did not report expected PASS without DATABASE_URL.")

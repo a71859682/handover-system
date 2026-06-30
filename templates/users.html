@@ -69,6 +69,76 @@
         {% endif %}
       </td>
     </tr>
+    <tr>
+      <td colspan="7">
+        {% if user.is_global_admin %}
+        <strong>Global Admin（全站可存取）</strong>
+        {% else %}
+        <div>
+          <strong>工地權限</strong>
+          {% if user.site_permissions %}
+          <table class="users-table">
+            <thead>
+              <tr>
+                <th>工地</th>
+                <th>工地角色</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for permission in user.site_permissions %}
+              <tr>
+                <td>{{ permission.site_name }}</td>
+                <td>
+                  <form id="site-permission-{{ permission.id }}" method="post" class="inline-form">
+                    <input type="hidden" name="action" value="update_site_permission:{{ permission.id }}">
+                    <select name="site_role">
+                      {% for option in site_permission_roles %}
+                      <option value="{{ option.value }}" {{ 'selected' if permission.role == option.value else '' }}>{{ option.label }}</option>
+                      {% endfor %}
+                    </select>
+                  </form>
+                </td>
+                <td>
+                  <button form="site-permission-{{ permission.id }}" type="submit">儲存工地角色</button>
+                  <form method="post" class="inline-form" onsubmit="return confirm('確定要刪除此工地授權嗎？');">
+                    <input type="hidden" name="action" value="delete_site_permission:{{ permission.id }}">
+                    <button type="submit" class="link-danger">刪除授權</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% else %}
+          <p>目前尚無工地授權。</p>
+          {% endif %}
+
+          <form method="post" class="user-form">
+            <input type="hidden" name="action" value="add_site_permission:{{ user.id }}">
+            <label>
+              工地
+              <select name="site_id" required>
+                <option value="">請選擇工地</option>
+                {% for site in active_sites %}
+                <option value="{{ site.id }}">{{ site.site_name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>
+              工地角色
+              <select name="site_role" required>
+                {% for option in site_permission_roles %}
+                <option value="{{ option.value }}">{{ option.label }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="submit">新增工地授權</button>
+          </form>
+        </div>
+        {% endif %}
+      </td>
+    </tr>
     {% endfor %}
   </tbody>
 </table>

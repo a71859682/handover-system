@@ -557,6 +557,89 @@ def update_user_role_sqlite(
     )
 
 
+SITE_PERMISSION_ROLE_LABELS = {
+    "supervisor": "工區主管",
+    "member": "工地成員",
+}
+
+
+def get_site_permission_role_options() -> list[dict[str, str]]:
+    return [{"value": value, "label": label} for value, label in SITE_PERMISSION_ROLE_LABELS.items()]
+
+
+def normalize_site_permission_role(role: str) -> str:
+    normalized = str(role or "").strip()
+    if normalized not in SITE_PERMISSION_ROLE_LABELS:
+        raise ValueError("site_role_invalid")
+    return normalized
+
+
+def delete_user_site_permissions_sqlite(conn: sqlite3.Connection, user_id: int) -> None:
+    conn.execute("DELETE FROM user_site_permissions WHERE user_id = ?", (user_id,))
+
+
+def create_user_site_permission_sqlite(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    site_id: int,
+    role: str,
+) -> sqlite3.Row:
+    normalized_role = normalize_site_permission_role(role)
+    cur = conn.execute(
+        """
+        INSERT INTO user_site_permissions (user_id, site_id, role)
+        VALUES (?, ?, ?)
+        """,
+        (user_id, site_id, normalized_role),
+    )
+    row = conn.execute(
+        """
+        SELECT usp.id, usp.user_id, usp.site_id, usp.role, s.site_name, s.site_code, s.is_active
+        FROM user_site_permissions usp
+        JOIN sites s ON s.id = usp.site_id
+        WHERE usp.id = ?
+        """,
+        (cur.lastrowid,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"SQLite user_site_permissions create could not reload id={cur.lastrowid}.")
+    return row
+
+
+def update_user_site_permission_role_sqlite(
+    conn: sqlite3.Connection,
+    permission_id: int,
+    *,
+    role: str,
+) -> sqlite3.Row:
+    normalized_role = normalize_site_permission_role(role)
+    cur = conn.execute(
+        "UPDATE user_site_permissions SET role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (normalized_role, permission_id),
+    )
+    if cur.rowcount != 1:
+        raise LookupError(f"SQLite user_site_permissions update could not find id={permission_id}.")
+    row = conn.execute(
+        """
+        SELECT usp.id, usp.user_id, usp.site_id, usp.role, s.site_name, s.site_code, s.is_active
+        FROM user_site_permissions usp
+        JOIN sites s ON s.id = usp.site_id
+        WHERE usp.id = ?
+        """,
+        (permission_id,),
+    ).fetchone()
+    if row is None:
+        raise RuntimeError(f"SQLite user_site_permissions update could not reload id={permission_id}.")
+    return row
+
+
+def delete_user_site_permission_sqlite(conn: sqlite3.Connection, permission_id: int) -> None:
+    cur = conn.execute("DELETE FROM user_site_permissions WHERE id = ?", (permission_id,))
+    if cur.rowcount != 1:
+        raise LookupError(f"SQLite user_site_permissions delete could not find id={permission_id}.")
+
+
 def create_user_sqlite(
     conn: sqlite3.Connection,
     *,
@@ -613,6 +696,7 @@ def delete_user_sqlite(
         raise LookupError(f"SQLite users primary delete could not find id={user_id}.")
     if is_protected_user_row(row):
         raise ValueError(f"SQLite users primary delete refused protected id={user_id}.")
+    delete_user_site_permissions_sqlite(conn, user_id)
     cur = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     if cur.rowcount != 1:
         raise RuntimeError(f"SQLite users primary delete affected {cur.rowcount} rows for user_id={user_id}.")
@@ -1753,6 +1837,59 @@ def _fetch_active_sites(conn: sqlite3.Connection) -> list[dict[str, object]]:
         """
     ).fetchall()
     return [_site_row_payload(row) for row in rows if row is not None]
+
+
+def _site_permission_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
+    if row is None:
+        return None
+    role = str(row["role"] or "")
+    return {
+        "id": int(row["id"]),
+        "user_id": int(row["user_id"]),
+        "site_id": int(row["site_id"]),
+        "site_name": str(row["site_name"] or ""),
+        "site_code": str(row["site_code"] or ""),
+        "role": role,
+        "role_label": SITE_PERMISSION_ROLE_LABELS.get(role, role),
+        "is_active": int(row["is_active"]) == 1,
+    }
+
+
+def _fetch_user_site_permission_row(conn: sqlite3.Connection, permission_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT usp.id, usp.user_id, usp.site_id, usp.role, s.site_name, s.site_code, s.is_active
+        FROM user_site_permissions usp
+        JOIN sites s ON s.id = usp.site_id
+        WHERE usp.id = ?
+        """,
+        (permission_id,),
+    ).fetchone()
+
+
+def get_user_site_permissions_map(
+    conn: sqlite3.Connection,
+    *,
+    user_ids: list[int] | None = None,
+) -> dict[int, list[dict[str, object]]]:
+    query = """
+        SELECT usp.id, usp.user_id, usp.site_id, usp.role, s.site_name, s.site_code, s.is_active
+        FROM user_site_permissions usp
+        JOIN sites s ON s.id = usp.site_id
+    """
+    params: list[object] = []
+    if user_ids:
+        placeholders = ",".join("?" for _ in user_ids)
+        query += f" WHERE usp.user_id IN ({placeholders})"
+        params.extend(user_ids)
+    query += " ORDER BY usp.user_id, s.site_name COLLATE NOCASE, usp.id"
+    permission_map: dict[int, list[dict[str, object]]] = {}
+    for row in conn.execute(query, params).fetchall():
+        payload = _site_permission_payload(row)
+        if payload is None:
+            continue
+        permission_map.setdefault(int(payload["user_id"]), []).append(payload)
+    return permission_map
 
 
 def _write_current_site_session(*, site_id: int, site_name: str) -> None:
@@ -3277,10 +3414,105 @@ def users():
         password = request.form.get("password", "")
         role = request.form.get("role", "member")
 
-        if role not in ("member", "admin"):
-            flash("\u89d2\u8272\u8a2d\u5b9a\u932f\u8aa4\u3002", "error")
+        if action.startswith("add_site_permission:"):
+            try:
+                user_id = int(action.split(":", 1)[1])
+            except (TypeError, ValueError):
+                flash("\u64cd\u4f5c\u7121\u6548\u3002", "error")
+                return redirect(url_for("users"))
+            site_role = request.form.get("site_role", "")
+            try:
+                site_id = int(request.form.get("site_id", ""))
+            except (TypeError, ValueError):
+                flash("\u5de5\u5730\u9078\u64c7\u7121\u6548\u3002", "error")
+                return redirect(url_for("users"))
+            try:
+                with db() as conn:
+                    target_user = get_user_by_id(user_id)
+                    if target_user is None:
+                        raise LookupError("user_not_found")
+                    if is_global_admin(target_user):
+                        raise ValueError("admin_permissions_forbidden")
+                    site_row = conn.execute(
+                        "SELECT id, site_name, is_active FROM sites WHERE id = ?",
+                        (site_id,),
+                    ).fetchone()
+                    if site_row is None or int(site_row["is_active"]) != 1:
+                        raise LookupError("site_not_found")
+                    create_user_site_permission_sqlite(
+                        conn,
+                        user_id=user_id,
+                        site_id=site_id,
+                        role=site_role,
+                    )
+                flash("\u5de5\u5730\u6b0a\u9650\u5df2\u65b0\u589e\u3002", "success")
+            except ValueError as exc:
+                if str(exc) == "admin_permissions_forbidden":
+                    flash("\u7ba1\u7406\u54e1\u4e0d\u9700\u8981\u5de5\u5730\u6388\u6b0a\u3002", "error")
+                else:
+                    flash("\u5de5\u5730\u89d2\u8272\u8a2d\u5b9a\u932f\u8aa4\u3002", "error")
+            except LookupError as exc:
+                if str(exc) == "user_not_found":
+                    flash("\u627e\u4e0d\u5230\u6210\u54e1\u3002", "error")
+                else:
+                    flash("\u627e\u4e0d\u5230\u5de5\u5730\u6216\u5de5\u5730\u5df2\u505c\u7528\u3002", "error")
+            except sqlite3.IntegrityError:
+                flash("\u8a72\u6210\u54e1\u5df2\u64c1\u6709\u6b64\u5de5\u5730\u6388\u6b0a\u3002", "error")
+        elif action.startswith("update_site_permission:"):
+            try:
+                permission_id = int(action.split(":", 1)[1])
+            except (TypeError, ValueError):
+                flash("\u64cd\u4f5c\u7121\u6548\u3002", "error")
+                return redirect(url_for("users"))
+            site_role = request.form.get("site_role", "")
+            try:
+                with db() as conn:
+                    permission_row = _fetch_user_site_permission_row(conn, permission_id)
+                    if permission_row is None:
+                        raise LookupError("permission_not_found")
+                    target_user = get_user_by_id(int(permission_row["user_id"]))
+                    if target_user is None:
+                        raise LookupError("user_not_found")
+                    if is_global_admin(target_user):
+                        raise ValueError("admin_permissions_forbidden")
+                    update_user_site_permission_role_sqlite(conn, permission_id, role=site_role)
+                flash("\u5de5\u5730\u89d2\u8272\u5df2\u66f4\u65b0\u3002", "success")
+            except ValueError:
+                flash("\u5de5\u5730\u89d2\u8272\u8a2d\u5b9a\u932f\u8aa4\u3002", "error")
+            except LookupError as exc:
+                if str(exc) == "permission_not_found":
+                    flash("\u627e\u4e0d\u5230\u5de5\u5730\u6388\u6b0a\u3002", "error")
+                else:
+                    flash("\u627e\u4e0d\u5230\u6210\u54e1\u3002", "error")
+        elif action.startswith("delete_site_permission:"):
+            try:
+                permission_id = int(action.split(":", 1)[1])
+            except (TypeError, ValueError):
+                flash("\u64cd\u4f5c\u7121\u6548\u3002", "error")
+                return redirect(url_for("users"))
+            try:
+                with db() as conn:
+                    permission_row = _fetch_user_site_permission_row(conn, permission_id)
+                    if permission_row is None:
+                        raise LookupError("permission_not_found")
+                    target_user = get_user_by_id(int(permission_row["user_id"]))
+                    if target_user is None:
+                        raise LookupError("user_not_found")
+                    if is_global_admin(target_user):
+                        raise ValueError("admin_permissions_forbidden")
+                    delete_user_site_permission_sqlite(conn, permission_id)
+                flash("\u5de5\u5730\u6388\u6b0a\u5df2\u522a\u9664\u3002", "success")
+            except ValueError:
+                flash("\u7ba1\u7406\u54e1\u4e0d\u9700\u8981\u5de5\u5730\u6388\u6b0a\u3002", "error")
+            except LookupError as exc:
+                if str(exc) == "permission_not_found":
+                    flash("\u627e\u4e0d\u5230\u5de5\u5730\u6388\u6b0a\u3002", "error")
+                else:
+                    flash("\u627e\u4e0d\u5230\u6210\u54e1\u3002", "error")
         elif action == "create_user":
-            if not username or not password:
+            if role not in ("member", "admin"):
+                flash("\u89d2\u8272\u8a2d\u5b9a\u932f\u8aa4\u3002", "error")
+            elif not username or not password:
                 flash("\u8acb\u8f38\u5165\u5e33\u865f\u8207\u5bc6\u78bc\u3002", "error")
             else:
                 try:
@@ -3298,6 +3530,9 @@ def users():
                 except sqlite3.IntegrityError:
                     flash("\u5e33\u865f\u5df2\u5b58\u5728\u3002", "error")
         elif action.startswith("update_user:"):
+            if role not in ("member", "admin"):
+                flash("\u89d2\u8272\u8a2d\u5b9a\u932f\u8aa4\u3002", "error")
+                return redirect(url_for("users"))
             user_id = int(action.split(":", 1)[1])
             if user_id == session.get("user_id"):
                 flash("\u672c\u968e\u6bb5\u4e0d\u5141\u8a31\u4fee\u6539\u81ea\u5df1\u7684\u89d2\u8272", "error")
@@ -3332,7 +3567,31 @@ def users():
     all_users = list_users()
     with db() as conn:
         settings = get_settings(conn)
-    return render_template("users.html", users=all_users, settings=settings)
+        active_sites = _fetch_active_sites(conn)
+        permission_map = get_user_site_permissions_map(conn, user_ids=[int(user["id"]) for user in all_users])
+
+    users_payload = []
+    for user in all_users:
+        is_admin = is_global_admin(user)
+        users_payload.append(
+            {
+                "id": int(user["id"]),
+                "username": str(user["username"]),
+                "display_name": str(user["display_name"] or user["username"]),
+                "role": str(user["role"]),
+                "created_at": str(user["created_at"]),
+                "is_global_admin": is_admin,
+                "site_permissions": [] if is_admin else permission_map.get(int(user["id"]), []),
+            }
+        )
+
+    return render_template(
+        "users.html",
+        users=users_payload,
+        settings=settings,
+        active_sites=active_sites,
+        site_permission_roles=get_site_permission_role_options(),
+    )
 
 
 @app.route("/admin/table", methods=["GET", "POST"])
