@@ -3372,6 +3372,22 @@ print("site permission management smoke PASS")
         raise AssertionError("site permission management smoke subprocess did not report PASS.")
 
 
+def run_site_read_isolation_smoke(db_path: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS_DIR / "check_site_read_isolation.py"),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "APP_DB_PATH": str(db_path)},
+    )
+    if "PASS site read isolation check passed." not in result.stdout:
+        raise AssertionError("check_site_read_isolation.py smoke subprocess did not report PASS.")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "sample.db"
@@ -3423,6 +3439,7 @@ def main() -> int:
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_site_permission_management_smoke(db_path, Path(tmpdir) / "app-smoke.db")
+        run_site_read_isolation_smoke(db_path)
 
     if redact_database_url("postgresql://user:secret@localhost:5432/demo") != "postgresql://user:***@localhost:5432/demo":
         raise AssertionError("DATABASE_URL redaction failed.")
@@ -3441,6 +3458,7 @@ def main() -> int:
     run_help("check_sheet_site_backfill.py")
     run_help("check_site_selection_readiness.py")
     run_help("check_site_permission_readiness.py")
+    run_help("check_site_read_isolation.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")
@@ -3498,6 +3516,9 @@ def main() -> int:
     site_selection_result = run_script("check_site_selection_readiness.py", env={"DATABASE_URL": ""})
     if "site_selection_readiness_scope: sqlite_only" not in site_selection_result.stdout or "PASS site selection readiness check passed." not in site_selection_result.stdout:
         raise AssertionError("check_site_selection_readiness.py did not report expected PASS output.")
+    site_read_isolation_result = run_script("check_site_read_isolation.py", env={"DATABASE_URL": ""})
+    if "site_read_isolation_scope: sqlite_only" not in site_read_isolation_result.stdout or "PASS site read isolation check passed." not in site_read_isolation_result.stdout:
+        raise AssertionError("check_site_read_isolation.py did not report expected PASS output.")
     persistence_result = run_script("check_sqlite_runtime_persistence.py", env={"DATABASE_URL": ""})
     if "resolved_sqlite_source_path:" not in persistence_result.stdout or "PASS" not in persistence_result.stdout:
         raise AssertionError("check_sqlite_runtime_persistence.py did not report expected PASS output.")

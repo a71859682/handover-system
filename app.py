@@ -1254,6 +1254,91 @@ def require_sheet_exists(conn: sqlite3.Connection, sheet_id: int) -> None:
         raise LookupError(f"sheet_id={sheet_id} was not found.")
 
 
+def _get_sheet_row(conn: sqlite3.Connection, sheet_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+
+
+def _resolve_non_admin_read_site_id(conn: sqlite3.Connection, user) -> int:
+    current_site_id = get_current_site_id()
+    if current_site_id is None:
+        raise LookupError("site_context_invalid")
+    site_row = _fetch_site_row_by_id(conn, int(current_site_id))
+    if site_row is None or int(site_row["is_active"]) != 1:
+        raise LookupError("site_context_invalid")
+    permission_row = conn.execute(
+        """
+        SELECT 1
+        FROM user_site_permissions usp
+        JOIN sites s ON s.id = usp.site_id
+        WHERE usp.user_id = ? AND usp.site_id = ? AND s.is_active = 1
+        """,
+        (int(user["id"]), int(current_site_id)),
+    ).fetchone()
+    if permission_row is None:
+        raise LookupError("site_permission_missing")
+    return int(current_site_id)
+
+
+def _resolve_read_scope(conn: sqlite3.Connection) -> tuple[object | None, int | None, bool]:
+    user = _current_internal_user() if has_request_context() else None
+    if user is None:
+        return None, None, True
+    if is_global_admin(user):
+        return user, None, True
+    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    return user, current_site_id, False
+
+
+def site_read_api_error(code: str, message: str, *, status: int) -> tuple[Response, int]:
+    return jsonify({"ok": False, "error": {"code": code, "message": message}}), status
+
+
+def _handle_sheet_read_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "site_context_invalid":
+        flash("\u8acb\u5148\u9078\u64c7\u76ee\u524d\u5de5\u5730\u3002", "error")
+        return redirect(url_for("site_selector"))
+    if code == "sheet_not_in_current_site":
+        flash("\u8a72\u8868\u55ae\u4e0d\u5c6c\u65bc\u76ee\u524d\u5de5\u5730\u3002", "error")
+        return redirect(url_for("sheet"))
+    if code == "site_permission_missing":
+        flash("\u4f60\u76ee\u524d\u6c92\u6709\u6b64\u5de5\u5730\u7684\u8b80\u53d6\u6b0a\u9650\u3002", "error")
+        return redirect(url_for("site_selector"))
+    if code == "no_sheets_in_current_site":
+        flash("\u76ee\u524d\u5de5\u5730\u5c1a\u7121\u53ef\u8b80\u53d6\u7684\u8868\u55ae\u3002", "error")
+        return redirect(url_for("site_selector"))
+    if code == "sheet_not_found":
+        flash("\u627e\u4e0d\u5230\u6307\u5b9a\u8868\u55ae\u3002", "error")
+        return redirect(url_for("sheet"))
+    raise exc
+
+
+def _handle_grid_read_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "sheet_not_found":
+        return site_read_api_error(code, "sheet_id was not found.", status=404)
+    if code == "sheet_not_in_current_site":
+        return site_read_api_error(code, "sheet_id does not belong to the current site.", status=403)
+    if code == "site_permission_missing":
+        return site_read_api_error(code, "current user no longer has permission for the current site.", status=403)
+    if code == "site_context_invalid":
+        return site_read_api_error(code, "current_site_id is missing or invalid.", status=403)
+    if code == "no_sheets_in_current_site":
+        return site_read_api_error(code, "no sheets are available in the current site.", status=403)
+    raise exc
+
+
+def authorize_sheet_read(conn: sqlite3.Connection, sheet_id: int) -> None:
+    sheet_row = _get_sheet_row(conn, int(sheet_id))
+    if sheet_row is None:
+        raise LookupError("sheet_not_found")
+    _user, current_site_id, is_admin = _resolve_read_scope(conn)
+    if is_admin:
+        return
+    if int(sheet_row["site_id"] or 0) != int(current_site_id):
+        raise LookupError("sheet_not_in_current_site")
+
+
 def normalize_vendor_name(value: str) -> str:
     vendor_name = value.strip()
     if not vendor_name:
@@ -2601,38 +2686,47 @@ def bootstrap() -> None:
 
 
 def available_sheets(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    return conn.execute("SELECT * FROM sheets ORDER BY sort_order, id").fetchall()
+    _user, current_site_id, is_admin = _resolve_read_scope(conn)
+    if is_admin:
+        return conn.execute("SELECT * FROM sheets ORDER BY sort_order, id").fetchall()
+    return conn.execute(
+        "SELECT * FROM sheets WHERE site_id = ? ORDER BY sort_order, id",
+        (current_site_id,),
+    ).fetchall()
 
 
 def resolve_sheet_id(conn: sqlite3.Connection, sheet_id: int | None = None) -> int:
-    if sheet_id:
-        row = conn.execute("SELECT id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+    _user, current_site_id, is_admin = _resolve_read_scope(conn)
+    if is_admin:
+        if sheet_id:
+            row = conn.execute("SELECT id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+            if row:
+                return row["id"]
+        row = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
         if row:
             return row["id"]
-    row = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
+        default_site_id = ensure_site_foundation_schema(conn)
+        cur = conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?)",
+            (get_setting(conn, "tab_title"), 1, default_site_id),
+        )
+        return cur.lastrowid
+
+    if sheet_id is not None:
+        row = conn.execute("SELECT id, site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+        if row is None:
+            raise LookupError("sheet_not_found")
+        if int(row["site_id"] or 0) != int(current_site_id):
+            raise LookupError("sheet_not_in_current_site")
+        return int(row["id"])
+
+    row = conn.execute(
+        "SELECT id FROM sheets WHERE site_id = ? ORDER BY sort_order, id LIMIT 1",
+        (current_site_id,),
+    ).fetchone()
     if row:
-        return row["id"]
-    default_site_id = ensure_site_foundation_schema(conn)
-    cur = conn.execute(
-        "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?)",
-        (get_setting(conn, "tab_title"), 1, default_site_id),
-    )
-    return cur.lastrowid
-
-
-def extra_done(field: dict | sqlite3.Row, extra: dict) -> bool:
-    field_key = field["field_key"]
-    if field_key == "initial_check":
-        return bool(extra.get("recheck_1")) or extra.get("handover") == DONE_VALUE
-    if field_key == "recheck_1":
-        return bool(extra.get("recheck_2")) or extra.get("handover") == DONE_VALUE
-    if field_key == "recheck_2":
-        return bool(extra.get("recheck_2")) or extra.get("handover") == DONE_VALUE
-    if field_key == "handover":
-        return extra.get("handover") == DONE_VALUE
-    if field["field_type"] == "status":
-        return extra.get(field_key) == DONE_VALUE
-    return bool(extra.get(field_key))
+        return int(row["id"])
+    raise LookupError("no_sheets_in_current_site")
 
 
 def load_grid(sheet_id: int | None = None) -> dict:
@@ -2649,8 +2743,26 @@ def load_grid(sheet_id: int | None = None) -> dict:
             ).fetchall()
             for floor in floors
         }
-        progress_rows = conn.execute("SELECT unit_id, task_id, value FROM progress").fetchall()
-        extra_rows = conn.execute("SELECT * FROM unit_extra").fetchall()
+        progress_rows = conn.execute(
+            """
+            SELECT p.unit_id, p.task_id, p.value
+            FROM progress p
+            JOIN units u ON u.id = p.unit_id
+            JOIN floors f ON f.id = u.floor_id
+            WHERE f.sheet_id = ?
+            """,
+            (current_sheet_id,),
+        ).fetchall()
+        extra_rows = conn.execute(
+            """
+            SELECT ue.*
+            FROM unit_extra ue
+            JOIN units u ON u.id = ue.unit_id
+            JOIN floors f ON f.id = u.floor_id
+            WHERE f.sheet_id = ?
+            """,
+            (current_sheet_id,),
+        ).fetchall()
         extra_fields = conn.execute(
             "SELECT * FROM extra_fields WHERE sheet_id = ? AND active = 1 ORDER BY sort_order, id",
             (current_sheet_id,),
@@ -2703,6 +2815,21 @@ def load_grid(sheet_id: int | None = None) -> dict:
         "summary": summary,
         "extra_summary": extra_summary,
     }
+
+
+def extra_done(field: dict | sqlite3.Row, extra: dict) -> bool:
+    field_key = field["field_key"]
+    if field_key == "initial_check":
+        return bool(extra.get("recheck_1")) or extra.get("handover") == DONE_VALUE
+    if field_key == "recheck_1":
+        return bool(extra.get("recheck_2")) or extra.get("handover") == DONE_VALUE
+    if field_key == "recheck_2":
+        return bool(extra.get("recheck_2")) or extra.get("handover") == DONE_VALUE
+    if field_key == "handover":
+        return extra.get("handover") == DONE_VALUE
+    if field["field_type"] == "status":
+        return extra.get(field_key) == DONE_VALUE
+    return bool(extra.get(field_key))
 
 
 def render_grid_payload(sheet_id: int | None = None) -> dict:
@@ -2833,10 +2960,13 @@ def sheet(sheet_id: int | None = None):
             session.get("user_id"),
         )
         return redirect(url_for("site_selector"))
-    with db() as conn:
-        resolved = resolve_sheet_id(conn, sheet_id)
-    session["sheet_id"] = resolved
-    grid = load_grid(resolved)
+    try:
+        with db() as conn:
+            resolved = resolve_sheet_id(conn, sheet_id)
+        session["sheet_id"] = resolved
+        grid = load_grid(resolved)
+    except LookupError as exc:
+        return _handle_sheet_read_lookup_error(exc)
     return render_template(
         "sheet.html",
         grid=grid,
@@ -2850,7 +2980,10 @@ def sheet(sheet_id: int | None = None):
 @login_required
 def api_grid():
     sheet_id = request.args.get("sheet_id", type=int) or session.get("sheet_id")
-    return jsonify(render_grid_payload(sheet_id))
+    try:
+        return jsonify(render_grid_payload(sheet_id))
+    except LookupError as exc:
+        return _handle_grid_read_lookup_error(exc)
 
 
 @app.route("/api/progress", methods=["POST"])
@@ -3003,9 +3136,9 @@ def api_crew_forms():
 
     with db() as conn:
         try:
-            require_sheet_exists(conn, sheet_id)
-        except LookupError:
-            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+            authorize_sheet_read(conn, sheet_id)
+        except LookupError as exc:
+            return _handle_grid_read_lookup_error(exc)
 
         active_vendors = get_active_crew_vendors(sheet_id)
         active_vendor_set = set(active_vendors)
@@ -3261,9 +3394,9 @@ def api_crew_followups():
 
     with db() as conn:
         try:
-            require_sheet_exists(conn, sheet_id)
-        except LookupError:
-            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+            authorize_sheet_read(conn, sheet_id)
+        except LookupError as exc:
+            return _handle_grid_read_lookup_error(exc)
 
         active_vendors = get_active_crew_vendors(sheet_id)
         pending_by_vendor = get_pending_items_by_vendor(sheet_id)
@@ -3305,9 +3438,9 @@ def api_crew_daily_summary():
 
     with db() as conn:
         try:
-            require_sheet_exists(conn, sheet_id)
-        except LookupError:
-            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+            authorize_sheet_read(conn, sheet_id)
+        except LookupError as exc:
+            return _handle_grid_read_lookup_error(exc)
 
         rows = conn.execute(
             """
@@ -3364,9 +3497,9 @@ def api_crew_missing():
 
     with db() as conn:
         try:
-            require_sheet_exists(conn, sheet_id)
-        except LookupError:
-            return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+            authorize_sheet_read(conn, sheet_id)
+        except LookupError as exc:
+            return _handle_grid_read_lookup_error(exc)
 
         active_vendors = set(get_active_crew_vendors(sheet_id))
         pending_by_vendor = get_pending_items_by_vendor(sheet_id)
