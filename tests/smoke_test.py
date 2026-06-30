@@ -339,6 +339,143 @@ print("site foundation smoke PASS")
         raise AssertionError("site foundation smoke subprocess did not report PASS.")
 
 
+def run_site_selection_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site_id = module.get_default_site_id(conn)
+    if default_site_id is None:
+        raise SystemExit("default site id missing")
+
+    secondary_site = conn.execute(
+        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+        ("__smoke_secondary_site__", "secondary"),
+    ).fetchone()
+    inactive_site = conn.execute(
+        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 0) RETURNING id",
+        ("__smoke_inactive_site__", "inactive"),
+    ).fetchone()
+
+    def create_user(username):
+        conn.execute(
+            "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+            (username, username, module.generate_password_hash("x"), "member"),
+        )
+        return conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+
+    single = create_user("__smoke_single__")
+    multi = create_user("__smoke_multi__")
+    zero = create_user("__smoke_zero__")
+    admin = conn.execute("SELECT * FROM users WHERE username = 'admin'").fetchone()
+
+    conn.executemany(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        [
+            (single["id"], secondary_site["id"], "member"),
+            (multi["id"], default_site_id, "member"),
+            (multi["id"], secondary_site["id"], "supervisor"),
+        ],
+    )
+    conn.commit()
+
+if not module.is_global_admin(admin):
+    raise SystemExit("admin should be global admin")
+if not module.user_can_access_site(admin["id"], secondary_site["id"]):
+    raise SystemExit("admin should access secondary active site")
+if module.user_can_access_site(admin["id"], inactive_site["id"]):
+    raise SystemExit("admin should not access inactive site")
+if module.get_user_role_for_site(admin["id"], secondary_site["id"]) != "admin":
+    raise SystemExit("admin role lookup failed")
+
+with module.app.test_request_context("/"):
+    result = module.normalize_current_site_for_user(admin)
+    if result["status"] != "resolved" or result["site_id"] != default_site_id:
+        raise SystemExit("admin should fallback to default site")
+    if module.get_current_site_id() != default_site_id:
+        raise SystemExit("admin current site should be written")
+
+with module.app.test_request_context("/"):
+    result = module.normalize_current_site_for_user(single)
+    if result["status"] != "resolved" or result["site_id"] != secondary_site["id"]:
+        raise SystemExit("single-site user should auto-select sole site")
+
+with module.app.test_request_context("/"):
+    module.set_current_site_id(inactive_site["id"])
+    result = module.normalize_current_site_for_user(single)
+    if result["status"] != "resolved" or result["site_id"] != secondary_site["id"]:
+        raise SystemExit("single-site stale session should reset to sole site")
+
+with module.app.test_request_context("/"):
+    result = module.normalize_current_site_for_user(multi)
+    if result["status"] != "site_selection_required":
+        raise SystemExit("multi-site user should require selector")
+    if module.get_current_site_id() is not None:
+        raise SystemExit("multi-site user should not keep current site")
+    if not module.session.get("site_selection_required"):
+        raise SystemExit("multi-site user should set selector flag")
+
+with module.app.test_request_context("/"):
+    module.set_current_site_id(inactive_site["id"])
+    result = module.normalize_current_site_for_user(multi)
+    if result["status"] != "site_selection_required":
+        raise SystemExit("multi-site stale session should require selector")
+    if module.get_current_site_id() is not None:
+        raise SystemExit("multi-site stale session should clear current site")
+
+with module.app.test_request_context("/"):
+    result = module.normalize_current_site_for_user(zero)
+    if result["status"] != "access_denied_no_site_permission":
+        raise SystemExit("zero-site user should be blocked")
+    if module.get_current_site_id() is not None:
+        raise SystemExit("zero-site user should not keep current site")
+
+client = module.app.test_client()
+with client.session_transaction() as session:
+    session["user_id"] = admin["id"]
+    session["username"] = "admin"
+    session["role"] = "admin"
+    session["current_site_id"] = default_site_id
+    session["current_site_name"] = module.DEFAULT_SITE_NAME
+    session["site_selection_required"] = True
+
+response = client.post("/logout", follow_redirects=False)
+if response.status_code != 302:
+    raise SystemExit("logout should redirect")
+with client.session_transaction() as session:
+    if "current_site_id" in session or "current_site_name" in session or "site_selection_required" in session:
+        raise SystemExit("logout should clear site selection session keys")
+
+print("site selection smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "site selection smoke PASS" not in result.stdout:
+        raise AssertionError("site selection smoke subprocess did not report PASS.")
+
+
 def run_crew_schema_smoke(app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -2876,6 +3013,9 @@ def main() -> int:
         site_foundation_db = Path(tmpdir) / "site-foundation.db"
         create_sample_sqlite(site_foundation_db)
         run_site_foundation_smoke(site_foundation_db)
+        site_selection_db = Path(tmpdir) / "site-selection.db"
+        create_sample_sqlite(site_selection_db)
+        run_site_selection_smoke(site_selection_db)
         run_floor_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_role_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
@@ -2920,6 +3060,7 @@ def main() -> int:
     run_help("check_site_schema.py")
     run_help("check_site_seed.py")
     run_help("check_sheet_site_backfill.py")
+    run_help("check_site_selection_readiness.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
     run_help("plan_users_sqlite_sequence_bump.py")
@@ -2971,6 +3112,9 @@ def main() -> int:
     site_backfill_result = run_script("check_sheet_site_backfill.py", env={"DATABASE_URL": ""})
     if "sheet_site_backfill_scope: sqlite_only" not in site_backfill_result.stdout or "PASS sheet site backfill check passed." not in site_backfill_result.stdout:
         raise AssertionError("check_sheet_site_backfill.py did not report expected PASS output.")
+    site_selection_result = run_script("check_site_selection_readiness.py", env={"DATABASE_URL": ""})
+    if "site_selection_readiness_scope: sqlite_only" not in site_selection_result.stdout or "PASS site selection readiness check passed." not in site_selection_result.stdout:
+        raise AssertionError("check_site_selection_readiness.py did not report expected PASS output.")
     persistence_result = run_script("check_sqlite_runtime_persistence.py", env={"DATABASE_URL": ""})
     if "resolved_sqlite_source_path:" not in persistence_result.stdout or "PASS" not in persistence_result.stdout:
         raise AssertionError("check_sqlite_runtime_persistence.py did not report expected PASS output.")

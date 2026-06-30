@@ -9,7 +9,19 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import psycopg
-from flask import Flask, flash, g, has_app_context, jsonify, redirect, render_template, request, session, url_for
+from flask import (
+    Flask,
+    flash,
+    g,
+    has_app_context,
+    has_request_context,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
 from openpyxl import load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 from database import init_database
@@ -1696,6 +1708,272 @@ def ensure_site_foundation_schema(conn: sqlite3.Connection) -> int:
     default_site_id = seed_default_site(conn)
     ensure_sheets_site_backfill(conn, default_site_id)
     return default_site_id
+
+
+def _site_row_payload(row: sqlite3.Row | None) -> dict[str, object] | None:
+    if row is None:
+        return None
+    return {
+        "id": int(row["id"]),
+        "site_name": str(row["site_name"]),
+        "site_code": str(row["site_code"]),
+        "is_active": int(row["is_active"]),
+    }
+
+
+def _fetch_default_site_row(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT id, site_name, site_code, is_active
+        FROM sites
+        WHERE site_name = ?
+        """,
+        (DEFAULT_SITE_NAME,),
+    ).fetchone()
+
+
+def _fetch_site_row_by_id(conn: sqlite3.Connection, site_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT id, site_name, site_code, is_active
+        FROM sites
+        WHERE id = ?
+        """,
+        (site_id,),
+    ).fetchone()
+
+
+def _fetch_active_sites(conn: sqlite3.Connection) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT id, site_name, site_code, is_active
+        FROM sites
+        WHERE is_active = 1
+        ORDER BY id
+        """
+    ).fetchall()
+    return [_site_row_payload(row) for row in rows if row is not None]
+
+
+def _write_current_site_session(*, site_id: int, site_name: str) -> None:
+    session["current_site_id"] = int(site_id)
+    session["current_site_name"] = str(site_name)
+    session["site_selection_required"] = False
+
+
+def get_default_site_id(conn: sqlite3.Connection | None = None) -> int | None:
+    if conn is not None:
+        row = _fetch_default_site_row(conn)
+        return int(row["id"]) if row else None
+    with db() as temp_conn:
+        row = _fetch_default_site_row(temp_conn)
+    return int(row["id"]) if row else None
+
+
+def get_current_site_id() -> int | None:
+    if not has_request_context():
+        return None
+    raw = session.get("current_site_id")
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def set_current_site_id(site_id: int) -> None:
+    with db() as conn:
+        row = _fetch_site_row_by_id(conn, int(site_id))
+    if row is None:
+        raise LookupError("site_not_found")
+    _write_current_site_session(site_id=int(row["id"]), site_name=str(row["site_name"]))
+
+
+def clear_current_site() -> None:
+    if not has_request_context():
+        return
+    session.pop("current_site_id", None)
+    session.pop("current_site_name", None)
+    session.pop("site_selection_required", None)
+
+
+def is_global_admin(user) -> bool:
+    if not user:
+        return False
+    try:
+        role = user["role"]
+    except (KeyError, TypeError, IndexError):
+        role = getattr(user, "role", None)
+    return str(role or "").strip() == "admin"
+
+
+def get_user_accessible_sites(user_id: int) -> list[dict[str, object]]:
+    user = get_user_by_id(user_id)
+    if user is None:
+        return []
+    with db() as conn:
+        if is_global_admin(user):
+            return _fetch_active_sites(conn)
+        rows = conn.execute(
+            """
+            SELECT DISTINCT s.id, s.site_name, s.site_code, s.is_active
+            FROM user_site_permissions usp
+            JOIN sites s ON s.id = usp.site_id
+            WHERE usp.user_id = ? AND s.is_active = 1
+            ORDER BY s.id
+            """,
+            (user_id,),
+        ).fetchall()
+    return [_site_row_payload(row) for row in rows if row is not None]
+
+
+def user_can_access_site(user_id: int, site_id: int) -> bool:
+    user = get_user_by_id(user_id)
+    if user is None:
+        return False
+    with db() as conn:
+        if is_global_admin(user):
+            row = conn.execute("SELECT 1 FROM sites WHERE id = ? AND is_active = 1", (site_id,)).fetchone()
+            return row is not None
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM user_site_permissions usp
+            JOIN sites s ON s.id = usp.site_id
+            WHERE usp.user_id = ? AND usp.site_id = ? AND s.is_active = 1
+            """,
+            (user_id, site_id),
+        ).fetchone()
+    return row is not None
+
+
+def get_user_role_for_site(user_id: int, site_id: int) -> str | None:
+    user = get_user_by_id(user_id)
+    if user is None:
+        return None
+    with db() as conn:
+        if is_global_admin(user):
+            site_row = conn.execute("SELECT 1 FROM sites WHERE id = ? AND is_active = 1", (site_id,)).fetchone()
+            return "admin" if site_row else None
+        row = conn.execute(
+            """
+            SELECT usp.role
+            FROM user_site_permissions usp
+            JOIN sites s ON s.id = usp.site_id
+            WHERE usp.user_id = ? AND usp.site_id = ? AND s.is_active = 1
+            """,
+            (user_id, site_id),
+        ).fetchone()
+    return str(row["role"]) if row else None
+
+
+def resolve_current_site_for_user(user) -> dict[str, object]:
+    if not user:
+        return {
+            "status": "access_denied_no_site_permission",
+            "site_id": None,
+            "site_name": "",
+            "site_selection_required": False,
+            "accessible_sites": [],
+            "reason": "missing_user",
+        }
+
+    current_site_id = get_current_site_id()
+    with db() as conn:
+        default_site_row = _fetch_default_site_row(conn)
+        accessible_sites = get_user_accessible_sites(int(user["id"]))
+        accessible_site_ids = {int(site["id"]) for site in accessible_sites}
+
+        if is_global_admin(user):
+            if default_site_row is None:
+                return {
+                    "status": "default_site_missing",
+                    "site_id": None,
+                    "site_name": "",
+                    "site_selection_required": False,
+                    "accessible_sites": accessible_sites,
+                    "reason": "default_site_missing",
+                }
+            current_site_row = _fetch_site_row_by_id(conn, current_site_id) if current_site_id else None
+            if current_site_row is not None and int(current_site_row["is_active"]) == 1:
+                chosen_row = current_site_row
+                reason = "session_site_valid"
+            else:
+                chosen_row = default_site_row
+                reason = "admin_default_fallback"
+            return {
+                "status": "resolved",
+                "site_id": int(chosen_row["id"]),
+                "site_name": str(chosen_row["site_name"]),
+                "site_selection_required": False,
+                "accessible_sites": accessible_sites,
+                "reason": reason,
+            }
+
+        accessible_count = len(accessible_sites)
+        if accessible_count == 0:
+            return {
+                "status": "access_denied_no_site_permission",
+                "site_id": None,
+                "site_name": "",
+                "site_selection_required": False,
+                "accessible_sites": accessible_sites,
+                "reason": "no_accessible_sites",
+            }
+
+        if accessible_count == 1:
+            only_site = accessible_sites[0]
+            if current_site_id == int(only_site["id"]):
+                reason = "session_site_valid"
+            else:
+                reason = "single_site_auto_select"
+            return {
+                "status": "resolved",
+                "site_id": int(only_site["id"]),
+                "site_name": str(only_site["site_name"]),
+                "site_selection_required": False,
+                "accessible_sites": accessible_sites,
+                "reason": reason,
+            }
+
+        if current_site_id and current_site_id in accessible_site_ids:
+            current_site_row = _fetch_site_row_by_id(conn, current_site_id)
+            if current_site_row is not None and int(current_site_row["is_active"]) == 1:
+                return {
+                    "status": "resolved",
+                    "site_id": int(current_site_row["id"]),
+                    "site_name": str(current_site_row["site_name"]),
+                    "site_selection_required": False,
+                    "accessible_sites": accessible_sites,
+                    "reason": "session_site_valid",
+                }
+
+        return {
+            "status": "site_selection_required",
+            "site_id": None,
+            "site_name": "",
+            "site_selection_required": True,
+            "accessible_sites": accessible_sites,
+            "reason": "multiple_accessible_sites",
+        }
+
+
+def normalize_current_site_for_user(user) -> dict[str, object]:
+    resolution = resolve_current_site_for_user(user)
+    status = resolution["status"]
+    if status == "resolved":
+        _write_current_site_session(
+            site_id=int(resolution["site_id"]),
+            site_name=str(resolution["site_name"]),
+        )
+    elif status == "site_selection_required":
+        clear_current_site()
+        if has_request_context():
+            session["site_selection_required"] = True
+    else:
+        clear_current_site()
+    return resolution
 
 
 def _vendor_contacts_has_legacy_unique(conn: sqlite3.Connection) -> bool:
