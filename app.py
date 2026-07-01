@@ -5,6 +5,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timedelta
 from functools import wraps
+from html import escape
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -199,6 +200,18 @@ def _sqlite_get_user_by_id(user_id: int) -> sqlite3.Row | None:
             WHERE id = ?
             """,
             (user_id,),
+        ).fetchone()
+
+
+def _sqlite_get_vendor_account_by_username(username: str) -> sqlite3.Row | None:
+    with db() as conn:
+        return conn.execute(
+            """
+            SELECT id, username, password_hash, vendor_name, is_active, created_at, updated_at
+            FROM vendor_accounts
+            WHERE username = ?
+            """,
+            (username,),
         ).fetchone()
 
 
@@ -1172,6 +1185,10 @@ def get_user_by_id(user_id: int) -> sqlite3.Row | None:
     return row
 
 
+def get_vendor_account_by_username(username: str) -> sqlite3.Row | None:
+    return _sqlite_get_vendor_account_by_username(username)
+
+
 def list_users() -> list[sqlite3.Row]:
     rows = _sqlite_list_users()
     if users_read_compare_enabled():
@@ -2108,6 +2125,53 @@ def admin_required(fn):
         if session.get("role") != "admin":
             flash("需要管理員權限。", "error")
             return redirect(url_for("sheet"))
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def clear_vendor_session() -> None:
+    session.pop("vendor_account_id", None)
+    session.pop("vendor_username", None)
+    session.pop("vendor_name", None)
+    if session.get("identity_type") == "vendor":
+        session.pop("identity_type", None)
+
+
+def is_vendor_session() -> bool:
+    return (
+        session.get("identity_type") == "vendor"
+        and session.get("vendor_account_id") is not None
+        and session.get("vendor_username") is not None
+        and session.get("vendor_name") is not None
+    )
+
+
+def set_vendor_session(vendor_account) -> None:
+    session.clear()
+    session["identity_type"] = "vendor"
+    session["vendor_account_id"] = int(vendor_account["id"])
+    session["vendor_username"] = str(vendor_account["username"])
+    session["vendor_name"] = str(vendor_account["vendor_name"])
+
+
+def verify_vendor_account(username: str, password: str) -> sqlite3.Row | None:
+    vendor_account = get_vendor_account_by_username(username.strip())
+    if vendor_account is None:
+        return None
+    if int(vendor_account["is_active"] or 0) != 1:
+        return None
+    if not check_password_hash(vendor_account["password_hash"], password):
+        return None
+    return vendor_account
+
+
+def vendor_login_required(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not is_vendor_session():
+            clear_vendor_session()
+            return redirect(url_for("vendor_login"))
         return fn(*args, **kwargs)
 
     return wrapper
@@ -3401,6 +3465,24 @@ def index():
     return redirect(url_for("sheet"))
 
 
+def _render_vendor_login_page(*, error_message: str = "") -> str:
+    error_html = ""
+    if error_message:
+        error_html = f'<p data-testid="vendor-login-error">{escape(error_message)}</p>'
+    return (
+        "<!doctype html>"
+        "<html><head><title>Vendor Login</title></head><body>"
+        "<h1>Vendor Login</h1>"
+        f"{error_html}"
+        '<form method="post">'
+        '<label>Username <input type="text" name="username" /></label>'
+        '<label>Password <input type="password" name="password" /></label>'
+        '<button type="submit">Login</button>'
+        "</form>"
+        "</body></html>"
+    )
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     settings = query_settings()
@@ -3436,6 +3518,20 @@ def login():
     return render_template("login.html", settings=settings)
 
 
+@app.route("/vendor/login", methods=["GET", "POST"])
+def vendor_login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        vendor_account = verify_vendor_account(username, password)
+        if vendor_account is not None:
+            set_vendor_session(vendor_account)
+            return redirect(url_for("vendor_login"))
+        clear_vendor_session()
+        return _render_vendor_login_page(error_message="Invalid vendor username or password.")
+    return _render_vendor_login_page()
+
+
 def query_settings() -> dict[str, str]:
     with db() as conn:
         return get_settings(conn)
@@ -3446,6 +3542,12 @@ def query_settings() -> dict[str, str]:
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+@app.route("/vendor/logout", methods=["GET"])
+def vendor_logout():
+    clear_vendor_session()
+    return redirect(url_for("vendor_login"))
 
 
 @app.route("/site-selector", methods=["GET", "POST"])

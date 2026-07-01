@@ -5855,6 +5855,132 @@ def run_admin_write_model_readiness_smoke() -> None:
             raise AssertionError(f"check_admin_write_model_readiness.py output missing: {fragment}")
 
 
+def run_vendor_auth_foundation_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "UPDATE users SET password_hash = ? WHERE username = 'admin'",
+        (module.generate_password_hash("admin"),),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
+        VALUES (?, ?, ?, ?)
+        ''',
+        ("vendor_active", module.generate_password_hash("vendor-pass"), "Vendor A", 1),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
+        VALUES (?, ?, ?, ?)
+        ''',
+        ("vendor_inactive", module.generate_password_hash("vendor-pass"), "Vendor B", 0),
+    )
+    conn.commit()
+
+client = module.app.test_client()
+
+internal_login = client.post(
+    "/login",
+    data={"username": "admin", "display_name": "Admin", "password": "admin"},
+    follow_redirects=False,
+)
+if internal_login.status_code != 302:
+    raise SystemExit("internal login regression should still pass")
+with client.session_transaction() as session:
+    if session.get("user_id") is None or session.get("role") != "admin":
+        raise SystemExit("internal login should still populate internal session")
+
+with client.session_transaction() as session:
+    session.clear()
+
+vendor_login_page = client.get("/vendor/login")
+if vendor_login_page.status_code != 200:
+    raise SystemExit("vendor login page GET should return 200")
+vendor_login_html = vendor_login_page.get_data(as_text=True)
+for fragment in ("Vendor Login", 'name="username"', 'name="password"', 'method="post"'):
+    if fragment not in vendor_login_html:
+        raise SystemExit(f"vendor login page missing fragment: {fragment}")
+
+wrong_password = client.post(
+    "/vendor/login",
+    data={"username": "vendor_active", "password": "wrong-pass"},
+    follow_redirects=False,
+)
+if wrong_password.status_code != 200:
+    raise SystemExit("vendor wrong password should render login page")
+with client.session_transaction() as session:
+    if session.get("identity_type") is not None:
+        raise SystemExit("vendor wrong password should not create vendor session")
+    if session.get("user_id") is not None or session.get("role") is not None:
+        raise SystemExit("vendor wrong password should not create internal session")
+
+inactive_vendor = client.post(
+    "/vendor/login",
+    data={"username": "vendor_inactive", "password": "vendor-pass"},
+    follow_redirects=False,
+)
+if inactive_vendor.status_code != 200:
+    raise SystemExit("inactive vendor should render login page")
+with client.session_transaction() as session:
+    if session.get("identity_type") is not None or session.get("vendor_account_id") is not None:
+        raise SystemExit("inactive vendor should not create vendor session")
+
+valid_vendor = client.post(
+    "/vendor/login",
+    data={"username": "vendor_active", "password": "vendor-pass"},
+    follow_redirects=False,
+)
+if valid_vendor.status_code != 302 or not valid_vendor.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("vendor valid login should redirect to /vendor/login")
+with client.session_transaction() as session:
+    if session.get("identity_type") != "vendor":
+        raise SystemExit("vendor valid login should set identity_type=vendor")
+    if session.get("vendor_username") != "vendor_active":
+        raise SystemExit("vendor valid login should set vendor_username")
+    if session.get("vendor_name") != "Vendor A":
+        raise SystemExit("vendor valid login should set vendor_name")
+    if session.get("vendor_account_id") is None:
+        raise SystemExit("vendor valid login should set vendor_account_id")
+    if session.get("user_id") is not None or session.get("role") is not None:
+        raise SystemExit("vendor session must not contain internal user_id/role")
+
+vendor_logout = client.get("/vendor/logout", follow_redirects=False)
+if vendor_logout.status_code != 302 or not vendor_logout.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("vendor logout should redirect to /vendor/login")
+with client.session_transaction() as session:
+    for key in ("identity_type", "vendor_account_id", "vendor_username", "vendor_name"):
+        if session.get(key) is not None:
+            raise SystemExit("vendor logout should clear vendor session")
+    if session.get("user_id") is not None or session.get("role") is not None:
+        raise SystemExit("vendor logout should not create internal session")
+
+print("vendor auth foundation smoke PASS")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(db_path), str(ROOT_DIR)],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "vendor auth foundation smoke PASS" not in result.stdout:
+        raise AssertionError("vendor auth foundation smoke subprocess did not report PASS.")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "sample.db"
@@ -5917,6 +6043,9 @@ def main() -> int:
         run_unit_extra_write_isolation_smoke(db_path)
         run_vendor_contact_write_isolation_smoke(db_path)
         run_vendor_work_entry_write_isolation_smoke(db_path)
+        vendor_auth_db = Path(tmpdir) / "vendor-auth-foundation.db"
+        create_sample_sqlite(vendor_auth_db)
+        run_vendor_auth_foundation_smoke(vendor_auth_db)
         run_site_write_isolation_readiness_smoke()
         run_admin_write_model_readiness_smoke()
 
