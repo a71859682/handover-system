@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Vendor Login{% endblock %}
+{% block main_class %}login-page{% endblock %}
+{% block content %}
+<section class="login-panel" data-testid="vendor-login-page">
+  <h1>Vendor Login</h1>
+  {% if error_message %}
+  <p class="message error" data-testid="vendor-login-error">{{ error_message }}</p>
+  {% endif %}
+
+  {% if is_authenticated %}
+  <div data-testid="vendor-login-success">
+    <p>Signed in as {{ vendor_name }}</p>
+    <p data-testid="vendor-username">{{ vendor_username }}</p>
+    <a href="{{ url_for('vendor_logout') }}" data-testid="vendor-logout-link">Logout</a>
+  </div>
+  {% else %}
+  <form method="post" class="login-form" data-testid="vendor-login-form">
+    <label>
+      Username
+      <input name="username" autocomplete="username" required autofocus>
+    </label>
+    <label>
+      Password
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit">Login</button>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

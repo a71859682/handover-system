@@ -5,7 +5,6 @@ import sqlite3
 import uuid
 from datetime import datetime, timedelta
 from functools import wraps
-from html import escape
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -3466,20 +3465,13 @@ def index():
 
 
 def _render_vendor_login_page(*, error_message: str = "") -> str:
-    error_html = ""
-    if error_message:
-        error_html = f'<p data-testid="vendor-login-error">{escape(error_message)}</p>'
-    return (
-        "<!doctype html>"
-        "<html><head><title>Vendor Login</title></head><body>"
-        "<h1>Vendor Login</h1>"
-        f"{error_html}"
-        '<form method="post">'
-        '<label>Username <input type="text" name="username" /></label>'
-        '<label>Password <input type="password" name="password" /></label>'
-        '<button type="submit">Login</button>'
-        "</form>"
-        "</body></html>"
+    return render_template(
+        "vendor_login.html",
+        settings=query_settings(),
+        error_message=error_message,
+        is_authenticated=is_vendor_session(),
+        vendor_name=session.get("vendor_name"),
+        vendor_username=session.get("vendor_username"),
     )
 
 
@@ -3521,13 +3513,13 @@ def login():
 @app.route("/vendor/login", methods=["GET", "POST"])
 def vendor_login():
     if request.method == "POST":
+        session.clear()
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         vendor_account = verify_vendor_account(username, password)
         if vendor_account is not None:
             set_vendor_session(vendor_account)
             return redirect(url_for("vendor_login"))
-        clear_vendor_session()
         return _render_vendor_login_page(error_message="Invalid vendor username or password.")
     return _render_vendor_login_page()
 
@@ -3546,7 +3538,7 @@ def logout():
 
 @app.route("/vendor/logout", methods=["GET"])
 def vendor_logout():
-    clear_vendor_session()
+    session.clear()
     return redirect(url_for("vendor_login"))
 
 
