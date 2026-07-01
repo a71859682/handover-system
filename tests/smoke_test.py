@@ -5911,9 +5911,22 @@ vendor_login_page = client.get("/vendor/login")
 if vendor_login_page.status_code != 200:
     raise SystemExit("vendor login page GET should return 200")
 vendor_login_html = vendor_login_page.get_data(as_text=True)
-for fragment in ("Vendor Login", 'name="username"', 'name="password"', 'method="post"'):
+for fragment in (
+    "Vendor Login",
+    'data-testid="vendor-login-page"',
+    'data-testid="vendor-login-form"',
+    'name="username"',
+    'name="password"',
+    'method="post"',
+):
     if fragment not in vendor_login_html:
         raise SystemExit(f"vendor login page missing fragment: {fragment}")
+
+with client.session_transaction() as session:
+    session["user_id"] = 999
+    session["role"] = "admin"
+    session["current_site_id"] = 123
+    session["current_site_name"] = "Leaked Site"
 
 wrong_password = client.post(
     "/vendor/login",
@@ -5922,11 +5935,16 @@ wrong_password = client.post(
 )
 if wrong_password.status_code != 200:
     raise SystemExit("vendor wrong password should render login page")
+wrong_password_html = wrong_password.get_data(as_text=True)
+if 'data-testid="vendor-login-error"' not in wrong_password_html:
+    raise SystemExit("vendor wrong password should render template error state")
 with client.session_transaction() as session:
     if session.get("identity_type") is not None:
         raise SystemExit("vendor wrong password should not create vendor session")
     if session.get("user_id") is not None or session.get("role") is not None:
         raise SystemExit("vendor wrong password should not create internal session")
+    if session.get("current_site_id") is not None or session.get("current_site_name") is not None:
+        raise SystemExit("vendor wrong password should clear stale current-site session")
 
 inactive_vendor = client.post(
     "/vendor/login",
@@ -5957,6 +5975,21 @@ with client.session_transaction() as session:
         raise SystemExit("vendor valid login should set vendor_account_id")
     if session.get("user_id") is not None or session.get("role") is not None:
         raise SystemExit("vendor session must not contain internal user_id/role")
+    if session.get("current_site_id") is not None or session.get("current_site_name") is not None:
+        raise SystemExit("vendor session must not contain internal current-site session")
+
+vendor_logged_in_page = client.get("/vendor/login")
+if vendor_logged_in_page.status_code != 200:
+    raise SystemExit("vendor logged-in page GET should return 200")
+vendor_logged_in_html = vendor_logged_in_page.get_data(as_text=True)
+for fragment in (
+    'data-testid="vendor-login-success"',
+    'data-testid="vendor-logout-link"',
+    "Vendor A",
+    "vendor_active",
+):
+    if fragment not in vendor_logged_in_html:
+        raise SystemExit(f"vendor logged-in page missing fragment: {fragment}")
 
 vendor_logout = client.get("/vendor/logout", follow_redirects=False)
 if vendor_logout.status_code != 302 or not vendor_logout.headers.get("Location", "").endswith("/vendor/login"):
