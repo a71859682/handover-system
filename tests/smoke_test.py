@@ -2806,6 +2806,266 @@ print("admin current-site extra-field write smoke PASS")
         raise AssertionError("admin current-site extra-field write smoke subprocess did not report PASS.")
 
 
+def run_admin_save_internal_split_smoke(app_db_path: Path) -> None:
+    if app_db_path.exists():
+        app_db_path.unlink()
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    site_a = module.get_default_site_id(conn)
+    if site_a is None:
+        raise SystemExit("default site missing")
+    site_b = conn.execute(
+        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+        ("__admin_save_site_b__", "save-site-b"),
+    ).fetchone()["id"]
+    sheet_a = conn.execute("SELECT id FROM sheets ORDER BY id LIMIT 1").fetchone()["id"]
+    task_a = conn.execute(
+        "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?) RETURNING id",
+        (sheet_a, 940, "Vendor A", "Location A", "Task A"),
+    ).fetchone()["id"]
+    floor_a = conn.execute(
+        "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, 1) RETURNING id",
+        (sheet_a, 941, "1F", "A"),
+    ).fetchone()["id"]
+    unit_a = conn.execute(
+        "INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?) RETURNING id",
+        (floor_a, 1, "A101"),
+    ).fetchone()["id"]
+    field_a = conn.execute(
+        '''
+        INSERT INTO extra_fields
+        (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+        VALUES (?, ?, ?, ?, ?, 0, 1)
+        RETURNING id
+        ''',
+        (sheet_a, "custom_save_a", "Field Save A", "text", 942),
+    ).fetchone()["id"]
+
+    sheet_b = conn.execute(
+        "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?) RETURNING id",
+        ("Save Sheet B", 943, site_b),
+    ).fetchone()["id"]
+    task_b = conn.execute(
+        "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?) RETURNING id",
+        (sheet_b, 944, "Vendor B", "Location B", "Task B"),
+    ).fetchone()["id"]
+    floor_b = conn.execute(
+        "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, 1) RETURNING id",
+        (sheet_b, 945, "2F", "B"),
+    ).fetchone()["id"]
+    unit_b = conn.execute(
+        "INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?) RETURNING id",
+        (floor_b, 1, "B201"),
+    ).fetchone()["id"]
+    field_b = conn.execute(
+        '''
+        INSERT INTO extra_fields
+        (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+        VALUES (?, ?, ?, ?, ?, 0, 1)
+        RETURNING id
+        ''',
+        (sheet_b, "custom_save_b", "Field Save B", "text", 946),
+    ).fetchone()["id"]
+    conn.commit()
+
+client = module.app.test_client()
+
+def set_admin_session(*, current_site_id=None, current_site_name=None):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "Admin"
+        session["role"] = "admin"
+        if current_site_id is not None:
+            session["current_site_id"] = int(current_site_id)
+            session["current_site_name"] = current_site_name or f"site-{current_site_id}"
+            session["site_selection_required"] = False
+
+def snapshot(sheet_id, task_id, field_id, floor_id, unit_id):
+    with module.db() as conn:
+        return {
+            "meta_site_title": conn.execute("SELECT value FROM meta WHERE key = 'site_title'").fetchone()["value"],
+            "sheet_name": conn.execute("SELECT name FROM sheets WHERE id = ?", (sheet_id,)).fetchone()["name"],
+            "task": dict(conn.execute("SELECT vendor, location, name FROM tasks WHERE id = ?", (task_id,)).fetchone()),
+            "field": dict(conn.execute("SELECT name, field_type, active FROM extra_fields WHERE id = ?", (field_id,)).fetchone()),
+            "floor": dict(conn.execute("SELECT name, block_name FROM floors WHERE id = ?", (floor_id,)).fetchone()),
+            "unit": dict(conn.execute("SELECT name FROM units WHERE id = ?", (unit_id,)).fetchone()),
+        }
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+global_only = client.post(
+    f"/admin/table?sheet_id={sheet_a}",
+    data={
+        "action": "save",
+        "site_title": "Global Only Title",
+        "sheet_name": "Sheet A Original",
+        f"task_vendor_{task_a}": "Vendor A",
+        f"task_location_{task_a}": "Location A",
+        f"task_name_{task_a}": "Task A",
+        f"extra_name_{field_a}": "Field Save A",
+        f"extra_type_{field_a}": "text",
+        f"floor_name_{floor_a}": "1F",
+        f"floor_block_{floor_a}": "A",
+        f"unit_name_{unit_a}": "A101",
+    },
+    follow_redirects=False,
+)
+if global_only.status_code != 302:
+    raise SystemExit("save global-only with valid current site should redirect")
+snap_after_global = snapshot(sheet_a, task_a, field_a, floor_a, unit_a)
+if snap_after_global["meta_site_title"] != "Global Only Title":
+    raise SystemExit("save global-only should update meta")
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+site_only = client.post(
+    f"/admin/table?sheet_id={sheet_a}",
+    data={
+        "action": "save",
+        "site_title": "Global Only Title",
+        "sheet_name": "Sheet A Site Save",
+        f"task_vendor_{task_a}": "Vendor A Updated",
+        f"task_location_{task_a}": "Location A Updated",
+        f"task_name_{task_a}": "Task A Updated",
+        f"extra_name_{field_a}": "Field Save A Updated",
+        f"extra_type_{field_a}": "date",
+        f"floor_name_{floor_a}": "1F Updated",
+        f"floor_block_{floor_a}": "A2",
+        f"unit_name_{unit_a}": "A102",
+    },
+    follow_redirects=False,
+)
+if site_only.status_code != 302:
+    raise SystemExit("save current-site site content should redirect")
+snap_after_site = snapshot(sheet_a, task_a, field_a, floor_a, unit_a)
+if snap_after_site["sheet_name"] != "Sheet A Site Save":
+    raise SystemExit("save current-site site content should update sheet")
+if snap_after_site["task"]["vendor"] != "Vendor A Updated" or snap_after_site["task"]["name"] != "Task A Updated":
+    raise SystemExit("save current-site site content should update task")
+if snap_after_site["field"]["name"] != "Field Save A Updated" or snap_after_site["field"]["field_type"] != "date":
+    raise SystemExit("save current-site site content should update extra field")
+if snap_after_site["floor"]["name"] != "1F Updated" or snap_after_site["floor"]["block_name"] != "A2":
+    raise SystemExit("save current-site site content should update floor")
+if snap_after_site["unit"]["name"] != "A102":
+    raise SystemExit("save current-site site content should update unit")
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+mixed = client.post(
+    f"/admin/table?sheet_id={sheet_a}",
+    data={
+        "action": "save",
+        "site_title": "Mixed Title",
+        "sheet_name": "Sheet A Mixed Save",
+        f"task_vendor_{task_a}": "Vendor A Mixed",
+        f"task_location_{task_a}": "Location A Mixed",
+        f"task_name_{task_a}": "Task A Mixed",
+        f"extra_name_{field_a}": "Field Save Mixed",
+        f"extra_type_{field_a}": "status",
+        f"floor_name_{floor_a}": "1F Mixed",
+        f"floor_block_{floor_a}": "A3",
+        f"unit_name_{unit_a}": "A103",
+    },
+    follow_redirects=False,
+)
+if mixed.status_code != 302:
+    raise SystemExit("save mixed payload with valid current site should redirect")
+snap_after_mixed = snapshot(sheet_a, task_a, field_a, floor_a, unit_a)
+if snap_after_mixed["meta_site_title"] != "Mixed Title":
+    raise SystemExit("save mixed payload should update meta")
+if snap_after_mixed["sheet_name"] != "Sheet A Mixed Save":
+    raise SystemExit("save mixed payload should update site content")
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+before_cross = snapshot(sheet_b, task_b, field_b, floor_b, unit_b)
+cross_site = client.post(
+    f"/admin/table?sheet_id={sheet_b}",
+    data={
+        "action": "save",
+        "site_title": "Should Not Change Cross Site",
+        "sheet_name": "Blocked Cross Sheet",
+        f"task_vendor_{task_b}": "Blocked Vendor",
+        f"task_location_{task_b}": "Blocked Location",
+        f"task_name_{task_b}": "Blocked Task",
+        f"extra_name_{field_b}": "Blocked Field",
+        f"extra_type_{field_b}": "status",
+        f"floor_name_{floor_b}": "Blocked Floor",
+        f"floor_block_{floor_b}": "Blocked Block",
+        f"unit_name_{unit_b}": "Blocked Unit",
+    },
+    follow_redirects=False,
+)
+if cross_site.status_code != 302 or "/admin/table?sheet_id=" not in cross_site.headers.get("Location", ""):
+    raise SystemExit("save cross-site should redirect back to /admin/table")
+after_cross = snapshot(sheet_b, task_b, field_b, floor_b, unit_b)
+if before_cross != after_cross:
+    raise SystemExit("save cross-site reject should not change meta or site content for target sheet")
+with module.db() as conn:
+    current_meta = conn.execute("SELECT value FROM meta WHERE key = 'site_title'").fetchone()["value"]
+if current_meta != "Mixed Title":
+    raise SystemExit("save cross-site reject must not update meta")
+
+set_admin_session()
+before_missing = snapshot(sheet_a, task_a, field_a, floor_a, unit_a)
+missing_site = client.post(
+    f"/admin/table?sheet_id={sheet_a}",
+    data={
+        "action": "save",
+        "site_title": "Should Not Change Missing Site",
+        "sheet_name": "Blocked Missing Site",
+        f"task_vendor_{task_a}": "Blocked Missing Vendor",
+        f"task_location_{task_a}": "Blocked Missing Location",
+        f"task_name_{task_a}": "Blocked Missing Task",
+        f"extra_name_{field_a}": "Blocked Missing Field",
+        f"extra_type_{field_a}": "status",
+        f"floor_name_{floor_a}": "Blocked Missing Floor",
+        f"floor_block_{floor_a}": "Blocked Missing Block",
+        f"unit_name_{unit_a}": "Blocked Missing Unit",
+    },
+    follow_redirects=False,
+)
+if missing_site.status_code != 302:
+    raise SystemExit("save missing current site should redirect")
+after_missing = snapshot(sheet_a, task_a, field_a, floor_a, unit_a)
+if before_missing != after_missing:
+    raise SystemExit("save missing current site reject should not change site content")
+with module.db() as conn:
+    current_meta_after_missing = conn.execute("SELECT value FROM meta WHERE key = 'site_title'").fetchone()["value"]
+if current_meta_after_missing != "Mixed Title":
+    raise SystemExit("save missing current site reject must not update meta")
+
+print("admin save internal split smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "admin save internal split smoke PASS" not in result.stdout:
+        raise AssertionError("admin save internal split smoke subprocess did not report PASS.")
+
+
 def run_handover_reset_separation_smoke(app_db_path: Path) -> None:
     if app_db_path.exists():
         app_db_path.unlink()
@@ -5368,6 +5628,7 @@ def run_admin_write_model_readiness_smoke() -> None:
         "add_extra_field",
         "delete_extra_field",
         "save",
+        "INTERNAL_SPLIT",
         "MIXED",
         "status: ENFORCED",
         "current_site_enforced: yes",
@@ -5376,6 +5637,11 @@ def run_admin_write_model_readiness_smoke() -> None:
         "floor delete validates floor_id belongs to route sheet",
         "unit delete validates unit_id belongs to route sheet",
         "extra-field delete validates field_id belongs to route sheet",
+        "global_settings_path: yes",
+        "site_content_path: yes",
+        "site_content_current_site_enforced: yes",
+        "template_split: no",
+        "ui_action_split: no",
         "/api/reset-sheet",
     )
     for fragment in required_fragments:
@@ -5434,6 +5700,7 @@ def main() -> int:
         run_admin_current_site_floor_write_smoke(Path(tmpdir) / "admin-current-site-floor-write.db")
         run_admin_current_site_unit_write_smoke(Path(tmpdir) / "admin-current-site-unit-write.db")
         run_admin_current_site_extra_field_write_smoke(Path(tmpdir) / "admin-current-site-extra-field-write.db")
+        run_admin_save_internal_split_smoke(Path(tmpdir) / "admin-save-internal-split.db")
         run_handover_reset_separation_smoke(Path(tmpdir) / "handover-smoke.db")
         run_handover_route_regression_smoke(Path(tmpdir) / "handover-route-smoke.db")
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
@@ -5538,8 +5805,8 @@ def main() -> int:
         if fragment not in site_write_isolation_result.stdout:
             raise AssertionError(f"check_site_write_isolation_readiness.py missing expected inventory fragment: {fragment}")
     admin_write_model_result = run_script("check_admin_write_model_readiness.py", env={"DATABASE_URL": ""})
-    if "admin_write_model_readiness_scope: create_delete_sheet_task_floor_unit_extra_field_enforced" not in admin_write_model_result.stdout:
-        raise AssertionError("check_admin_write_model_readiness.py did not report expected create/delete/task/floor/unit/extra-field enforcement scope.")
+    if "admin_write_model_readiness_scope: admin_site_content_enforced_save_internal_split" not in admin_write_model_result.stdout:
+        raise AssertionError("check_admin_write_model_readiness.py did not report expected internal split scope.")
     if "PASS admin write model readiness check passed." not in admin_write_model_result.stdout:
         raise AssertionError("check_admin_write_model_readiness.py did not report expected PASS output.")
     for fragment in (
@@ -5554,6 +5821,7 @@ def main() -> int:
         "add_extra_field",
         "delete_extra_field",
         "save",
+        "INTERNAL_SPLIT",
         "MIXED",
         "status: ENFORCED",
         "current_site_enforced: yes",
@@ -5562,6 +5830,11 @@ def main() -> int:
         "floor delete validates floor_id belongs to route sheet",
         "unit delete validates unit_id belongs to route sheet",
         "extra-field delete validates field_id belongs to route sheet",
+        "global_settings_path: yes",
+        "site_content_path: yes",
+        "site_content_current_site_enforced: yes",
+        "template_split: no",
+        "ui_action_split: no",
         "/api/reset-sheet",
     ):
         if fragment not in admin_write_model_result.stdout:

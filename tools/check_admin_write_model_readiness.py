@@ -22,6 +22,11 @@ class AdminWriteItem:
     risk: str
     notes: tuple[str, ...]
     source_markers: tuple[str, ...]
+    global_settings_path: str | None = None
+    site_content_path: str | None = None
+    site_content_current_site_enforced: str | None = None
+    template_split: str | None = None
+    ui_action_split: str | None = None
 
 
 ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
@@ -66,19 +71,26 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="save",
         target_tables=("sheets", "meta", "tasks", "extra_fields", "floors", "units"),
         category="MIXED",
-        status="DEFERRED",
-        uses_current_site="no",
-        current_site_enforced="no",
-        can_cross_site_today="yes",
-        recommendation="Split mixed save into global meta save and site-scoped content save before admin write isolation enforcement.",
+        status="INTERNAL_SPLIT",
+        uses_current_site="site_content_only",
+        current_site_enforced="site_content_only",
+        can_cross_site_today="no",
+        recommendation="Save keeps a single route/action, but now separates global meta updates from current-site-enforced site content updates.",
         risk="high",
-        notes=("save is mixed: meta + site content",),
+        notes=("save is mixed: meta + site content", "final explicit action split deferred"),
         source_markers=(
             'action = actions[-1] if actions else "save"',
-            'UPDATE sheets SET name = ? WHERE id = ?',
-            "for key in DEFAULT_SETTINGS:",
-            "set_setting(conn, key, request.form.get(key, \"\").strip())",
+            'def save_admin_global_settings(conn: sqlite3.Connection, *, form) -> None:',
+            'def save_admin_site_content(conn: sqlite3.Connection, *, sheet_id: int, form) -> None:',
+            'authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)',
+            'save_admin_global_settings(conn, form=request.form)',
+            'save_admin_site_content(conn, sheet_id=sheet_id, form=request.form)',
         ),
+        global_settings_path="yes",
+        site_content_path="yes",
+        site_content_current_site_enforced="yes",
+        template_split="no",
+        ui_action_split="no",
     ),
     AdminWriteItem(
         action="add_task",
@@ -248,18 +260,28 @@ def render_item(item: AdminWriteItem) -> None:
     print(f"risk: {item.risk}")
     if item.notes:
         print(f"notes: {'; '.join(item.notes)}")
+    if item.global_settings_path is not None:
+        print(f"global_settings_path: {item.global_settings_path}")
+    if item.site_content_path is not None:
+        print(f"site_content_path: {item.site_content_path}")
+    if item.site_content_current_site_enforced is not None:
+        print(f"site_content_current_site_enforced: {item.site_content_current_site_enforced}")
+    if item.template_split is not None:
+        print(f"template_split: {item.template_split}")
+    if item.ui_action_split is not None:
+        print(f"ui_action_split: {item.ui_action_split}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check admin write model readiness inventory.")
     parser.parse_args()
 
-    print("admin_write_model_readiness_scope: create_delete_sheet_task_floor_unit_extra_field_enforced")
+    print("admin_write_model_readiness_scope: admin_site_content_enforced_save_internal_split")
     print(f"app_source: {APP_PATH}")
-    print("WARNING P-3C-2B-3 enforces current-site aware behavior for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, delete_unit, add_extra_field, and delete_extra_field only")
-    print("WARNING admin current-site aware behavior is partially implemented for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, delete_unit, add_extra_field, and delete_extra_field only")
-    print("WARNING mixed save split is deferred")
-    print("WARNING production behavior changed only for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, delete_unit, add_extra_field, and delete_extra_field")
+    print("WARNING P-3C-3B keeps action == save but splits internal save paths into global settings and current-site-enforced site content")
+    print("WARNING final explicit action split remains deferred")
+    print("WARNING /api/reset-sheet remains a deferred candidate")
+    print("WARNING production behavior changed for save internals while preserving route, action, redirect, and success flash contract")
 
     source = APP_PATH.read_text(encoding="utf-8")
     issues: list[str] = []

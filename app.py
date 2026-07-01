@@ -2887,6 +2887,49 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
     )
 
 
+def save_admin_global_settings(conn: sqlite3.Connection, *, form) -> None:
+    for key in DEFAULT_SETTINGS:
+        if key in form:
+            set_setting(conn, key, form.get(key, DEFAULT_SETTINGS[key]).strip())
+
+
+def save_admin_site_content(conn: sqlite3.Connection, *, sheet_id: int, form) -> None:
+    authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+    conn.execute(
+        "UPDATE sheets SET name = ? WHERE id = ?",
+        (form.get("sheet_name", "").strip() or "???", sheet_id),
+    )
+    for task in conn.execute("SELECT id FROM tasks WHERE sheet_id = ?", (sheet_id,)):
+        task_id = task["id"]
+        conn.execute(
+            "UPDATE tasks SET vendor = ?, location = ?, name = ? WHERE id = ?",
+            (
+                form.get(f"task_vendor_{task_id}", "").strip(),
+                form.get(f"task_location_{task_id}", "").strip(),
+                form.get(f"task_name_{task_id}", "").strip(),
+                task_id,
+            ),
+        )
+    for field in conn.execute("SELECT id FROM extra_fields WHERE sheet_id = ? AND active = 1", (sheet_id,)):
+        field_id = field["id"]
+        field_type = form.get(f"extra_type_{field_id}", "date")
+        if field_type not in EXTRA_FIELD_TYPES:
+            field_type = "date"
+        conn.execute(
+            "UPDATE extra_fields SET name = ?, field_type = ? WHERE id = ? AND sheet_id = ?",
+            (form.get(f"extra_name_{field_id}", "").strip() or "??", field_type, field_id, sheet_id),
+        )
+    for floor in conn.execute("SELECT id FROM floors WHERE sheet_id = ?", (sheet_id,)):
+        floor_id = floor["id"]
+        floor_name = form.get(f"floor_name_{floor_id}", "").strip()
+        floor_block_name = form.get(f"floor_block_{floor_id}", "").strip()
+        update_floor_fields_sqlite(conn, floor_id, name=floor_name, block_name=floor_block_name)
+        maybe_dual_write_floor_update(floor_id, name=floor_name, block_name=floor_block_name)
+    for unit in conn.execute("SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ?", (sheet_id,)):
+        unit_id = unit["id"]
+        conn.execute("UPDATE units SET name = ? WHERE id = ?", (form.get(f"unit_name_{unit_id}", "").strip(), unit_id))
+
+
 def seed_settings(conn: sqlite3.Connection) -> None:
     for key, value in DEFAULT_SETTINGS.items():
         row = conn.execute("SELECT key FROM meta WHERE key = ?", (key,)).fetchone()
@@ -4368,31 +4411,12 @@ def table_admin():
                 flash("??????", "success")
                 return redirect(url_for("table_admin", sheet_id=sheet_id))
 
-            conn.execute("UPDATE sheets SET name = ? WHERE id = ?", (request.form.get("sheet_name", "").strip() or "???", sheet_id))
-            for key in DEFAULT_SETTINGS:
-                if key in request.form:
-                    set_setting(conn, key, request.form.get(key, "").strip())
-            for task in conn.execute("SELECT id FROM tasks WHERE sheet_id = ?", (sheet_id,)):
-                task_id = task["id"]
-                conn.execute("UPDATE tasks SET vendor = ?, location = ?, name = ? WHERE id = ?", (request.form.get(f"task_vendor_{task_id}", "").strip(), request.form.get(f"task_location_{task_id}", "").strip(), request.form.get(f"task_name_{task_id}", "").strip(), task_id))
-            for field in conn.execute("SELECT id FROM extra_fields WHERE sheet_id = ? AND active = 1", (sheet_id,)):
-                field_id = field["id"]
-                field_type = request.form.get(f"extra_type_{field_id}", "date")
-                if field_type not in EXTRA_FIELD_TYPES:
-                    field_type = "date"
-                conn.execute(
-                    "UPDATE extra_fields SET name = ?, field_type = ? WHERE id = ? AND sheet_id = ?",
-                    (request.form.get(f"extra_name_{field_id}", "").strip() or "欄位", field_type, field_id, sheet_id),
-                )
-            for floor in conn.execute("SELECT id FROM floors WHERE sheet_id = ?", (sheet_id,)):
-                floor_id = floor["id"]
-                floor_name = request.form.get(f"floor_name_{floor_id}", "").strip()
-                floor_block_name = request.form.get(f"floor_block_{floor_id}", "").strip()
-                update_floor_fields_sqlite(conn, floor_id, name=floor_name, block_name=floor_block_name)
-                maybe_dual_write_floor_update(floor_id, name=floor_name, block_name=floor_block_name)
-            for unit in conn.execute("SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ?", (sheet_id,)):
-                unit_id = unit["id"]
-                conn.execute("UPDATE units SET name = ? WHERE id = ?", (request.form.get(f"unit_name_{unit_id}", "").strip(), unit_id))
+            try:
+                authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+            except LookupError as exc:
+                return _handle_admin_site_write_lookup_error(exc, sheet_id=sheet_id)
+            save_admin_global_settings(conn, form=request.form)
+            save_admin_site_content(conn, sheet_id=sheet_id, form=request.form)
             flash("????????", "success")
             return redirect(url_for("table_admin", sheet_id=sheet_id))
 
