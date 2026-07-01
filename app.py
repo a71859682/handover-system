@@ -1481,6 +1481,19 @@ def progress_api_error(message: str, *, status: int = 400):
     return jsonify({"ok": False, "message": message}), status
 
 
+def _handle_admin_reset_sheet_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code in {"sheet_not_found", "sheet_site_missing"}:
+        return progress_api_error("找不到目標表單。", status=404)
+    if code == "site_context_invalid":
+        return progress_api_error("請先選擇目前工地。", status=403)
+    if code == "write_target_not_in_current_site":
+        return progress_api_error("目前工地下不可重設其他工地資料。", status=403)
+    if code == "invalid_request":
+        return progress_api_error("sheet_id 無效。", status=400)
+    raise exc
+
+
 def authorize_sheet_read(conn: sqlite3.Connection, sheet_id: int) -> None:
     sheet_row = _get_sheet_row(conn, int(sheet_id))
     if sheet_row is None:
@@ -3593,8 +3606,21 @@ def api_reset_sheet():
     if not user or not check_password_hash(user["password_hash"], password):
         return jsonify({"ok": False, "message": "管理員密碼錯誤。"}), 403
 
+    raw_sheet_id = data.get("sheet_id", session.get("sheet_id"))
+    try:
+        if raw_sheet_id in (None, ""):
+            raise LookupError("invalid_request")
+        sheet_id = int(raw_sheet_id)
+    except LookupError as exc:
+        return _handle_admin_reset_sheet_lookup_error(exc)
+    except (TypeError, ValueError):
+        return progress_api_error("sheet_id 無效。", status=400)
+
     with db() as conn:
-        sheet_id = resolve_sheet_id(conn, data.get("sheet_id") or session.get("sheet_id"))
+        try:
+            authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+        except LookupError as exc:
+            return _handle_admin_reset_sheet_lookup_error(exc)
         conn.execute(
             """
             UPDATE progress

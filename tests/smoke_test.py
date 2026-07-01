@@ -3090,9 +3090,17 @@ progress_spec = importlib.util.spec_from_file_location(
 )
 progress_module = importlib.util.module_from_spec(progress_spec)
 progress_spec.loader.exec_module(progress_module)
+client = module.app.test_client()
 
 with module.db() as conn:
     conn.row_factory = sqlite3.Row
+    site_a = module.get_default_site_id(conn)
+    if site_a is None:
+        raise SystemExit("default site missing for reset-sheet smoke")
+    site_b = conn.execute(
+        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+        ("__reset_sheet_site_b__", "reset-sheet-site-b"),
+    ).fetchone()["id"]
     target_unit = conn.execute(
         "SELECT u.id AS unit_id, f.sheet_id "
         "FROM units u "
@@ -3118,6 +3126,132 @@ with module.db() as conn:
         ''',
         ("2026-06-20", "2026-06-21", "2026-06-22", "X", target_unit["unit_id"]),
     )
+    field_key_a = "reset_field_a"
+    conn.execute(
+        '''
+        INSERT INTO extra_fields
+        (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+        VALUES (?, ?, ?, ?, ?, 0, 1)
+        ''',
+        (target_unit["sheet_id"], field_key_a, "Reset Field A", "text", 950),
+    )
+    conn.execute(
+        '''
+        INSERT INTO unit_extra_values (unit_id, field_key, value, updated_by, updated_at)
+        VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+        ''',
+        (target_unit["unit_id"], field_key_a, "value-a"),
+    )
+
+    sheet_b = conn.execute(
+        "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?) RETURNING id",
+        ("Reset Sheet B", 951, site_b),
+    ).fetchone()["id"]
+    task_b = conn.execute(
+        "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?) RETURNING id",
+        (sheet_b, 952, "Vendor B", "Location B", "Task B"),
+    ).fetchone()["id"]
+    floor_b = conn.execute(
+        "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, 1) RETURNING id",
+        (sheet_b, 953, "B1", "B"),
+    ).fetchone()["id"]
+    unit_b = conn.execute(
+        "INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?) RETURNING id",
+        (floor_b, 1, "B101"),
+    ).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO progress (unit_id, task_id, value, updated_by, updated_at) VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)",
+        (unit_b, task_b, "O"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO unit_extra (unit_id, initial_check, recheck_1, recheck_2, handover, updated_by, updated_at)
+        VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+        ''',
+        (unit_b, "2026-06-23", "2026-06-24", "2026-06-25", "O"),
+    )
+    field_key_b = "reset_field_b"
+    conn.execute(
+        '''
+        INSERT INTO extra_fields
+        (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+        VALUES (?, ?, ?, ?, ?, 0, 1)
+        ''',
+        (sheet_b, field_key_b, "Reset Field B", "text", 954),
+    )
+    conn.execute(
+        '''
+        INSERT INTO unit_extra_values (unit_id, field_key, value, updated_by, updated_at)
+        VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+        ''',
+        (unit_b, field_key_b, "value-b"),
+    )
+    conn.commit()
+
+def set_admin_session(*, current_site_id=None, sheet_id=None):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "Admin"
+        session["role"] = "admin"
+        if current_site_id is not None:
+            session["current_site_id"] = int(current_site_id)
+            session["current_site_name"] = f"site-{current_site_id}"
+            session["site_selection_required"] = False
+        if sheet_id is not None:
+            session["sheet_id"] = int(sheet_id)
+
+def snapshot_reset_state(sheet_id, unit_id, field_key):
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        progress_rows = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT unit_id, task_id, value FROM progress WHERE task_id IN (SELECT id FROM tasks WHERE sheet_id = ?) ORDER BY unit_id, task_id",
+                (sheet_id,),
+            ).fetchall()
+        ]
+        unit_extra_rows = [
+            dict(row)
+            for row in conn.execute(
+                "SELECT unit_id, initial_check, recheck_1, recheck_2, handover FROM unit_extra WHERE unit_id IN (SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ?) ORDER BY unit_id",
+                (sheet_id,),
+            ).fetchall()
+        ]
+        unit_extra_value_rows = [
+            dict(row)
+            for row in conn.execute(
+                '''
+                SELECT unit_id, field_key, value
+                FROM unit_extra_values
+                WHERE unit_id IN (
+                    SELECT u.id
+                    FROM units u
+                    JOIN floors f ON f.id = u.floor_id
+                    WHERE f.sheet_id = ?
+                )
+                ORDER BY unit_id, field_key
+                ''',
+                (sheet_id,),
+            ).fetchall()
+        ]
+        reset_row = conn.execute(
+            "SELECT initial_check, recheck_1, recheck_2, handover FROM unit_extra WHERE unit_id = ?",
+            (unit_id,),
+        ).fetchone()
+        field_rows = conn.execute(
+            "SELECT field_key FROM extra_fields WHERE sheet_id = ? ORDER BY field_key",
+            (sheet_id,),
+        ).fetchall()
+        return {
+            "progress_rows": progress_rows,
+            "unit_extra_rows": unit_extra_rows,
+            "unit_extra_value_rows": unit_extra_value_rows,
+            "reset_row": dict(reset_row) if reset_row else None,
+            "field_keys": [row["field_key"] for row in field_rows],
+            "field_key_present": any(row["field_key"] == field_key for row in field_rows),
+        }
 
 result = progress_module.update_unit_extra(
     unit_id=target_unit["unit_id"],
@@ -3152,6 +3286,74 @@ if reset_row["initial_check"] != "" or reset_row["recheck_1"] != "" or reset_row
     raise SystemExit("reset_sheet should clear date fields")
 if reset_row["handover"] != "X":
     raise SystemExit("reset_sheet should reset handover to X")
+
+with module.db() as conn:
+    conn.execute("UPDATE progress SET value = ?, updated_by = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?", ("O", task_b))
+    conn.execute(
+        '''
+        UPDATE unit_extra
+        SET initial_check = ?, recheck_1 = ?, recheck_2 = ?, handover = ?, updated_by = 1, updated_at = CURRENT_TIMESTAMP
+        WHERE unit_id = ?
+        ''',
+        ("2026-06-23", "2026-06-24", "2026-06-25", "O", unit_b),
+    )
+    conn.execute(
+        "UPDATE unit_extra_values SET value = ?, updated_by = 1, updated_at = CURRENT_TIMESTAMP WHERE unit_id = ? AND field_key = ?",
+        ("value-b", unit_b, field_key_b),
+    )
+    conn.commit()
+
+set_admin_session(current_site_id=site_a, sheet_id=target_unit["sheet_id"])
+same_site_reset = client.post("/api/reset-sheet", json={"sheet_id": target_unit["sheet_id"], "password": "admin"})
+if same_site_reset.status_code != 200:
+    raise SystemExit("reset current-site sheet should succeed")
+after_same_site = snapshot_reset_state(target_unit["sheet_id"], target_unit["unit_id"], field_key_a)
+if any(row["value"] != "X" for row in after_same_site["progress_rows"]):
+    raise SystemExit("reset current-site sheet should reset progress")
+if after_same_site["reset_row"]["initial_check"] != "" or after_same_site["reset_row"]["recheck_1"] != "" or after_same_site["reset_row"]["recheck_2"] != "":
+    raise SystemExit("reset current-site sheet should clear unit_extra dates")
+if after_same_site["reset_row"]["handover"] != "X":
+    raise SystemExit("reset current-site sheet should reset handover to X")
+if after_same_site["unit_extra_value_rows"]:
+    raise SystemExit("reset current-site sheet should clear unit_extra_values for target sheet")
+
+before_cross_site = snapshot_reset_state(sheet_b, unit_b, field_key_b)
+set_admin_session(current_site_id=site_a, sheet_id=target_unit["sheet_id"])
+cross_site_reset = client.post("/api/reset-sheet", json={"sheet_id": sheet_b, "password": "admin"})
+if cross_site_reset.status_code != 403:
+    raise SystemExit("reset cross-site sheet should be rejected")
+if cross_site_reset.get_json()["ok"] is not False:
+    raise SystemExit("reset cross-site sheet should return ok=false")
+after_cross_site = snapshot_reset_state(sheet_b, unit_b, field_key_b)
+if before_cross_site != after_cross_site:
+    raise SystemExit("reset cross-site sheet reject should not change DB state")
+
+before_missing_site = snapshot_reset_state(target_unit["sheet_id"], target_unit["unit_id"], field_key_a)
+set_admin_session(sheet_id=target_unit["sheet_id"])
+missing_site_reset = client.post("/api/reset-sheet", json={"sheet_id": target_unit["sheet_id"], "password": "admin"})
+if missing_site_reset.status_code != 403:
+    raise SystemExit("reset missing current site should be rejected")
+after_missing_site = snapshot_reset_state(target_unit["sheet_id"], target_unit["unit_id"], field_key_a)
+if before_missing_site != after_missing_site:
+    raise SystemExit("reset missing current site reject should not change DB state")
+
+before_invalid_sheet = snapshot_reset_state(target_unit["sheet_id"], target_unit["unit_id"], field_key_a)
+set_admin_session(current_site_id=site_a, sheet_id=target_unit["sheet_id"])
+invalid_sheet_reset = client.post("/api/reset-sheet", json={"sheet_id": 999999, "password": "admin"})
+if invalid_sheet_reset.status_code != 404:
+    raise SystemExit("reset invalid sheet should return 404")
+after_invalid_sheet = snapshot_reset_state(target_unit["sheet_id"], target_unit["unit_id"], field_key_a)
+if before_invalid_sheet != after_invalid_sheet:
+    raise SystemExit("reset invalid sheet reject should not change DB state")
+
+before_stale_session = snapshot_reset_state(sheet_b, unit_b, field_key_b)
+set_admin_session(current_site_id=site_a, sheet_id=sheet_b)
+stale_session_reset = client.post("/api/reset-sheet", json={"password": "admin"})
+if stale_session_reset.status_code != 403:
+    raise SystemExit("stale session cross-site reset should be rejected")
+after_stale_session = snapshot_reset_state(sheet_b, unit_b, field_key_b)
+if before_stale_session != after_stale_session:
+    raise SystemExit("stale session cross-site reset reject should not change DB state")
 
 print("handover reset separation smoke PASS")
 """
@@ -5643,6 +5845,10 @@ def run_admin_write_model_readiness_smoke() -> None:
         "template_split: no",
         "ui_action_split: no",
         "/api/reset-sheet",
+        "action: reset_sheet",
+        "reset_sheet_status: ENFORCED",
+        "reset_sheet_destructive_candidate: resolved",
+        "destructive_candidate resolved",
     )
     for fragment in required_fragments:
         if fragment not in result.stdout:
@@ -5805,8 +6011,8 @@ def main() -> int:
         if fragment not in site_write_isolation_result.stdout:
             raise AssertionError(f"check_site_write_isolation_readiness.py missing expected inventory fragment: {fragment}")
     admin_write_model_result = run_script("check_admin_write_model_readiness.py", env={"DATABASE_URL": ""})
-    if "admin_write_model_readiness_scope: admin_site_content_enforced_save_internal_split" not in admin_write_model_result.stdout:
-        raise AssertionError("check_admin_write_model_readiness.py did not report expected internal split scope.")
+    if "admin_write_model_readiness_scope: admin_site_content_enforced_save_internal_split_reset_sheet_enforced" not in admin_write_model_result.stdout:
+        raise AssertionError("check_admin_write_model_readiness.py did not report expected reset-sheet-enforced scope.")
     if "PASS admin write model readiness check passed." not in admin_write_model_result.stdout:
         raise AssertionError("check_admin_write_model_readiness.py did not report expected PASS output.")
     for fragment in (
@@ -5836,6 +6042,10 @@ def main() -> int:
         "template_split: no",
         "ui_action_split: no",
         "/api/reset-sheet",
+        "action: reset_sheet",
+        "reset_sheet_status: ENFORCED",
+        "reset_sheet_destructive_candidate: resolved",
+        "destructive_candidate resolved",
     ):
         if fragment not in admin_write_model_result.stdout:
             raise AssertionError(f"check_admin_write_model_readiness.py missing expected inventory fragment: {fragment}")

@@ -234,11 +234,25 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
             'DELETE FROM units WHERE id = ?',
         ),
     ),
-)
-
-
-FUTURE_CANDIDATES: tuple[str, ...] = (
-    "/api/reset-sheet is admin site-scoped destructive write candidate for later stage",
+    AdminWriteItem(
+        action="reset_sheet",
+        target_tables=("progress", "unit_extra", "unit_extra_values"),
+        category="SITE_SCOPED",
+        status="ENFORCED",
+        uses_current_site="yes",
+        current_site_enforced="yes",
+        can_cross_site_today="no",
+        recommendation="Reset sheet is now blocked unless the target sheet belongs to current_site_id.",
+        risk="high",
+        notes=("destructive_candidate resolved",),
+        source_markers=(
+            '@app.route("/api/reset-sheet", methods=["POST"])',
+            'authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)',
+            'UPDATE progress',
+            'UPDATE unit_extra',
+            'DELETE FROM unit_extra_values',
+        ),
+    ),
 )
 
 
@@ -276,20 +290,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Check admin write model readiness inventory.")
     parser.parse_args()
 
-    print("admin_write_model_readiness_scope: admin_site_content_enforced_save_internal_split")
+    print("admin_write_model_readiness_scope: admin_site_content_enforced_save_internal_split_reset_sheet_enforced")
     print(f"app_source: {APP_PATH}")
     print("WARNING P-3C-3B keeps action == save but splits internal save paths into global settings and current-site-enforced site content")
     print("WARNING final explicit action split remains deferred")
-    print("WARNING /api/reset-sheet remains a deferred candidate")
-    print("WARNING production behavior changed for save internals while preserving route, action, redirect, and success flash contract")
+    print("WARNING /api/reset-sheet is now current-site enforced while preserving the existing success response contract")
+    print("WARNING production behavior changed for save internals and admin destructive reset-sheet authorization")
 
     source = APP_PATH.read_text(encoding="utf-8")
     issues: list[str] = []
 
     expect(APP_PATH.exists(), "app.py_missing", issues)
-    expect(len(ADMIN_TABLE_ITEMS) == 11, "admin_table_inventory_count_mismatch", issues)
+    expect(len(ADMIN_TABLE_ITEMS) == 12, "admin_table_inventory_count_mismatch", issues)
     expect(any(item.action == "create_sheet" for item in ADMIN_TABLE_ITEMS), "create_sheet_missing", issues)
     expect(any(item.action == "save" and item.category == "MIXED" for item in ADMIN_TABLE_ITEMS), "save_mixed_missing", issues)
+    expect(any(item.action == "reset_sheet" and item.status == "ENFORCED" for item in ADMIN_TABLE_ITEMS), "reset_sheet_enforced_missing", issues)
 
     print(f"inventory_total: {len(ADMIN_TABLE_ITEMS)}")
     print("global_only_reference_tables: meta")
@@ -302,9 +317,9 @@ def main() -> int:
 
     print("---")
     print("future_candidates:")
-    for candidate in FUTURE_CANDIDATES:
-        print(f"- {candidate}")
-    print("reset_sheet_status: DEFERRED")
+    print("- final explicit action split for save remains deferred")
+    print("reset_sheet_status: ENFORCED")
+    print("reset_sheet_destructive_candidate: resolved")
     expect('@app.route("/api/reset-sheet", methods=["POST"])' in source, "reset_sheet_route_missing", issues)
 
     print(f"issues_count: {len(issues)}")
