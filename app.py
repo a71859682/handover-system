@@ -1419,6 +1419,23 @@ def resolve_unit_sheet_for_admin_write(conn: sqlite3.Connection, *, unit_id: int
     }
 
 
+def resolve_extra_field_sheet_for_admin_write(conn: sqlite3.Connection, *, field_id: int) -> dict[str, int]:
+    row = conn.execute(
+        "SELECT id, sheet_id, active FROM extra_fields WHERE id = ?",
+        (field_id,),
+    ).fetchone()
+    if row is None:
+        raise LookupError("extra_field_not_found")
+    sheet_id = row["sheet_id"]
+    if sheet_id in (None, ""):
+        raise LookupError("extra_field_sheet_missing")
+    return {
+        "field_id": int(row["id"]),
+        "sheet_id": int(sheet_id),
+        "active": int(row["active"] or 0),
+    }
+
+
 def _handle_admin_site_write_lookup_error(exc: LookupError, *, sheet_id: int | None = None):
     code = str(exc)
     if code == "site_context_invalid":
@@ -1445,6 +1462,11 @@ def _handle_admin_site_write_lookup_error(exc: LookupError, *, sheet_id: int | N
             return redirect(url_for("table_admin", sheet_id=sheet_id))
         return redirect(url_for("table_admin"))
     if code in {"unit_not_found", "unit_floor_missing", "unit_sheet_missing", "unit_sheet_mismatch"}:
+        flash("\u627e\u4e0d\u5230\u76ee\u6a19\u8cc7\u6599\u3002", "error")
+        if sheet_id is not None:
+            return redirect(url_for("table_admin", sheet_id=sheet_id))
+        return redirect(url_for("table_admin"))
+    if code in {"extra_field_not_found", "extra_field_sheet_missing", "extra_field_sheet_mismatch"}:
         flash("\u627e\u4e0d\u5230\u76ee\u6a19\u8cc7\u6599\u3002", "error")
         if sheet_id is not None:
             return redirect(url_for("table_admin", sheet_id=sheet_id))
@@ -4245,6 +4267,10 @@ def table_admin():
                 field_type = request.form.get("new_extra_type", "date")
                 if field_type not in EXTRA_FIELD_TYPES:
                     field_type = "date"
+                try:
+                    authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+                except LookupError as exc:
+                    return _handle_admin_site_write_lookup_error(exc, sheet_id=sheet_id)
                 next_order = conn.execute(
                     "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM extra_fields WHERE sheet_id = ?",
                     (sheet_id,),
@@ -4261,6 +4287,13 @@ def table_admin():
                 return redirect(url_for("table_admin", sheet_id=sheet_id))
             if action.startswith("delete_extra_field:"):
                 field_id = int(action.split(":", 1)[1])
+                try:
+                    field_row = resolve_extra_field_sheet_for_admin_write(conn, field_id=field_id)
+                    if int(field_row["sheet_id"]) != int(sheet_id):
+                        raise LookupError("extra_field_sheet_mismatch")
+                    authorize_admin_site_scoped_write(conn, sheet_id=int(field_row["sheet_id"]))
+                except LookupError as exc:
+                    return _handle_admin_site_write_lookup_error(exc, sheet_id=sheet_id)
                 conn.execute("UPDATE extra_fields SET active = 0 WHERE id = ? AND sheet_id = ?", (field_id, sheet_id))
                 flash("欄位已刪除。", "success")
                 return redirect(url_for("table_admin", sheet_id=sheet_id))

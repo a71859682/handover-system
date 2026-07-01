@@ -119,27 +119,36 @@ ADMIN_TABLE_ITEMS: tuple[AdminWriteItem, ...] = (
         action="add_extra_field",
         target_tables=("extra_fields",),
         category="SITE_SCOPED",
-        status="INVENTORY ONLY",
-        uses_current_site="no",
-        current_site_enforced="no",
-        can_cross_site_today="yes",
-        recommendation="Future admin current-site aware site-content action.",
+        status="ENFORCED",
+        uses_current_site="yes",
+        current_site_enforced="yes",
+        can_cross_site_today="no",
+        recommendation="Extra-field create is now blocked unless the target sheet belongs to current_site_id.",
         risk="medium",
         notes=(),
-        source_markers=('if action == "add_extra_field":', "INSERT INTO extra_fields"),
+        source_markers=(
+            'if action == "add_extra_field":',
+            'authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)',
+            "INSERT INTO extra_fields",
+        ),
     ),
     AdminWriteItem(
         action="delete_extra_field",
         target_tables=("extra_fields",),
         category="SITE_SCOPED",
-        status="INVENTORY ONLY",
-        uses_current_site="no",
-        current_site_enforced="no",
-        can_cross_site_today="yes",
-        recommendation="Future admin current-site aware site-content action.",
+        status="ENFORCED",
+        uses_current_site="yes",
+        current_site_enforced="yes",
+        can_cross_site_today="no",
+        recommendation="Extra-field delete is now blocked unless the target field belongs to route sheet and current_site_id.",
         risk="medium",
-        notes=(),
-        source_markers=('if action.startswith("delete_extra_field:"):', "UPDATE extra_fields SET active = 0 WHERE id = ? AND sheet_id = ?"),
+        notes=("extra-field delete validates field_id belongs to route sheet",),
+        source_markers=(
+            'if action.startswith("delete_extra_field:"):',
+            'field_row = resolve_extra_field_sheet_for_admin_write(conn, field_id=field_id)',
+            'raise LookupError("extra_field_sheet_mismatch")',
+            "UPDATE extra_fields SET active = 0 WHERE id = ? AND sheet_id = ?",
+        ),
     ),
     AdminWriteItem(
         action="add_floor",
@@ -245,12 +254,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Check admin write model readiness inventory.")
     parser.parse_args()
 
-    print("admin_write_model_readiness_scope: create_delete_sheet_task_floor_unit_enforced")
+    print("admin_write_model_readiness_scope: create_delete_sheet_task_floor_unit_extra_field_enforced")
     print(f"app_source: {APP_PATH}")
-    print("WARNING P-3C-2B-2B enforces current-site aware behavior for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, and delete_unit only")
-    print("WARNING admin current-site aware behavior is partially implemented for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, and delete_unit only")
+    print("WARNING P-3C-2B-3 enforces current-site aware behavior for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, delete_unit, add_extra_field, and delete_extra_field only")
+    print("WARNING admin current-site aware behavior is partially implemented for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, delete_unit, add_extra_field, and delete_extra_field only")
     print("WARNING mixed save split is deferred")
-    print("WARNING production behavior changed only for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, and delete_unit")
+    print("WARNING production behavior changed only for create_sheet, delete_sheet, add_task, delete_task, add_floor, delete_floor, add_unit, delete_unit, add_extra_field, and delete_extra_field")
 
     source = APP_PATH.read_text(encoding="utf-8")
     issues: list[str] = []

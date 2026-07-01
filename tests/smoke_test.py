@@ -2617,6 +2617,195 @@ print("admin current-site unit write smoke PASS")
         raise AssertionError("admin current-site unit write smoke subprocess did not report PASS.")
 
 
+def run_admin_current_site_extra_field_write_smoke(app_db_path: Path) -> None:
+    if app_db_path.exists():
+        app_db_path.unlink()
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    site_a = module.get_default_site_id(conn)
+    if site_a is None:
+        raise SystemExit("default site missing")
+    site_b = conn.execute(
+        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+        ("__admin_extra_field_site_b__", "extra-field-site-b"),
+    ).fetchone()["id"]
+    sheet_a = conn.execute("SELECT id FROM sheets ORDER BY id LIMIT 1").fetchone()["id"]
+    sheet_b = conn.execute(
+        "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?) RETURNING id",
+        ("Extra Field Sheet B", 930, site_b),
+    ).fetchone()["id"]
+    field_a = conn.execute(
+        '''
+        INSERT INTO extra_fields
+        (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+        VALUES (?, ?, ?, ?, ?, 0, 1)
+        RETURNING id
+        ''',
+        (sheet_a, "custom_field_a", "Field A", "text", 931),
+    ).fetchone()["id"]
+    field_b = conn.execute(
+        '''
+        INSERT INTO extra_fields
+        (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+        VALUES (?, ?, ?, ?, ?, 0, 1)
+        RETURNING id
+        ''',
+        (sheet_b, "custom_field_b", "Field B", "text", 932),
+    ).fetchone()["id"]
+    conn.commit()
+
+client = module.app.test_client()
+
+def set_admin_session(*, current_site_id=None, current_site_name=None):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "Admin"
+        session["role"] = "admin"
+        if current_site_id is not None:
+            session["current_site_id"] = int(current_site_id)
+            session["current_site_name"] = current_site_name or f"site-{current_site_id}"
+            session["site_selection_required"] = False
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+with module.db() as conn:
+    before_count = conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_a,)).fetchone()[0]
+add_ok = client.post(
+    f"/admin/table?sheet_id={sheet_a}",
+    data={"action": "add_extra_field", "new_extra_name": "Extra A", "new_extra_type": "text"},
+    follow_redirects=False,
+)
+if add_ok.status_code != 302:
+    raise SystemExit("add_extra_field current site should redirect")
+with module.db() as conn:
+    after_count = conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_a,)).fetchone()[0]
+    added_row = conn.execute(
+        "SELECT sheet_id, active FROM extra_fields WHERE sheet_id = ? AND name = ? ORDER BY id DESC LIMIT 1",
+        (sheet_a, "Extra A"),
+    ).fetchone()
+if after_count != before_count + 1:
+    raise SystemExit("add_extra_field current site should add one row")
+if added_row is None or int(added_row["sheet_id"]) != int(sheet_a) or int(added_row["active"]) != 1:
+    raise SystemExit("add_extra_field current site should create an active row on current site sheet")
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+with module.db() as conn:
+    before_cross = {
+        "count": conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_b,)).fetchone()[0],
+        "active": conn.execute("SELECT active FROM extra_fields WHERE id = ?", (field_b,)).fetchone()[0],
+    }
+add_cross = client.post(
+    f"/admin/table?sheet_id={sheet_b}",
+    data={"action": "add_extra_field", "new_extra_name": "Should Not Add", "new_extra_type": "text"},
+    follow_redirects=False,
+)
+if add_cross.status_code != 302 or "/admin/table?sheet_id=" not in add_cross.headers.get("Location", ""):
+    raise SystemExit("add_extra_field cross-site should redirect back to /admin/table")
+with module.db() as conn:
+    after_cross = {
+        "count": conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_b,)).fetchone()[0],
+        "active": conn.execute("SELECT active FROM extra_fields WHERE id = ?", (field_b,)).fetchone()[0],
+    }
+    unexpected_row = conn.execute(
+        "SELECT 1 FROM extra_fields WHERE sheet_id = ? AND name = ?",
+        (sheet_b, "Should Not Add"),
+    ).fetchone()
+if before_cross != after_cross:
+    raise SystemExit("add_extra_field cross-site should not change rows")
+if unexpected_row is not None:
+    raise SystemExit("add_extra_field cross-site should not create a row")
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+with module.db() as conn:
+    before_delete_active = conn.execute("SELECT active FROM extra_fields WHERE id = ?", (field_a,)).fetchone()[0]
+delete_ok = client.post(
+    f"/admin/table?sheet_id={sheet_a}",
+    data={"action": f"delete_extra_field:{field_a}"},
+    follow_redirects=False,
+)
+if delete_ok.status_code != 302:
+    raise SystemExit("delete_extra_field current site should redirect")
+with module.db() as conn:
+    after_delete_active = conn.execute("SELECT active FROM extra_fields WHERE id = ?", (field_a,)).fetchone()[0]
+if int(before_delete_active) != 1 or int(after_delete_active) != 0:
+    raise SystemExit("delete_extra_field current site should soft delete the row")
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+with module.db() as conn:
+    before_delete_cross = {
+        "count": conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_b,)).fetchone()[0],
+        "active": conn.execute("SELECT active FROM extra_fields WHERE id = ?", (field_b,)).fetchone()[0],
+    }
+delete_cross = client.post(
+    f"/admin/table?sheet_id={sheet_b}",
+    data={"action": f"delete_extra_field:{field_b}"},
+    follow_redirects=False,
+)
+if delete_cross.status_code != 302 or "/admin/table?sheet_id=" not in delete_cross.headers.get("Location", ""):
+    raise SystemExit("delete_extra_field cross-site should redirect back to /admin/table")
+with module.db() as conn:
+    after_delete_cross = {
+        "count": conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_b,)).fetchone()[0],
+        "active": conn.execute("SELECT active FROM extra_fields WHERE id = ?", (field_b,)).fetchone()[0],
+    }
+if before_delete_cross != after_delete_cross:
+    raise SystemExit("delete_extra_field cross-site should not change rows")
+
+set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
+with module.db() as conn:
+    before_mismatch = {
+        "count": conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_b,)).fetchone()[0],
+        "active": conn.execute("SELECT active FROM extra_fields WHERE id = ?", (field_b,)).fetchone()[0],
+    }
+delete_mismatch = client.post(
+    f"/admin/table?sheet_id={sheet_a}",
+    data={"action": f"delete_extra_field:{field_b}"},
+    follow_redirects=False,
+)
+if delete_mismatch.status_code != 302 or "/admin/table?sheet_id=" not in delete_mismatch.headers.get("Location", ""):
+    raise SystemExit("delete_extra_field mismatch should redirect back to /admin/table")
+with module.db() as conn:
+    after_mismatch = {
+        "count": conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_b,)).fetchone()[0],
+        "active": conn.execute("SELECT active FROM extra_fields WHERE id = ?", (field_b,)).fetchone()[0],
+    }
+if before_mismatch != after_mismatch:
+    raise SystemExit("delete_extra_field mismatch should not change rows")
+
+print("admin current-site extra-field write smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "admin current-site extra-field write smoke PASS" not in result.stdout:
+        raise AssertionError("admin current-site extra-field write smoke subprocess did not report PASS.")
+
+
 def run_handover_reset_separation_smoke(app_db_path: Path) -> None:
     if app_db_path.exists():
         app_db_path.unlink()
@@ -5176,6 +5365,8 @@ def run_admin_write_model_readiness_smoke() -> None:
         "delete_floor",
         "add_unit",
         "delete_unit",
+        "add_extra_field",
+        "delete_extra_field",
         "save",
         "MIXED",
         "status: ENFORCED",
@@ -5184,6 +5375,7 @@ def run_admin_write_model_readiness_smoke() -> None:
         "task delete validates task_id belongs to route sheet",
         "floor delete validates floor_id belongs to route sheet",
         "unit delete validates unit_id belongs to route sheet",
+        "extra-field delete validates field_id belongs to route sheet",
         "/api/reset-sheet",
     )
     for fragment in required_fragments:
@@ -5241,6 +5433,7 @@ def main() -> int:
         run_admin_current_site_task_write_smoke(Path(tmpdir) / "admin-current-site-task-write.db")
         run_admin_current_site_floor_write_smoke(Path(tmpdir) / "admin-current-site-floor-write.db")
         run_admin_current_site_unit_write_smoke(Path(tmpdir) / "admin-current-site-unit-write.db")
+        run_admin_current_site_extra_field_write_smoke(Path(tmpdir) / "admin-current-site-extra-field-write.db")
         run_handover_reset_separation_smoke(Path(tmpdir) / "handover-smoke.db")
         run_handover_route_regression_smoke(Path(tmpdir) / "handover-route-smoke.db")
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
@@ -5345,8 +5538,8 @@ def main() -> int:
         if fragment not in site_write_isolation_result.stdout:
             raise AssertionError(f"check_site_write_isolation_readiness.py missing expected inventory fragment: {fragment}")
     admin_write_model_result = run_script("check_admin_write_model_readiness.py", env={"DATABASE_URL": ""})
-    if "admin_write_model_readiness_scope: create_delete_sheet_task_floor_unit_enforced" not in admin_write_model_result.stdout:
-        raise AssertionError("check_admin_write_model_readiness.py did not report expected create/delete/task/floor/unit enforcement scope.")
+    if "admin_write_model_readiness_scope: create_delete_sheet_task_floor_unit_extra_field_enforced" not in admin_write_model_result.stdout:
+        raise AssertionError("check_admin_write_model_readiness.py did not report expected create/delete/task/floor/unit/extra-field enforcement scope.")
     if "PASS admin write model readiness check passed." not in admin_write_model_result.stdout:
         raise AssertionError("check_admin_write_model_readiness.py did not report expected PASS output.")
     for fragment in (
@@ -5358,6 +5551,8 @@ def main() -> int:
         "delete_floor",
         "add_unit",
         "delete_unit",
+        "add_extra_field",
+        "delete_extra_field",
         "save",
         "MIXED",
         "status: ENFORCED",
@@ -5366,6 +5561,7 @@ def main() -> int:
         "task delete validates task_id belongs to route sheet",
         "floor delete validates floor_id belongs to route sheet",
         "unit delete validates unit_id belongs to route sheet",
+        "extra-field delete validates field_id belongs to route sheet",
         "/api/reset-sheet",
     ):
         if fragment not in admin_write_model_result.stdout:
