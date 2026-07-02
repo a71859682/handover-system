@@ -28,6 +28,19 @@ SAFE_TARGET_MARKERS = ("dev", "development", "local", "test", "testing")
 UNSAFE_TARGET_MARKERS = ("prod", "production", "staging")
 ALLOW_OVERRIDE_ENV = "DEV_VENDOR_PREVIEW_ALLOWED"
 
+TARGET_CLASS_DEVELOPMENT = "development"
+TARGET_CLASS_STAGING = "staging"
+TARGET_CLASS_PRODUCTION = "production"
+TARGET_CLASS_AMBIGUOUS = "ambiguous"
+TARGET_CLASS_UNKNOWN = "unknown"
+
+DEV_SERVICE_MARKERS = ("handover-system-dev",)
+DEV_URL_MARKERS = ("handover-system-dev.onrender.com",)
+STAGING_SERVICE_MARKERS = ("handover-system-staging",)
+STAGING_URL_MARKERS = ("handover-system-staging.onrender.com",)
+PROD_SERVICE_MARKERS = ("handover-system",)
+PROD_URL_MARKERS = ("handover-system.onrender.com",)
+
 
 def _normalize_path(value: str) -> str:
     return value.replace("\\", "/").lower()
@@ -76,69 +89,184 @@ def _database_fingerprint(database_url: str) -> str:
     ).lower()
 
 
-def is_safe_target() -> tuple[bool, list[str], list[str], str | None, str | None]:
+def _match_any(value: str, markers: tuple[str, ...]) -> bool:
+    lowered = value.strip().lower()
+    return any(marker in lowered for marker in markers)
+
+
+def _detect_target_class(
+    *,
+    render_service_name: str,
+    render_external_url: str,
+) -> tuple[str, str, str]:
+    service_name = render_service_name.strip().lower()
+    external_url = render_external_url.strip().lower()
+
+    if _match_any(service_name, DEV_SERVICE_MARKERS) or _match_any(external_url, DEV_URL_MARKERS):
+        return TARGET_CLASS_DEVELOPMENT, "deployment_identity", "develop"
+    if _match_any(service_name, STAGING_SERVICE_MARKERS) or _match_any(external_url, STAGING_URL_MARKERS):
+        return TARGET_CLASS_STAGING, "deployment_identity", "staging"
+    if _match_any(service_name, PROD_SERVICE_MARKERS) or _match_any(external_url, PROD_URL_MARKERS):
+        return TARGET_CLASS_PRODUCTION, "deployment_identity", "main"
+    return TARGET_CLASS_UNKNOWN, "no_deployment_identity_match", ""
+
+
+def _database_metadata_consistency(
+    *,
+    database_url: str,
+    target_class: str,
+) -> tuple[str, list[str]]:
+    fingerprint = _database_fingerprint(database_url)
+    if not fingerprint:
+        return "not_available", []
+
+    anomalies: list[str] = []
+    if target_class == TARGET_CLASS_DEVELOPMENT and _signal_from_text(fingerprint, markers=UNSAFE_TARGET_MARKERS):
+        anomalies.append("database_fingerprint_prod_like_for_development")
+    elif target_class == TARGET_CLASS_STAGING and _signal_from_text(fingerprint, markers=PROD_SERVICE_MARKERS):
+        anomalies.append("database_fingerprint_production_like_for_staging")
+    elif target_class == TARGET_CLASS_PRODUCTION and _signal_from_text(fingerprint, markers=SAFE_TARGET_MARKERS):
+        anomalies.append("database_fingerprint_dev_like_for_production")
+
+    return ("anomaly" if anomalies else "consistent"), anomalies
+
+
+def is_safe_target() -> tuple[bool, list[str], list[str], str | None, str | None, str, str, str, list[str], list[str]]:
     markers = _target_markers_from_env()
     safe_signals: list[str] = []
     unsafe_signals: list[str] = []
     hard_deny_reason: str | None = None
     ambiguous_reason: str | None = None
+    runtime_metadata_notes: list[str] = []
 
     app_env = markers["app_env"].strip().lower()
     if app_env in SAFE_ENV_NAMES:
-        safe_signals.append(f"app_env={app_env}")
+        runtime_metadata_notes.append(f"app_env={app_env}")
     elif app_env in UNSAFE_ENV_NAMES:
-        unsafe_signals.append(f"app_env={app_env}")
-        hard_deny_reason = f"app_env={app_env}"
+        runtime_metadata_notes.append(f"app_env={app_env}")
 
     sqlite_db_path = markers["sqlite_db_path"]
     normalized_db_path = _normalize_path(sqlite_db_path)
     if _signal_from_text(normalized_db_path, markers=SAFE_TARGET_MARKERS):
-        safe_signals.append(f"sqlite_db_path={sqlite_db_path}")
+        runtime_metadata_notes.append(f"sqlite_db_path={sqlite_db_path}")
     elif _signal_from_text(normalized_db_path, markers=UNSAFE_TARGET_MARKERS):
-        unsafe_signals.append(f"sqlite_db_path={sqlite_db_path}")
+        runtime_metadata_notes.append(f"sqlite_db_path={sqlite_db_path}")
 
     if _normalize_path(sqlite_db_path) == _normalize_path(str(ROOT_DIR / "site.db")):
-        safe_signals.append("sqlite_db_path=project_default_site_db")
-
-    for key in ("render_service_name", "render_external_url"):
-        value = markers[key]
-        if not value:
-            continue
-        if _signal_from_text(value, markers=SAFE_TARGET_MARKERS):
-            safe_signals.append(f"{key}={value}")
-        elif _signal_from_text(value, markers=UNSAFE_TARGET_MARKERS):
-            unsafe_signals.append(f"{key}={value}")
-            hard_deny_reason = f"{key}={value}"
+        runtime_metadata_notes.append("sqlite_db_path=project_default_site_db")
 
     database_url = os.environ.get("DATABASE_URL", "").strip()
-    fingerprint = _database_fingerprint(database_url)
-    if fingerprint:
-        if _signal_from_text(fingerprint, markers=SAFE_TARGET_MARKERS):
-            safe_signals.append("database_fingerprint=dev_like")
-        elif _signal_from_text(fingerprint, markers=UNSAFE_TARGET_MARKERS):
-            unsafe_signals.append("database_fingerprint=prod_like")
-            hard_deny_reason = "database_fingerprint=prod_like"
+    target_class, deployment_identity_match, branch_mapping = _detect_target_class(
+        render_service_name=markers["render_service_name"],
+        render_external_url=markers["render_external_url"],
+    )
 
-    if hard_deny_reason is not None:
-        return False, safe_signals, unsafe_signals, hard_deny_reason, None
+    if deployment_identity_match == "deployment_identity":
+        safe_signals.append(f"render_service_name={markers['render_service_name']}")
+        safe_signals.append(f"render_external_url={markers['render_external_url']}")
+        safe_signals.append(f"branch_mapping={branch_mapping}")
 
-    if len(safe_signals) >= 2:
-        return True, safe_signals, unsafe_signals, None, None
+    database_metadata_consistency, anomalies = _database_metadata_consistency(
+        database_url=database_url,
+        target_class=target_class,
+    )
+
+    if target_class == TARGET_CLASS_PRODUCTION:
+        hard_deny_reason = "deployment_identity=production"
+        unsafe_signals.append("deployment_identity=production")
+        return (
+            False,
+            safe_signals,
+            unsafe_signals,
+            hard_deny_reason,
+            None,
+            target_class,
+            deployment_identity_match,
+            database_metadata_consistency,
+            runtime_metadata_notes,
+            anomalies,
+        )
+
+    if target_class == TARGET_CLASS_DEVELOPMENT:
+        return (
+            True,
+            safe_signals,
+            unsafe_signals,
+            None,
+            None,
+            target_class,
+            deployment_identity_match,
+            database_metadata_consistency,
+            runtime_metadata_notes,
+            anomalies,
+        )
+
+    if target_class == TARGET_CLASS_STAGING:
+        return (
+            False,
+            safe_signals,
+            unsafe_signals,
+            "deployment_identity=staging",
+            None,
+            target_class,
+            deployment_identity_match,
+            database_metadata_consistency,
+            runtime_metadata_notes,
+            anomalies,
+        )
 
     if _env_flag(ALLOW_OVERRIDE_ENV):
         safe_signals.append(f"{ALLOW_OVERRIDE_ENV}=true")
         ambiguous_reason = "allow_override_used"
-        return True, safe_signals, unsafe_signals, None, ambiguous_reason
+        return (
+            True,
+            safe_signals,
+            unsafe_signals,
+            None,
+            ambiguous_reason,
+            TARGET_CLASS_AMBIGUOUS,
+            deployment_identity_match,
+            database_metadata_consistency,
+            runtime_metadata_notes,
+            anomalies,
+        )
 
     ambiguous_reason = "insufficient_dev_fingerprint"
-    return False, safe_signals, unsafe_signals, None, ambiguous_reason
+    return (
+        False,
+        safe_signals,
+        unsafe_signals,
+        None,
+        ambiguous_reason,
+        TARGET_CLASS_AMBIGUOUS if deployment_identity_match != "deployment_identity" else target_class,
+        deployment_identity_match,
+        database_metadata_consistency,
+        runtime_metadata_notes,
+        anomalies,
+    )
 
 
 def describe_target() -> dict[str, Any]:
-    safe_target, safe_signals, unsafe_signals, hard_deny_reason, ambiguous_reason = is_safe_target()
+    (
+        safe_target,
+        safe_signals,
+        unsafe_signals,
+        hard_deny_reason,
+        ambiguous_reason,
+        target_class,
+        deployment_identity_match,
+        database_metadata_consistency,
+        runtime_metadata_notes,
+        anomalies,
+    ) = is_safe_target()
     markers = _target_markers_from_env()
     return {
         "safe_target": safe_target,
+        "target_class": target_class,
+        "deployment_identity_match": deployment_identity_match,
+        "database_metadata_consistency": database_metadata_consistency,
+        "runtime_metadata_notes": tuple(runtime_metadata_notes),
+        "anomalies": tuple(anomalies),
         "safe_signals": tuple(safe_signals),
         "unsafe_signals": tuple(unsafe_signals),
         "hard_deny_reason": hard_deny_reason,
@@ -298,6 +426,8 @@ def format_status_lines(summary: dict[str, Any]) -> list[str]:
     unsafe_signals = ", ".join(target["unsafe_signals"]) if target["unsafe_signals"] else "none"
     hard_deny_reason = target["hard_deny_reason"] or "none"
     ambiguous_reason = target["ambiguous_reason"] or "none"
+    runtime_metadata_notes = ", ".join(target["runtime_metadata_notes"]) if target["runtime_metadata_notes"] else "none"
+    anomalies = ", ".join(target["anomalies"]) if target["anomalies"] else "none"
     safe_sheet = summary["safe_sheet"]["sheet"]
     safe_sheet_label = (
         f"id={safe_sheet['id']} name={safe_sheet['name']} existing_vendor_entry_count={safe_sheet['existing_vendor_entry_count']}"
@@ -307,6 +437,9 @@ def format_status_lines(summary: dict[str, Any]) -> list[str]:
 
     return [
         f"target_safe: {str(bool(target['safe_target'])).lower()}",
+        f"target_class: {target['target_class']}",
+        f"target_deployment_identity_match: {target['deployment_identity_match']}",
+        f"target_database_metadata_consistency: {target['database_metadata_consistency']}",
         f"target_app_env: {target['app_env']}",
         f"target_app_db_path: {target['app_db_path']}",
         f"target_database_url_set: {target['database_url_set']}",
@@ -318,6 +451,8 @@ def format_status_lines(summary: dict[str, Any]) -> list[str]:
         f"target_unsafe_signals: {unsafe_signals}",
         f"target_hard_deny_reason: {hard_deny_reason}",
         f"target_ambiguous_reason: {ambiguous_reason}",
+        f"target_runtime_metadata_notes: {runtime_metadata_notes}",
+        f"target_anomalies: {anomalies}",
         f"preview_vendor_ready: {str(bool(summary['preview_vendor']['ready'])).lower()}",
         f"preview_vendor_missing: {str(bool(summary['preview_vendor']['missing'])).lower()}",
         f"preview_vendor_conflict: {str(bool(summary['preview_vendor']['conflict'])).lower()}",
