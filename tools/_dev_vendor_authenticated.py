@@ -260,6 +260,12 @@ def _authorization_phase_passed(results: list[VerificationResult]) -> bool:
     )
 
 
+def _preview_contract_phase_passed(results: list[VerificationResult]) -> bool:
+    return all(
+        result.status == STATUS_PASS for result in results if result.phase == PHASE_PREVIEW_CONTRACT
+    )
+
+
 def _sorted_unique_business_dates(entries: list[dict[str, Any]]) -> list[str]:
     return sorted({entry.get("business_date", "") for entry in entries if entry.get("business_date", "")}, reverse=True)
 
@@ -275,6 +281,14 @@ def _entry_contract_keys() -> set[str]:
         "work_headcount",
         "entry_order",
     }
+
+
+def _vendor_session_keys_present(session_data: dict[str, Any]) -> list[str]:
+    return [
+        key
+        for key in ("identity_type", "vendor_account_id", "vendor_username", "vendor_name")
+        if key in session_data
+    ]
 
 
 def build_runtime_context(preflight_results: list[VerificationResult]) -> tuple[dict[str, Any] | None, list[VerificationResult]]:
@@ -988,39 +1002,345 @@ def run_preview_contract_phase(
     return results
 
 
-def build_verification_skeleton(preflight_results: list[VerificationResult]) -> list[VerificationResult]:
-    if any(result.status == STATUS_FAIL for result in preflight_results):
-        return [
-            fail_result(
-                "verification_framework",
-                phase=PHASE_SUMMARY,
-                reason="preflight_failed",
-                explainability=["At least one preflight check returned FAIL."],
-            )
-        ]
-    if any(result.status == STATUS_BLOCKED for result in preflight_results):
+def run_cleanup_phase(
+    runtime_context: dict[str, Any] | None,
+    *,
+    preview_contract_results: list[VerificationResult],
+) -> list[VerificationResult]:
+    phase_names = [
+        "vendor_logout_reachable",
+        "vendor_logout_clears_identity_type",
+        "vendor_logout_clears_vendor_keys",
+        "vendor_logout_redirect_behavior",
+        "post_logout_vendor_protected_route_blocked",
+        "repeated_logout_safe",
+        "logout_idempotency",
+        "session_reuse_boundary",
+        "session_fixation_boundary",
+        "cookie_continuity_boundary",
+        "multiple_client_isolation",
+    ]
+    if not _preview_contract_phase_passed(preview_contract_results):
         return [
             blocked_result(
-                "verification_framework",
-                phase=PHASE_SUMMARY,
-                reason="preflight_blocked",
-                explainability=["Verification framework is intentionally blocked until all preflight checks PASS."],
+                name,
+                phase=PHASE_CLEANUP,
+                reason="preview_contract_not_passed",
+                explainability=["Cleanup phase requires Preview Contract phase to PASS."],
             )
+            for name in phase_names
         ]
-    return [
-        pass_result(
-            "verification_framework",
-            phase=PHASE_SUMMARY,
-            reason="framework_ready_for_future_phases",
-            explainability=["Preflight checks passed. Later Stage 4B slices can attach Authentication, Session, Authorization, and Contract phases here."],
+    if runtime_context is None:
+        return [
+            blocked_result(
+                name,
+                phase=PHASE_CLEANUP,
+                reason="runtime_context_missing",
+                explainability=["Cleanup phase requires runtime context."],
+            )
+            for name in phase_names
+        ]
+
+    app = runtime_context["app"]
+    password = runtime_context["password"]
+    preview_username = runtime_context["preview_username"]
+    results: list[VerificationResult] = []
+
+    preview_client = app.test_client()
+    secondary_client = app.test_client()
+    preview_client.get("/vendor/login")
+    preview_client.post(
+        "/vendor/login",
+        data={"username": preview_username, "password": password},
+        follow_redirects=False,
+    )
+    pre_logout_session = _session_snapshot(preview_client)
+    pre_logout_cookie = pre_logout_session.copy()
+    secondary_client.get("/vendor/login")
+    secondary_pre_logout_session = _session_snapshot(secondary_client)
+
+    logout_response = preview_client.get("/vendor/logout", follow_redirects=False)
+    post_logout_session = _session_snapshot(preview_client)
+    repeated_logout_response = preview_client.get("/vendor/logout", follow_redirects=False)
+    repeated_logout_session = _session_snapshot(preview_client)
+
+    if logout_response.status_code in {301, 302, 303, 307, 308, 200}:
+        results.append(
+            pass_result(
+                "vendor_logout_reachable",
+                phase=PHASE_CLEANUP,
+                reason="vendor_logout_reachable_confirmed",
+                details={"status_code": logout_response.status_code, "location": _extract_location(logout_response)},
+            )
         )
+    else:
+        results.append(
+            fail_result(
+                "vendor_logout_reachable",
+                phase=PHASE_CLEANUP,
+                reason="vendor_logout_unreachable",
+                details={"status_code": logout_response.status_code, "location": _extract_location(logout_response)},
+            )
+        )
+
+    if "identity_type" not in post_logout_session:
+        results.append(
+            pass_result(
+                "vendor_logout_clears_identity_type",
+                phase=PHASE_CLEANUP,
+                reason="vendor_logout_cleared_identity_type",
+                details={"session_keys": sorted(post_logout_session)},
+            )
+        )
+    else:
+        results.append(
+            fail_result(
+                "vendor_logout_clears_identity_type",
+                phase=PHASE_CLEANUP,
+                reason="vendor_logout_left_identity_type",
+                details={"session_keys": sorted(post_logout_session)},
+            )
+        )
+
+    remaining_vendor_keys = _vendor_session_keys_present(post_logout_session)
+    if not remaining_vendor_keys:
+        results.append(
+            pass_result(
+                "vendor_logout_clears_vendor_keys",
+                phase=PHASE_CLEANUP,
+                reason="vendor_logout_cleared_vendor_keys",
+                details={"session_keys": sorted(post_logout_session)},
+            )
+        )
+    else:
+        results.append(
+            fail_result(
+                "vendor_logout_clears_vendor_keys",
+                phase=PHASE_CLEANUP,
+                reason="vendor_logout_left_vendor_keys",
+                explainability=[f"remaining_vendor_keys={', '.join(remaining_vendor_keys)}"],
+                details={"session_keys": sorted(post_logout_session)},
+            )
+        )
+
+    if _is_login_redirect(logout_response, expected_fragment="/vendor/login") or _extract_location(logout_response) in {"", "/vendor/login"}:
+        results.append(
+            pass_result(
+                "vendor_logout_redirect_behavior",
+                phase=PHASE_CLEANUP,
+                reason="vendor_logout_redirect_behavior_confirmed",
+                details={"status_code": logout_response.status_code, "location": _extract_location(logout_response)},
+            )
+        )
+    else:
+        results.append(
+            fail_result(
+                "vendor_logout_redirect_behavior",
+                phase=PHASE_CLEANUP,
+                reason="vendor_logout_redirect_behavior_unexpected",
+                details={"status_code": logout_response.status_code, "location": _extract_location(logout_response)},
+            )
+        )
+
+    protected_routes = [
+        "/vendor/home",
+        "/vendor/profile",
+        "/vendor/scope",
+        "/vendor/business-read-preview",
     ]
+    protected_route_results = [
+        preview_client.get(route, follow_redirects=False) for route in protected_routes
+    ]
+    if all(_is_login_redirect(response, expected_fragment="/vendor/login") for response in protected_route_results):
+        results.append(
+            pass_result(
+                "post_logout_vendor_protected_route_blocked",
+                phase=PHASE_CLEANUP,
+                reason="post_logout_vendor_protected_routes_blocked",
+                details={"routes": protected_routes},
+            )
+        )
+        results.append(
+            pass_result(
+                "session_reuse_boundary",
+                phase=PHASE_CLEANUP,
+                reason="post_logout_session_cannot_reuse_vendor_access",
+                details={"routes": protected_routes},
+            )
+        )
+    else:
+        failing_routes = [
+            route
+            for route, response in zip(protected_routes, protected_route_results, strict=False)
+            if not _is_login_redirect(response, expected_fragment="/vendor/login")
+        ]
+        results.append(
+            fail_result(
+                "post_logout_vendor_protected_route_blocked",
+                phase=PHASE_CLEANUP,
+                reason="post_logout_vendor_protected_routes_not_blocked",
+                explainability=[f"failing_routes={', '.join(failing_routes)}"],
+                details={"routes": protected_routes},
+            )
+        )
+        results.append(
+            fail_result(
+                "session_reuse_boundary",
+                phase=PHASE_CLEANUP,
+                reason="post_logout_session_reused_vendor_access",
+                explainability=[f"failing_routes={', '.join(failing_routes)}"],
+                details={"routes": protected_routes},
+            )
+        )
+
+    if repeated_logout_response.status_code in {301, 302, 303, 307, 308, 200}:
+        results.append(
+            pass_result(
+                "repeated_logout_safe",
+                phase=PHASE_CLEANUP,
+                reason="repeated_logout_safe_confirmed",
+                details={"status_code": repeated_logout_response.status_code, "location": _extract_location(repeated_logout_response)},
+            )
+        )
+    else:
+        results.append(
+            fail_result(
+                "repeated_logout_safe",
+                phase=PHASE_CLEANUP,
+                reason="repeated_logout_failed",
+                details={"status_code": repeated_logout_response.status_code, "location": _extract_location(repeated_logout_response)},
+            )
+        )
+
+    if post_logout_session == repeated_logout_session:
+        results.append(
+            pass_result(
+                "logout_idempotency",
+                phase=PHASE_CLEANUP,
+                reason="logout_idempotency_confirmed",
+                details={"session_keys": sorted(post_logout_session)},
+            )
+        )
+    else:
+        results.append(
+            fail_result(
+                "logout_idempotency",
+                phase=PHASE_CLEANUP,
+                reason="logout_idempotency_failed",
+                details={
+                    "post_logout_session_keys": sorted(post_logout_session),
+                    "repeated_logout_session_keys": sorted(repeated_logout_session),
+                },
+            )
+        )
+
+    if _has_vendor_contract_keys(pre_logout_cookie) and not _has_vendor_contract_keys(post_logout_session):
+        results.append(
+            pass_result(
+                "session_fixation_boundary",
+                phase=PHASE_CLEANUP,
+                reason="logout_rotated_vendor_identity_state",
+                details={
+                    "pre_logout_session_keys": sorted(pre_logout_cookie),
+                    "post_logout_session_keys": sorted(post_logout_session),
+                },
+            )
+        )
+    else:
+        results.append(
+            fail_result(
+                "session_fixation_boundary",
+                phase=PHASE_CLEANUP,
+                reason="logout_left_vendor_identity_state_reusable",
+                details={
+                    "pre_logout_session_keys": sorted(pre_logout_cookie),
+                    "post_logout_session_keys": sorted(post_logout_session),
+                },
+            )
+        )
+
+    if secondary_pre_logout_session == _session_snapshot(secondary_client):
+        results.append(
+            pass_result(
+                "multiple_client_isolation",
+                phase=PHASE_CLEANUP,
+                reason="secondary_client_session_unchanged",
+                details={"secondary_session_keys": sorted(secondary_pre_logout_session)},
+            )
+        )
+    else:
+        results.append(
+            fail_result(
+                "multiple_client_isolation",
+                phase=PHASE_CLEANUP,
+                reason="secondary_client_session_changed",
+                details={
+                    "before_keys": sorted(secondary_pre_logout_session),
+                    "after_keys": sorted(_session_snapshot(secondary_client)),
+                },
+            )
+        )
+
+    cookie_continuity_ok = logout_response.status_code in {301, 302, 303, 307, 308, 200} and post_logout_session == repeated_logout_session
+    if cookie_continuity_ok:
+        results.append(
+            pass_result(
+                "cookie_continuity_boundary",
+                phase=PHASE_CLEANUP,
+                reason="cookie_continuity_boundary_confirmed",
+                details={"post_logout_session_keys": sorted(post_logout_session)},
+            )
+        )
+    else:
+        results.append(
+            fail_result(
+                "cookie_continuity_boundary",
+                phase=PHASE_CLEANUP,
+                reason="cookie_continuity_boundary_failed",
+                details={"post_logout_session_keys": sorted(post_logout_session)},
+            )
+        )
+
+    return results
+
+
+def build_summary_phase_result(results: list[VerificationResult]) -> VerificationResult:
+    verification_results = [result for result in results if result.phase != PHASE_SUMMARY]
+    status = overall_status(verification_results)
+    if status == STATUS_FAIL:
+        reason = "overall_fail"
+        explainability = ["At least one verification phase returned FAIL."]
+        return fail_result(
+            "verification_summary",
+            phase=PHASE_SUMMARY,
+            reason=reason,
+            explainability=explainability,
+            details={"result_count": len(verification_results)},
+        )
+    if status == STATUS_BLOCKED:
+        reason = "overall_blocked"
+        explainability = ["At least one verification phase returned BLOCKED and no FAIL was observed."]
+        return blocked_result(
+            "verification_summary",
+            phase=PHASE_SUMMARY,
+            reason=reason,
+            explainability=explainability,
+            details={"result_count": len(verification_results)},
+        )
+    return pass_result(
+        "verification_summary",
+        phase=PHASE_SUMMARY,
+        reason="overall_pass",
+        explainability=["All verification phases returned PASS."],
+        details={"result_count": len(verification_results)},
+    )
 
 
 def overall_status(results: list[VerificationResult]) -> str:
-    if any(result.status == STATUS_FAIL for result in results):
+    non_summary_results = [result for result in results if result.phase != PHASE_SUMMARY]
+    if any(result.status == STATUS_FAIL for result in non_summary_results):
         return STATUS_FAIL
-    if any(result.status == STATUS_BLOCKED for result in results):
+    if any(result.status == STATUS_BLOCKED for result in non_summary_results):
         return STATUS_BLOCKED
     return STATUS_PASS
 

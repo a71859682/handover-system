@@ -16,13 +16,14 @@ from tools._dev_vendor_authenticated import (
     STATUS_PASS,
     build_summary_payload,
     build_runtime_context,
-    build_verification_skeleton,
+    build_summary_phase_result,
     check_password_preflight,
     collect_preview_readiness_preflight,
     collect_runtime_preflight,
     format_output_lines,
     run_authentication_and_session_phases,
     run_authorization_phase,
+    run_cleanup_phase,
     run_preview_contract_phase,
 )
 
@@ -44,7 +45,6 @@ def main() -> int:
     password_result = check_password_preflight()
 
     preflight_results = [runtime_result, readiness_result, password_result]
-    skeleton_results = build_verification_skeleton(preflight_results)
     runtime_context, bootstrap_results = build_runtime_context(preflight_results)
     authentication_session_results = run_authentication_and_session_phases(
         runtime_context,
@@ -58,11 +58,20 @@ def main() -> int:
         runtime_context,
         authorization_results=authorization_results,
     )
-    verification_results = [
-        *skeleton_results,
+    cleanup_results = run_cleanup_phase(
+        runtime_context,
+        preview_contract_results=preview_contract_results,
+    )
+    non_summary_verification_results = [
         *authentication_session_results,
         *authorization_results,
         *preview_contract_results,
+        *cleanup_results,
+    ]
+    summary_result = build_summary_phase_result([*preflight_results, *non_summary_verification_results])
+    verification_results = [
+        *non_summary_verification_results,
+        summary_result,
     ]
     payload = build_summary_payload(
         runtime_details,
