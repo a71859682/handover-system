@@ -575,6 +575,8 @@ with client.session_transaction() as session:
     session["username"] = multi["username"]
     session["display_name"] = multi["display_name"] or multi["username"]
     session["role"] = multi["role"]
+    session["current_site_id"] = default_site_id
+    session["current_site_name"] = module.DEFAULT_SITE_NAME
     session["site_selection_required"] = True
 invalid_selector_post = client.post("/site-selector", data={"site_id": "invalid"}, follow_redirects=False)
 if invalid_selector_post.status_code != 400:
@@ -600,6 +602,24 @@ if forbidden_selector_post.status_code != 403:
 with client.session_transaction() as session:
     if session.get("current_site_id") != secondary_site["id"] or session.get("current_site_name") != secondary_site["site_name"]:
         raise SystemExit("forbidden selector submission should keep existing current site")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["user_id"] = multi["id"]
+    session["username"] = multi["username"]
+    session["display_name"] = multi["display_name"] or multi["username"]
+    session["role"] = multi["role"]
+    session["current_site_id"] = default_site_id
+    session["current_site_name"] = module.DEFAULT_SITE_NAME
+    session["site_selection_required"] = True
+forbidden_selector_post_during_required_selection = client.post("/site-selector", data={"site_id": inactive_site["id"]}, follow_redirects=False)
+if forbidden_selector_post_during_required_selection.status_code != 403:
+    raise SystemExit("forbidden selector submission during required selection should return 403")
+with client.session_transaction() as session:
+    if session.get("current_site_id") is not None or session.get("current_site_name") is not None:
+        raise SystemExit("forbidden selector submission during required selection should clear stale current site")
+    if session.get("site_selection_required") is not True:
+        raise SystemExit("forbidden selector submission during required selection should keep selector flag")
 
 with client.session_transaction() as session:
     session["user_id"] = admin["id"]
@@ -5896,6 +5916,13 @@ with module.db() as conn:
         ''',
         ("vendor_empty", module.generate_password_hash("vendor-pass"), "Vendor Empty", 1),
     )
+    conn.execute(
+        '''
+        INSERT INTO tasks (sheet_id, col_index, vendor, location, name)
+        VALUES (?, ?, ?, ?, ?)
+        ''',
+        (1, 5, "Vendor A", "Vendor Zone", "Vendor A Task"),
+    )
     business_date = module.resolve_crew_business_date()
     earlier_business_date = "2000-01-01"
     conn.execute(
@@ -5934,6 +5961,14 @@ with module.db() as conn:
         ''',
         (1, "Vendor Other", business_date, "2000-01-01 11:00", 9, 9, "Vendor Other Work", 9, 0),
     )
+    vendor_a_entry_id = conn.execute(
+        "SELECT id FROM vendor_work_entries WHERE sheet_id = 1 AND vendor_name = ? AND entry_order = 0",
+        ("Vendor A",),
+    ).fetchone()["id"]
+    vendor_other_entry_id = conn.execute(
+        "SELECT id FROM vendor_work_entries WHERE sheet_id = 1 AND vendor_name = ?",
+        ("Vendor Other",),
+    ).fetchone()["id"]
     conn.commit()
 
 client = module.app.test_client()
@@ -5948,6 +5983,24 @@ if internal_login.status_code != 302:
 with client.session_transaction() as session:
     if session.get("user_id") is None or session.get("role") != "admin":
         raise SystemExit("internal login should still populate internal session")
+
+internal_vendor_work_entry_regression = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "id": int(vendor_a_entry_id),
+        "sheet_id": 1,
+        "vendor_name": "Vendor A",
+        "business_date": business_date,
+        "planned_at": "2000-01-01 09:15",
+        "planned_headcount": 3,
+        "actual_headcount": 1,
+        "work_content": "Vendor A Work 1 Internal Regression",
+        "work_headcount": 1,
+        "entry_order": 0,
+    },
+)
+if internal_vendor_work_entry_regression.status_code != 200 or not internal_vendor_work_entry_regression.get_json().get("ok"):
+    raise SystemExit("internal /api/vendor-work-entry contract should remain unchanged")
 
 with client.session_transaction() as session:
     session.clear()
@@ -5983,6 +6036,16 @@ vendor_business_preview_unauthenticated = client.get("/vendor/business-read-prev
 if vendor_business_preview_unauthenticated.status_code != 302 or not vendor_business_preview_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
     raise SystemExit("unauthenticated vendor business read preview should redirect to /vendor/login")
 
+vendor_work_preflight_unauthenticated = client.post(
+    "/api/vendor/work-entry/preflight",
+    json={"sheet_id": 1, "business_date": business_date},
+)
+if vendor_work_preflight_unauthenticated.status_code != 403:
+    raise SystemExit("unauthenticated vendor work-entry preflight should return 403")
+vendor_work_preflight_unauthenticated_payload = vendor_work_preflight_unauthenticated.get_json()
+if vendor_work_preflight_unauthenticated_payload["error"]["code"] != "vendor_auth_required":
+    raise SystemExit("unauthenticated vendor work-entry preflight should preserve vendor_auth_required")
+
 with client.session_transaction() as session:
     session["user_id"] = 999
     session["role"] = "admin"
@@ -6000,6 +6063,16 @@ if internal_vendor_scope.status_code != 302 or not internal_vendor_scope.headers
 internal_vendor_business_preview = client.get("/vendor/business-read-preview", follow_redirects=False)
 if internal_vendor_business_preview.status_code != 302 or not internal_vendor_business_preview.headers.get("Location", "").endswith("/vendor/login"):
     raise SystemExit("internal session must not access vendor business read preview")
+
+internal_vendor_work_preflight = client.post(
+    "/api/vendor/work-entry/preflight",
+    json={"sheet_id": 1, "business_date": business_date},
+)
+if internal_vendor_work_preflight.status_code != 403:
+    raise SystemExit("internal session must not access vendor write preflight")
+internal_vendor_work_preflight_payload = internal_vendor_work_preflight.get_json()
+if internal_vendor_work_preflight_payload["error"]["code"] != "vendor_auth_required":
+    raise SystemExit("internal vendor write preflight should preserve vendor_auth_required")
 
 wrong_password = client.post(
     "/vendor/login",
@@ -6050,6 +6123,121 @@ with client.session_transaction() as session:
         raise SystemExit("vendor session must not contain internal user_id/role")
     if session.get("current_site_id") is not None or session.get("current_site_name") is not None:
         raise SystemExit("vendor session must not contain internal current-site session")
+
+vendor_work_preflight = client.post(
+    "/api/vendor/work-entry/preflight",
+    json={
+        "sheet_id": 1,
+        "business_date": business_date,
+        "vendor_name": "Vendor A",
+    },
+)
+if vendor_work_preflight.status_code != 200:
+    raise SystemExit("vendor write preflight should return 200 for authenticated vendor")
+vendor_work_preflight_payload = vendor_work_preflight.get_json()
+if not isinstance(vendor_work_preflight_payload, dict) or vendor_work_preflight_payload.get("ok") is not True:
+    raise SystemExit("vendor write preflight should return ok=true payload")
+preflight = vendor_work_preflight_payload.get("preflight")
+if not isinstance(preflight, dict):
+    raise SystemExit("vendor write preflight should return preflight context")
+expected_preflight_keys = {
+    "vendor_account_id",
+    "vendor_username",
+    "vendor_name",
+    "sheet_id",
+    "business_date",
+    "entry_id",
+    "write_mode",
+}
+if set(preflight.keys()) != expected_preflight_keys:
+    raise SystemExit("vendor write preflight should return stable preflight context shape")
+if preflight.get("vendor_username") != "vendor_active" or preflight.get("vendor_name") != "Vendor A":
+    raise SystemExit("vendor write preflight must use authenticated vendor identity")
+if preflight.get("sheet_id") != 1 or preflight.get("business_date") != business_date:
+    raise SystemExit("vendor write preflight should return trusted write context")
+if preflight.get("entry_id") is not None or preflight.get("write_mode") != "create":
+    raise SystemExit("vendor write preflight create should return entry_id=None and write_mode=create")
+with client.session_transaction() as session:
+    if session.get("current_site_id") is not None or session.get("current_site_name") is not None:
+        raise SystemExit("vendor write preflight must not create current-site session")
+
+vendor_work_preflight_mismatch = client.post(
+    "/api/vendor/work-entry/preflight",
+    json={
+        "sheet_id": 1,
+        "business_date": business_date,
+        "vendor_name": "Vendor Other",
+    },
+)
+if vendor_work_preflight_mismatch.status_code != 403:
+    raise SystemExit("vendor_name mismatch should be rejected with 403")
+vendor_work_preflight_mismatch_payload = vendor_work_preflight_mismatch.get_json()
+if vendor_work_preflight_mismatch_payload["error"]["code"] != "vendor_name_mismatch":
+    raise SystemExit("vendor_name mismatch should preserve vendor_name_mismatch error code")
+
+vendor_work_preflight_cross_vendor = client.post(
+    "/api/vendor/work-entry/preflight",
+    json={
+        "id": int(vendor_other_entry_id),
+        "sheet_id": 1,
+        "business_date": business_date,
+        "vendor_name": "Vendor A",
+    },
+)
+if vendor_work_preflight_cross_vendor.status_code != 403:
+    raise SystemExit("vendor cross-vendor preflight should be rejected with 403")
+vendor_work_preflight_cross_vendor_payload = vendor_work_preflight_cross_vendor.get_json()
+if vendor_work_preflight_cross_vendor_payload["error"]["code"] != "vendor_cross_vendor_write_forbidden":
+    raise SystemExit("vendor cross-vendor preflight should preserve vendor_cross_vendor_write_forbidden")
+
+vendor_work_preflight_update = client.post(
+    "/api/vendor/work-entry/preflight",
+    json={
+        "id": int(vendor_a_entry_id),
+        "sheet_id": 1,
+        "business_date": business_date,
+        "vendor_name": "Vendor A",
+    },
+)
+if vendor_work_preflight_update.status_code != 200:
+    raise SystemExit("vendor update preflight should return 200 when business_date matches existing entry")
+vendor_work_preflight_update_payload = vendor_work_preflight_update.get_json()
+vendor_work_preflight_update_context = vendor_work_preflight_update_payload.get("preflight")
+if vendor_work_preflight_update_context.get("entry_id") != int(vendor_a_entry_id) or vendor_work_preflight_update_context.get("write_mode") != "update":
+    raise SystemExit("vendor update preflight should preserve trusted update context")
+
+vendor_work_preflight_business_date_mismatch = client.post(
+    "/api/vendor/work-entry/preflight",
+    json={
+        "id": int(vendor_a_entry_id),
+        "sheet_id": 1,
+        "business_date": earlier_business_date,
+        "vendor_name": "Vendor A",
+    },
+)
+if vendor_work_preflight_business_date_mismatch.status_code != 409:
+    raise SystemExit("vendor update preflight business_date mismatch should be rejected with 409")
+vendor_work_preflight_business_date_mismatch_payload = vendor_work_preflight_business_date_mismatch.get_json()
+if vendor_work_preflight_business_date_mismatch_payload["error"]["code"] != "vendor_business_date_mismatch":
+    raise SystemExit("vendor update preflight business_date mismatch should preserve vendor_business_date_mismatch")
+
+vendor_work_internal_route_with_vendor_session = client.post(
+    "/api/vendor-work-entry",
+    json={
+        "sheet_id": 1,
+        "vendor_name": "Vendor A",
+        "business_date": business_date,
+        "planned_at": "",
+        "planned_headcount": 1,
+        "actual_headcount": 0,
+        "work_content": "Vendor Route Should Not Hit Internal Route",
+        "work_headcount": 0,
+        "entry_order": 0,
+    },
+    follow_redirects=False,
+)
+if vendor_work_internal_route_with_vendor_session.status_code != 302 or not vendor_work_internal_route_with_vendor_session.headers.get("Location", "").endswith("/login"):
+    raise SystemExit("vendor session must not pass internal /api/vendor-work-entry route")
 
 vendor_logged_in_page = client.get("/vendor/login")
 if vendor_logged_in_page.status_code != 200:

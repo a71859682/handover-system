@@ -1862,6 +1862,27 @@ def _handle_vendor_work_entry_lookup_error(exc: LookupError):
     raise exc
 
 
+def _handle_vendor_write_preflight_error(exc: LookupError):
+    code = str(exc)
+    if code == "vendor_auth_required":
+        return crew_api_error("vendor_auth_required", "vendor authentication is required.", status=403)
+    if code == "sheet_not_found":
+        return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+    if code == "vendor_not_in_sheet":
+        return crew_api_error("vendor_not_in_sheet", "trusted vendor_name does not belong to the requested sheet.", status=404)
+    if code == "entry_not_found":
+        return crew_api_error("entry_not_found", "vendor work entry id was not found.", status=404)
+    if code == "sheet_mismatch":
+        return crew_api_error("sheet_mismatch", "vendor work entry belongs to a different sheet_id.", status=409)
+    if code == "vendor_name_mismatch":
+        return crew_api_error("vendor_name_mismatch", "payload vendor_name does not match authenticated vendor identity.", status=403)
+    if code == "vendor_cross_vendor_write_forbidden":
+        return crew_api_error("vendor_cross_vendor_write_forbidden", "authenticated vendor cannot write another vendor's entry.", status=403)
+    if code == "vendor_business_date_mismatch":
+        return crew_api_error("vendor_business_date_mismatch", "payload business_date must match the existing vendor work entry business_date.", status=409)
+    raise exc
+
+
 def get_active_crew_vendors(sheet_id: int) -> list[str]:
     with db() as conn:
         tasks = conn.execute(
@@ -2213,6 +2234,53 @@ def require_current_vendor_business_identity() -> dict[str, object]:
         "vendor_account_id": int(vendor_account["id"]),
         "vendor_username": str(vendor_account["username"]),
         "vendor_name": str(vendor_account["vendor_name"]),
+    }
+
+
+def vendor_write_preflight(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    business_date: str,
+    entry_id: int | None = None,
+    payload_vendor_name: str | None = None,
+    payload_business_date_provided: bool = False,
+) -> dict[str, object]:
+    business_identity = require_current_vendor_business_identity()
+    trusted_vendor_name = str(business_identity["vendor_name"])
+    if payload_vendor_name is not None and str(payload_vendor_name) != trusted_vendor_name:
+        raise LookupError("vendor_name_mismatch")
+
+    context = resolve_vendor_work_entry_write_context(
+        conn,
+        sheet_id=sheet_id,
+        vendor_name=trusted_vendor_name,
+        entry_id=entry_id,
+    )
+    if entry_id is not None:
+        existing_entry = conn.execute(
+            """
+            SELECT vendor_name, business_date
+            FROM vendor_work_entries
+            WHERE id = ?
+            """,
+            (entry_id,),
+        ).fetchone()
+        if existing_entry is None:
+            raise LookupError("entry_not_found")
+        if str(existing_entry["vendor_name"]) != trusted_vendor_name:
+            raise LookupError("vendor_cross_vendor_write_forbidden")
+        if payload_business_date_provided and str(existing_entry["business_date"]) != str(business_date):
+            raise LookupError("vendor_business_date_mismatch")
+
+    return {
+        "vendor_account_id": int(business_identity["vendor_account_id"]),
+        "vendor_username": str(business_identity["vendor_username"]),
+        "vendor_name": trusted_vendor_name,
+        "sheet_id": int(context["sheet_id"]),
+        "business_date": str(business_date),
+        "entry_id": entry_id,
+        "write_mode": "update" if entry_id is not None else "create",
     }
 
 
@@ -2672,6 +2740,13 @@ def clear_current_site() -> None:
     session.pop("current_site_id", None)
     session.pop("current_site_name", None)
     session.pop("site_selection_required", None)
+
+
+def clear_current_site_selection_context() -> None:
+    if not has_request_context():
+        return
+    session.pop("current_site_id", None)
+    session.pop("current_site_name", None)
 
 
 def _site_selection_redirect_target(resolution: dict[str, object]) -> str:
@@ -3704,10 +3779,13 @@ def site_selector():
         return redirect(url_for("login"))
 
     if request.method == "POST":
+        selector_required = session.get("site_selection_required") is True
         raw_site_id = request.form.get("site_id", "").strip()
         try:
             site_id = int(raw_site_id)
         except (TypeError, ValueError):
+            if selector_required:
+                clear_current_site_selection_context()
             app.logger.info(
                 "invalid_site_selection user_id=%s site_id=%s reason=invalid_integer",
                 user["id"],
@@ -3716,6 +3794,8 @@ def site_selector():
             return _render_site_selector(user=user, status_code=400, error_message="請選擇有效的工地")
 
         if not user_can_access_site(int(user["id"]), site_id):
+            if selector_required:
+                clear_current_site_selection_context()
             app.logger.info(
                 "invalid_site_selection user_id=%s site_id=%s reason=not_accessible",
                 user["id"],
@@ -4139,6 +4219,41 @@ def api_vendor_work_entry():
         ).fetchone()
 
     return jsonify({"ok": True, "entry": dict(row) if row else None})
+
+
+@app.route("/api/vendor/work-entry/preflight", methods=["POST"])
+def api_vendor_work_entry_preflight():
+    data = request.get_json(silent=True) or {}
+    try:
+        entry_id = parse_optional_positive_int(data.get("id"), field_name="id")
+        sheet_id = parse_non_negative_int(data.get("sheet_id"), field_name="sheet_id")
+        if sheet_id <= 0:
+            raise ValueError("sheet_id must be a positive integer.")
+        raw_vendor_name = str(data.get("vendor_name", "")).strip()
+        payload_vendor_name = normalize_vendor_name(raw_vendor_name) if raw_vendor_name else None
+        raw_business_date = str(data.get("business_date", "")).strip()
+        business_date = (
+            parse_crew_business_date(raw_business_date)
+            if raw_business_date
+            else resolve_crew_business_date()
+        )
+    except ValueError as exc:
+        return crew_api_error("invalid_request", str(exc))
+
+    with db() as conn:
+        try:
+            preflight = vendor_write_preflight(
+                conn,
+                sheet_id=sheet_id,
+                business_date=business_date,
+                entry_id=entry_id,
+                payload_vendor_name=payload_vendor_name,
+                payload_business_date_provided=bool(raw_business_date),
+            )
+        except LookupError as exc:
+            return _handle_vendor_write_preflight_error(exc)
+
+    return jsonify({"ok": True, "preflight": preflight})
 
 
 @app.route("/api/crew-followups")
