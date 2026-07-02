@@ -3570,6 +3570,20 @@ def vendor_home():
     )
 
 
+@app.route("/vendor/profile", methods=["GET"])
+@vendor_login_required
+def vendor_profile():
+    vendor_account = require_current_vendor_account()
+    return jsonify(
+        {
+            "ok": True,
+            "vendor_account_id": int(vendor_account["id"]),
+            "vendor_username": str(vendor_account["username"]),
+            "vendor_name": str(vendor_account["vendor_name"]),
+        }
+    )
+
+
 @app.route("/site-selector", methods=["GET", "POST"])
 @login_required
 def site_selector():
