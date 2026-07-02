@@ -5,6 +5,7 @@ import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -25,6 +26,7 @@ SAFE_ENV_NAMES = {"dev", "development", "local", "test", "testing"}
 UNSAFE_ENV_NAMES = {"prod", "production", "staging"}
 SAFE_TARGET_MARKERS = ("dev", "development", "local", "test", "testing")
 UNSAFE_TARGET_MARKERS = ("prod", "production", "staging")
+ALLOW_OVERRIDE_ENV = "DEV_VENDOR_PREVIEW_ALLOWED"
 
 
 def _normalize_path(value: str) -> str:
@@ -54,16 +56,39 @@ def _signal_from_text(value: str, *, markers: tuple[str, ...]) -> bool:
     return any(marker in lowered for marker in markers)
 
 
-def is_safe_target() -> tuple[bool, list[str], list[str]]:
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _database_fingerprint(database_url: str) -> str:
+    if not database_url.strip():
+        return ""
+    parts = urlsplit(database_url)
+    return " ".join(
+        part
+        for part in (
+            parts.scheme or "",
+            parts.hostname or "",
+            parts.path or "",
+            parts.username or "",
+        )
+        if part
+    ).lower()
+
+
+def is_safe_target() -> tuple[bool, list[str], list[str], str | None, str | None]:
     markers = _target_markers_from_env()
     safe_signals: list[str] = []
     unsafe_signals: list[str] = []
+    hard_deny_reason: str | None = None
+    ambiguous_reason: str | None = None
 
     app_env = markers["app_env"].strip().lower()
     if app_env in SAFE_ENV_NAMES:
         safe_signals.append(f"app_env={app_env}")
     elif app_env in UNSAFE_ENV_NAMES:
         unsafe_signals.append(f"app_env={app_env}")
+        hard_deny_reason = f"app_env={app_env}"
 
     sqlite_db_path = markers["sqlite_db_path"]
     normalized_db_path = _normalize_path(sqlite_db_path)
@@ -83,20 +108,41 @@ def is_safe_target() -> tuple[bool, list[str], list[str]]:
             safe_signals.append(f"{key}={value}")
         elif _signal_from_text(value, markers=UNSAFE_TARGET_MARKERS):
             unsafe_signals.append(f"{key}={value}")
+            hard_deny_reason = f"{key}={value}"
 
-    if markers["database_url_set"] == "true":
-        unsafe_signals.append("database_url_set=true")
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    fingerprint = _database_fingerprint(database_url)
+    if fingerprint:
+        if _signal_from_text(fingerprint, markers=SAFE_TARGET_MARKERS):
+            safe_signals.append("database_fingerprint=dev_like")
+        elif _signal_from_text(fingerprint, markers=UNSAFE_TARGET_MARKERS):
+            unsafe_signals.append("database_fingerprint=prod_like")
+            hard_deny_reason = "database_fingerprint=prod_like"
 
-    return (not unsafe_signals and bool(safe_signals), safe_signals, unsafe_signals)
+    if hard_deny_reason is not None:
+        return False, safe_signals, unsafe_signals, hard_deny_reason, None
+
+    if len(safe_signals) >= 2:
+        return True, safe_signals, unsafe_signals, None, None
+
+    if _env_flag(ALLOW_OVERRIDE_ENV):
+        safe_signals.append(f"{ALLOW_OVERRIDE_ENV}=true")
+        ambiguous_reason = "allow_override_used"
+        return True, safe_signals, unsafe_signals, None, ambiguous_reason
+
+    ambiguous_reason = "insufficient_dev_fingerprint"
+    return False, safe_signals, unsafe_signals, None, ambiguous_reason
 
 
 def describe_target() -> dict[str, Any]:
-    safe_target, safe_signals, unsafe_signals = is_safe_target()
+    safe_target, safe_signals, unsafe_signals, hard_deny_reason, ambiguous_reason = is_safe_target()
     markers = _target_markers_from_env()
     return {
         "safe_target": safe_target,
         "safe_signals": tuple(safe_signals),
         "unsafe_signals": tuple(unsafe_signals),
+        "hard_deny_reason": hard_deny_reason,
+        "ambiguous_reason": ambiguous_reason,
         "app_env": markers["app_env"] or "<unset>",
         "app_db_path": markers["app_db_path"] or "<unset>",
         "database_url_set": markers["database_url_set"],
@@ -250,6 +296,8 @@ def format_status_lines(summary: dict[str, Any]) -> list[str]:
     target = summary["target"]
     safe_signals = ", ".join(target["safe_signals"]) if target["safe_signals"] else "none"
     unsafe_signals = ", ".join(target["unsafe_signals"]) if target["unsafe_signals"] else "none"
+    hard_deny_reason = target["hard_deny_reason"] or "none"
+    ambiguous_reason = target["ambiguous_reason"] or "none"
     safe_sheet = summary["safe_sheet"]["sheet"]
     safe_sheet_label = (
         f"id={safe_sheet['id']} name={safe_sheet['name']} existing_vendor_entry_count={safe_sheet['existing_vendor_entry_count']}"
@@ -268,6 +316,8 @@ def format_status_lines(summary: dict[str, Any]) -> list[str]:
         f"target_sqlite_db_source: {target['sqlite_db_source']}",
         f"target_safe_signals: {safe_signals}",
         f"target_unsafe_signals: {unsafe_signals}",
+        f"target_hard_deny_reason: {hard_deny_reason}",
+        f"target_ambiguous_reason: {ambiguous_reason}",
         f"preview_vendor_ready: {str(bool(summary['preview_vendor']['ready'])).lower()}",
         f"preview_vendor_missing: {str(bool(summary['preview_vendor']['missing'])).lower()}",
         f"preview_vendor_conflict: {str(bool(summary['preview_vendor']['conflict'])).lower()}",
