@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -14,30 +15,58 @@ from app import db  # noqa: E402
 from tools._dev_vendor_preview import (  # noqa: E402
     build_status_summary,
     collect_dev_vendor_preview_inventory,
+    evaluate_preview_check,
+    EXIT_BLOCKED,
+    EXIT_FAIL,
+    EXIT_PASS,
     format_status_lines,
-    is_ready_for_authenticated_verification,
 )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check Dev vendor preview test data readiness.")
-    parser.parse_args()
+    parser.add_argument("--json", action="store_true", help="Print machine-readable JSON output.")
+    args = parser.parse_args()
 
-    print("dev_vendor_preview_check_scope: read_only")
     with db() as conn:
         conn.row_factory = sqlite3.Row
         inventory = collect_dev_vendor_preview_inventory(conn)
 
     summary = build_status_summary(inventory)
+    status_info = evaluate_preview_check(summary)
+
+    print("Status:")
+    print(status_info["overall_status"])
+    print("Reason:")
+    print(status_info["overall_reason"])
+    print("Target:")
+    print(status_info["target"])
+    print("dev_vendor_preview_check_scope: read_only")
+    for explain_line in status_info["status_explainability"]:
+        print(f"status_note: {explain_line}")
     for line in format_status_lines(summary):
         print(line)
 
-    if is_ready_for_authenticated_verification(summary):
-        print("PASS dev vendor preview check passed.")
-        return 0
+    payload = {
+        "overall_status": status_info["overall_status"],
+        "overall_reason": status_info["overall_reason"],
+        "target": status_info["target"],
+        "status_explainability": status_info["status_explainability"],
+        "summary": summary,
+    }
 
-    print("FAIL dev vendor preview check failed.")
-    return 1
+    if args.json:
+        print()
+        print(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True))
+
+    print(f"{status_info['overall_status']} dev vendor preview check {status_info['overall_reason']}.")
+    if status_info["exit_code"] == EXIT_PASS:
+        return EXIT_PASS
+    if status_info["exit_code"] == EXIT_FAIL:
+        return EXIT_FAIL
+    if status_info["exit_code"] == EXIT_BLOCKED:
+        return EXIT_BLOCKED
+    return EXIT_BLOCKED
 
 
 if __name__ == "__main__":

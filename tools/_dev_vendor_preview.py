@@ -16,6 +16,14 @@ from app import DB_PATH  # noqa: E402
 from sqlite_db_path import resolve_sqlite_db_path  # noqa: E402
 
 
+STATUS_PASS = "PASS"
+STATUS_FAIL = "FAIL"
+STATUS_BLOCKED = "BLOCKED"
+
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_BLOCKED = 2
+
 PREVIEW_USERNAME = "vendor_preview_dev"
 PREVIEW_VENDOR_NAME = "Vendor Preview Dev"
 EMPTY_USERNAME = "vendor_empty_dev"
@@ -418,6 +426,62 @@ def is_ready_for_authenticated_verification(summary: dict[str, Any]) -> bool:
             bool(summary["safe_sheet"]["ready"]),
         )
     )
+
+
+def evaluate_preview_check(summary: dict[str, Any]) -> dict[str, Any]:
+    target = summary["target"]
+    target_class = target["target_class"]
+    deployment_identity_match = target["deployment_identity_match"]
+    safe_target = bool(target["safe_target"])
+
+    if target_class != TARGET_CLASS_DEVELOPMENT:
+        return {
+            "overall_status": STATUS_BLOCKED,
+            "overall_reason": "non_dev_target",
+            "exit_code": EXIT_BLOCKED,
+            "target": target_class,
+            "status_explainability": [
+                f"target_class={target_class}",
+                f"deployment_identity_match={deployment_identity_match}",
+                "Readiness evaluation is skipped outside development targets.",
+            ],
+        }
+
+    if not safe_target:
+        return {
+            "overall_status": STATUS_BLOCKED,
+            "overall_reason": "runtime_not_ready",
+            "exit_code": EXIT_BLOCKED,
+            "target": target_class,
+            "status_explainability": [
+                f"target_class={target_class}",
+                f"deployment_identity_match={deployment_identity_match}",
+                "Development target could not be safely confirmed.",
+            ],
+        }
+
+    if is_ready_for_authenticated_verification(summary):
+        return {
+            "overall_status": STATUS_PASS,
+            "overall_reason": "preview_readiness_ready",
+            "exit_code": EXIT_PASS,
+            "target": target_class,
+            "status_explainability": [
+                "Development target confirmed.",
+                "Preview readiness requirements are satisfied.",
+            ],
+        }
+
+    return {
+        "overall_status": STATUS_FAIL,
+        "overall_reason": "preview_readiness_not_ready",
+        "exit_code": EXIT_FAIL,
+        "target": target_class,
+        "status_explainability": [
+            "Development target confirmed.",
+            "Preview readiness requirements are not yet satisfied.",
+        ],
+    }
 
 
 def format_status_lines(summary: dict[str, Any]) -> list[str]:
