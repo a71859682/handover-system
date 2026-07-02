@@ -5926,11 +5926,19 @@ vendor_home_unauthenticated = client.get("/vendor/home", follow_redirects=False)
 if vendor_home_unauthenticated.status_code != 302 or not vendor_home_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
     raise SystemExit("unauthenticated vendor home should redirect to /vendor/login")
 
+vendor_profile_unauthenticated = client.get("/vendor/profile", follow_redirects=False)
+if vendor_profile_unauthenticated.status_code != 302 or not vendor_profile_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("unauthenticated vendor profile should redirect to /vendor/login")
+
 with client.session_transaction() as session:
     session["user_id"] = 999
     session["role"] = "admin"
     session["current_site_id"] = 123
     session["current_site_name"] = "Leaked Site"
+
+internal_vendor_profile = client.get("/vendor/profile", follow_redirects=False)
+if internal_vendor_profile.status_code != 302 or not internal_vendor_profile.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("internal session must not access vendor-only endpoint")
 
 wrong_password = client.post(
     "/vendor/login",
@@ -6002,6 +6010,21 @@ vendor_home_body = vendor_home.get_data(as_text=True)
 for fragment in ("Vendor Home:", "Vendor A", "vendor_active"):
     if fragment not in vendor_home_body:
         raise SystemExit(f"vendor home missing fragment: {fragment}")
+
+vendor_profile = client.get("/vendor/profile", follow_redirects=False)
+if vendor_profile.status_code != 200:
+    raise SystemExit("vendor authenticated profile should return 200")
+vendor_profile_payload = vendor_profile.get_json()
+if not isinstance(vendor_profile_payload, dict) or vendor_profile_payload.get("ok") is not True:
+    raise SystemExit("vendor profile should return ok=true payload")
+if vendor_profile_payload.get("vendor_account_id") is None:
+    raise SystemExit("vendor profile should return vendor_account_id")
+if vendor_profile_payload.get("vendor_username") != "vendor_active":
+    raise SystemExit("vendor profile should return vendor_username")
+if vendor_profile_payload.get("vendor_name") != "Vendor A":
+    raise SystemExit("vendor profile should return vendor_name")
+if "password_hash" in vendor_profile_payload:
+    raise SystemExit("vendor profile must not return password_hash")
 
 internal_route_with_vendor_session = client.get("/sheet", follow_redirects=False)
 if internal_route_with_vendor_session.status_code != 302 or not internal_route_with_vendor_session.headers.get("Location", "").endswith("/login"):
