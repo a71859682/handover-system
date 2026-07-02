@@ -2207,6 +2207,15 @@ def require_current_vendor_account() -> dict[str, object]:
     return vendor_account
 
 
+def require_current_vendor_business_identity() -> dict[str, object]:
+    vendor_account = require_current_vendor_account()
+    return {
+        "vendor_account_id": int(vendor_account["id"]),
+        "vendor_username": str(vendor_account["username"]),
+        "vendor_name": str(vendor_account["vendor_name"]),
+    }
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -3605,6 +3614,52 @@ def vendor_scope():
     if scope is None:
         return redirect(url_for("vendor_login"))
     return jsonify({"ok": True, "scope": scope})
+
+
+@app.route("/vendor/business-read-preview", methods=["GET"])
+@vendor_login_required
+def vendor_business_read_preview():
+    business_identity = require_current_vendor_business_identity()
+    vendor_name = str(business_identity["vendor_name"])
+
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT vendor_name, business_date, planned_at, planned_headcount,
+                   actual_headcount, work_content, work_headcount, entry_order
+            FROM vendor_work_entries
+            WHERE vendor_name = ?
+            ORDER BY business_date DESC, entry_order ASC, rowid ASC
+            """,
+            (vendor_name,),
+        ).fetchall()
+
+    entries = [
+        {
+            "vendor_name": str(row["vendor_name"]),
+            "business_date": str(row["business_date"]),
+            "planned_at": str(row["planned_at"] or ""),
+            "planned_headcount": int(row["planned_headcount"] or 0),
+            "actual_headcount": int(row["actual_headcount"] or 0),
+            "work_content": str(row["work_content"] or ""),
+            "work_headcount": int(row["work_headcount"] or 0),
+            "entry_order": int(row["entry_order"] or 0),
+        }
+        for row in rows
+    ]
+    business_dates = sorted({entry["business_date"] for entry in entries}, reverse=True)
+
+    return jsonify(
+        {
+            "ok": True,
+            "vendor_account_id": int(business_identity["vendor_account_id"]),
+            "vendor_username": str(business_identity["vendor_username"]),
+            "vendor_name": vendor_name,
+            "entry_count": len(entries),
+            "business_dates": business_dates,
+            "entries": entries,
+        }
+    )
 
 
 @app.route("/site-selector", methods=["GET", "POST"])

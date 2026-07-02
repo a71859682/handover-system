@@ -5889,6 +5889,34 @@ with module.db() as conn:
         ''',
         ("vendor_inactive", module.generate_password_hash("vendor-pass"), "Vendor B", 0),
     )
+    business_date = module.resolve_crew_business_date()
+    conn.execute(
+        '''
+        INSERT INTO vendor_work_entries (
+            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+            actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (1, "Vendor A", business_date, "2000-01-01 09:00", 3, 1, "Vendor A Work 1", 1, 0),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_work_entries (
+            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+            actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (1, "Vendor A", business_date, "2000-01-01 10:00", 2, 0, "Vendor A Work 2", 0, 1),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_work_entries (
+            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+            actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (1, "Vendor Other", business_date, "2000-01-01 11:00", 9, 9, "Vendor Other Work", 9, 0),
+    )
     conn.commit()
 
 client = module.app.test_client()
@@ -5934,6 +5962,10 @@ vendor_scope_unauthenticated = client.get("/vendor/scope", follow_redirects=Fals
 if vendor_scope_unauthenticated.status_code != 302 or not vendor_scope_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
     raise SystemExit("unauthenticated vendor scope should redirect to /vendor/login")
 
+vendor_business_preview_unauthenticated = client.get("/vendor/business-read-preview", follow_redirects=False)
+if vendor_business_preview_unauthenticated.status_code != 302 or not vendor_business_preview_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("unauthenticated vendor business read preview should redirect to /vendor/login")
+
 with client.session_transaction() as session:
     session["user_id"] = 999
     session["role"] = "admin"
@@ -5947,6 +5979,10 @@ if internal_vendor_profile.status_code != 302 or not internal_vendor_profile.hea
 internal_vendor_scope = client.get("/vendor/scope", follow_redirects=False)
 if internal_vendor_scope.status_code != 302 or not internal_vendor_scope.headers.get("Location", "").endswith("/vendor/login"):
     raise SystemExit("internal session must not access vendor-only scope endpoint")
+
+internal_vendor_business_preview = client.get("/vendor/business-read-preview", follow_redirects=False)
+if internal_vendor_business_preview.status_code != 302 or not internal_vendor_business_preview.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("internal session must not access vendor business read preview")
 
 wrong_password = client.post(
     "/vendor/login",
@@ -6060,6 +6096,42 @@ if "password_hash" in scope:
 for forbidden_key in ("site_id", "sheet_id", "allowed_site_ids", "allowed_sheet_ids"):
     if forbidden_key in scope:
         raise SystemExit(f"vendor scope must not return {forbidden_key}")
+
+vendor_business_preview = client.get("/vendor/business-read-preview", follow_redirects=False)
+if vendor_business_preview.status_code != 200:
+    raise SystemExit("vendor authenticated business read preview should return 200")
+vendor_business_preview_payload = vendor_business_preview.get_json()
+if not isinstance(vendor_business_preview_payload, dict) or vendor_business_preview_payload.get("ok") is not True:
+    raise SystemExit("vendor business read preview should return ok=true payload")
+if vendor_business_preview_payload.get("vendor_account_id") is None:
+    raise SystemExit("vendor business read preview should return vendor_account_id")
+if vendor_business_preview_payload.get("vendor_username") != "vendor_active":
+    raise SystemExit("vendor business read preview should return vendor_username")
+if vendor_business_preview_payload.get("vendor_name") != "Vendor A":
+    raise SystemExit("vendor business read preview should return vendor_name")
+if "password_hash" in vendor_business_preview_payload:
+    raise SystemExit("vendor business read preview must not return password_hash")
+for forbidden_key in ("site_id", "sheet_id", "allowed_site_ids", "allowed_sheet_ids"):
+    if forbidden_key in vendor_business_preview_payload:
+        raise SystemExit(f"vendor business read preview must not return top-level {forbidden_key}")
+entries = vendor_business_preview_payload.get("entries")
+if not isinstance(entries, list):
+    raise SystemExit("vendor business read preview should return entries list")
+if len(entries) != 2:
+    raise SystemExit("vendor business read preview should only return current vendor entries")
+for entry in entries:
+    if entry.get("vendor_name") != "Vendor A":
+        raise SystemExit("vendor business read preview must only return current vendor data")
+    if "password_hash" in entry:
+        raise SystemExit("vendor business read preview entries must not return password_hash")
+    for forbidden_key in ("site_id", "sheet_id", "allowed_site_ids", "allowed_sheet_ids"):
+        if forbidden_key in entry:
+            raise SystemExit(f"vendor business read preview entries must not return {forbidden_key}")
+business_dates = vendor_business_preview_payload.get("business_dates")
+if not isinstance(business_dates, list) or business_date not in business_dates:
+    raise SystemExit("vendor business read preview should return current vendor business_dates")
+if vendor_business_preview_payload.get("entry_count") != 2:
+    raise SystemExit("vendor business read preview should return current vendor entry_count")
 
 internal_route_with_vendor_session = client.get("/sheet", follow_redirects=False)
 if internal_route_with_vendor_session.status_code != 302 or not internal_route_with_vendor_session.headers.get("Location", "").endswith("/login"):
