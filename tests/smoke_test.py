@@ -575,6 +575,8 @@ with client.session_transaction() as session:
     session["username"] = multi["username"]
     session["display_name"] = multi["display_name"] or multi["username"]
     session["role"] = multi["role"]
+    session["current_site_id"] = default_site_id
+    session["current_site_name"] = module.DEFAULT_SITE_NAME
     session["site_selection_required"] = True
 invalid_selector_post = client.post("/site-selector", data={"site_id": "invalid"}, follow_redirects=False)
 if invalid_selector_post.status_code != 400:
@@ -600,6 +602,24 @@ if forbidden_selector_post.status_code != 403:
 with client.session_transaction() as session:
     if session.get("current_site_id") != secondary_site["id"] or session.get("current_site_name") != secondary_site["site_name"]:
         raise SystemExit("forbidden selector submission should keep existing current site")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["user_id"] = multi["id"]
+    session["username"] = multi["username"]
+    session["display_name"] = multi["display_name"] or multi["username"]
+    session["role"] = multi["role"]
+    session["current_site_id"] = default_site_id
+    session["current_site_name"] = module.DEFAULT_SITE_NAME
+    session["site_selection_required"] = True
+forbidden_selector_post_during_required_selection = client.post("/site-selector", data={"site_id": inactive_site["id"]}, follow_redirects=False)
+if forbidden_selector_post_during_required_selection.status_code != 403:
+    raise SystemExit("forbidden selector submission during required selection should return 403")
+with client.session_transaction() as session:
+    if session.get("current_site_id") is not None or session.get("current_site_name") is not None:
+        raise SystemExit("forbidden selector submission during required selection should clear stale current site")
+    if session.get("site_selection_required") is not True:
+        raise SystemExit("forbidden selector submission during required selection should keep selector flag")
 
 with client.session_transaction() as session:
     session["user_id"] = admin["id"]

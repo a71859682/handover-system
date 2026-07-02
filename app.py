@@ -2737,6 +2737,13 @@ def clear_current_site() -> None:
     session.pop("site_selection_required", None)
 
 
+def clear_current_site_selection_context() -> None:
+    if not has_request_context():
+        return
+    session.pop("current_site_id", None)
+    session.pop("current_site_name", None)
+
+
 def _site_selection_redirect_target(resolution: dict[str, object]) -> str:
     if resolution["status"] == "site_selection_required":
         return url_for("site_selector")
@@ -3767,10 +3774,13 @@ def site_selector():
         return redirect(url_for("login"))
 
     if request.method == "POST":
+        selector_required = session.get("site_selection_required") is True
         raw_site_id = request.form.get("site_id", "").strip()
         try:
             site_id = int(raw_site_id)
         except (TypeError, ValueError):
+            if selector_required:
+                clear_current_site_selection_context()
             app.logger.info(
                 "invalid_site_selection user_id=%s site_id=%s reason=invalid_integer",
                 user["id"],
@@ -3779,6 +3789,8 @@ def site_selector():
             return _render_site_selector(user=user, status_code=400, error_message="請選擇有效的工地")
 
         if not user_can_access_site(int(user["id"]), site_id):
+            if selector_required:
+                clear_current_site_selection_context()
             app.logger.info(
                 "invalid_site_selection user_id=%s site_id=%s reason=not_accessible",
                 user["id"],
