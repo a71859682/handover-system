@@ -5930,6 +5930,10 @@ vendor_profile_unauthenticated = client.get("/vendor/profile", follow_redirects=
 if vendor_profile_unauthenticated.status_code != 302 or not vendor_profile_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
     raise SystemExit("unauthenticated vendor profile should redirect to /vendor/login")
 
+vendor_scope_unauthenticated = client.get("/vendor/scope", follow_redirects=False)
+if vendor_scope_unauthenticated.status_code != 302 or not vendor_scope_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("unauthenticated vendor scope should redirect to /vendor/login")
+
 with client.session_transaction() as session:
     session["user_id"] = 999
     session["role"] = "admin"
@@ -5939,6 +5943,10 @@ with client.session_transaction() as session:
 internal_vendor_profile = client.get("/vendor/profile", follow_redirects=False)
 if internal_vendor_profile.status_code != 302 or not internal_vendor_profile.headers.get("Location", "").endswith("/vendor/login"):
     raise SystemExit("internal session must not access vendor-only endpoint")
+
+internal_vendor_scope = client.get("/vendor/scope", follow_redirects=False)
+if internal_vendor_scope.status_code != 302 or not internal_vendor_scope.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("internal session must not access vendor-only scope endpoint")
 
 wrong_password = client.post(
     "/vendor/login",
@@ -6025,6 +6033,33 @@ if vendor_profile_payload.get("vendor_name") != "Vendor A":
     raise SystemExit("vendor profile should return vendor_name")
 if "password_hash" in vendor_profile_payload:
     raise SystemExit("vendor profile must not return password_hash")
+
+vendor_scope = client.get("/vendor/scope", follow_redirects=False)
+if vendor_scope.status_code != 200:
+    raise SystemExit("vendor authenticated scope should return 200")
+vendor_scope_payload = vendor_scope.get_json()
+if not isinstance(vendor_scope_payload, dict) or vendor_scope_payload.get("ok") is not True:
+    raise SystemExit("vendor scope should return ok=true payload")
+scope = vendor_scope_payload.get("scope")
+if not isinstance(scope, dict):
+    raise SystemExit("vendor scope should return scope object")
+if scope.get("identity_type") != "vendor":
+    raise SystemExit("vendor scope should return identity_type=vendor")
+if scope.get("vendor_account_id") is None:
+    raise SystemExit("vendor scope should return vendor_account_id")
+if scope.get("vendor_username") != "vendor_active":
+    raise SystemExit("vendor scope should return vendor_username")
+if scope.get("vendor_name") != "Vendor A":
+    raise SystemExit("vendor scope should return vendor_name")
+if scope.get("scope_type") != "vendor_identity_only":
+    raise SystemExit("vendor scope should return scope_type=vendor_identity_only")
+if scope.get("scope_version") != 1:
+    raise SystemExit("vendor scope should return scope_version=1")
+if "password_hash" in scope:
+    raise SystemExit("vendor scope must not return password_hash")
+for forbidden_key in ("site_id", "sheet_id", "allowed_site_ids", "allowed_sheet_ids"):
+    if forbidden_key in scope:
+        raise SystemExit(f"vendor scope must not return {forbidden_key}")
 
 internal_route_with_vendor_session = client.get("/sheet", follow_redirects=False)
 if internal_route_with_vendor_session.status_code != 302 or not internal_route_with_vendor_session.headers.get("Location", "").endswith("/login"):
