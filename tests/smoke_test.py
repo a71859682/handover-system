@@ -5889,7 +5889,15 @@ with module.db() as conn:
         ''',
         ("vendor_inactive", module.generate_password_hash("vendor-pass"), "Vendor B", 0),
     )
+    conn.execute(
+        '''
+        INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
+        VALUES (?, ?, ?, ?)
+        ''',
+        ("vendor_empty", module.generate_password_hash("vendor-pass"), "Vendor Empty", 1),
+    )
     business_date = module.resolve_crew_business_date()
+    earlier_business_date = "2000-01-01"
     conn.execute(
         '''
         INSERT INTO vendor_work_entries (
@@ -5907,6 +5915,15 @@ with module.db() as conn:
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ''',
         (1, "Vendor A", business_date, "2000-01-01 10:00", 2, 0, "Vendor A Work 2", 0, 1),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_work_entries (
+            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+            actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (1, "Vendor A", earlier_business_date, "", 5, 4, "Vendor A Work 0", 4, 2),
     )
     conn.execute(
         '''
@@ -6103,6 +6120,17 @@ if vendor_business_preview.status_code != 200:
 vendor_business_preview_payload = vendor_business_preview.get_json()
 if not isinstance(vendor_business_preview_payload, dict) or vendor_business_preview_payload.get("ok") is not True:
     raise SystemExit("vendor business read preview should return ok=true payload")
+expected_top_level_keys = {
+    "ok",
+    "vendor_account_id",
+    "vendor_username",
+    "vendor_name",
+    "entry_count",
+    "business_dates",
+    "entries",
+}
+if set(vendor_business_preview_payload.keys()) != expected_top_level_keys:
+    raise SystemExit("vendor business read preview should keep stable top-level response shape")
 if vendor_business_preview_payload.get("vendor_account_id") is None:
     raise SystemExit("vendor business read preview should return vendor_account_id")
 if vendor_business_preview_payload.get("vendor_username") != "vendor_active":
@@ -6117,9 +6145,21 @@ for forbidden_key in ("site_id", "sheet_id", "allowed_site_ids", "allowed_sheet_
 entries = vendor_business_preview_payload.get("entries")
 if not isinstance(entries, list):
     raise SystemExit("vendor business read preview should return entries list")
-if len(entries) != 2:
+if len(entries) != 3:
     raise SystemExit("vendor business read preview should only return current vendor entries")
 for entry in entries:
+    expected_entry_keys = {
+        "vendor_name",
+        "business_date",
+        "planned_at",
+        "planned_headcount",
+        "actual_headcount",
+        "work_content",
+        "work_headcount",
+        "entry_order",
+    }
+    if set(entry.keys()) != expected_entry_keys:
+        raise SystemExit("vendor business read preview entries should keep stable response shape")
     if entry.get("vendor_name") != "Vendor A":
         raise SystemExit("vendor business read preview must only return current vendor data")
     if "password_hash" in entry:
@@ -6127,11 +6167,52 @@ for entry in entries:
     for forbidden_key in ("site_id", "sheet_id", "allowed_site_ids", "allowed_sheet_ids"):
         if forbidden_key in entry:
             raise SystemExit(f"vendor business read preview entries must not return {forbidden_key}")
+    for numeric_key in ("planned_headcount", "actual_headcount", "work_headcount", "entry_order"):
+        if not isinstance(entry.get(numeric_key), int):
+            raise SystemExit(f"vendor business read preview entries must return int for {numeric_key}")
+empty_planned_at_entries = [entry for entry in entries if entry.get("planned_at") == ""]
+if not empty_planned_at_entries:
+    raise SystemExit("vendor business read preview should serialize empty planned_at as empty string")
 business_dates = vendor_business_preview_payload.get("business_dates")
 if not isinstance(business_dates, list) or business_date not in business_dates:
     raise SystemExit("vendor business read preview should return current vendor business_dates")
-if vendor_business_preview_payload.get("entry_count") != 2:
+if business_dates != [business_date, earlier_business_date]:
+    raise SystemExit("vendor business read preview should return de-duplicated, stable-sorted business_dates")
+if vendor_business_preview_payload.get("entry_count") != 3:
     raise SystemExit("vendor business read preview should return current vendor entry_count")
+
+vendor_logout = client.get("/vendor/logout", follow_redirects=False)
+if vendor_logout.status_code != 302 or not vendor_logout.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("vendor logout should redirect to /vendor/login before empty preview check")
+
+empty_vendor_login = client.post(
+    "/vendor/login",
+    data={"username": "vendor_empty", "password": "vendor-pass"},
+    follow_redirects=False,
+)
+if empty_vendor_login.status_code != 302 or not empty_vendor_login.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("empty vendor valid login should redirect to /vendor/login")
+empty_vendor_preview = client.get("/vendor/business-read-preview", follow_redirects=False)
+if empty_vendor_preview.status_code != 200:
+    raise SystemExit("empty vendor business read preview should return 200")
+empty_vendor_preview_payload = empty_vendor_preview.get_json()
+if not isinstance(empty_vendor_preview_payload, dict) or empty_vendor_preview_payload.get("ok") is not True:
+    raise SystemExit("empty vendor business read preview should return ok=true payload")
+if set(empty_vendor_preview_payload.keys()) != expected_top_level_keys:
+    raise SystemExit("empty vendor business read preview should keep stable top-level response shape")
+if empty_vendor_preview_payload.get("vendor_username") != "vendor_empty":
+    raise SystemExit("empty vendor business read preview should return vendor_username")
+if empty_vendor_preview_payload.get("vendor_name") != "Vendor Empty":
+    raise SystemExit("empty vendor business read preview should return vendor_name")
+if empty_vendor_preview_payload.get("entry_count") != 0:
+    raise SystemExit("empty vendor business read preview should return entry_count=0")
+if empty_vendor_preview_payload.get("business_dates") != []:
+    raise SystemExit("empty vendor business read preview should return empty business_dates")
+if empty_vendor_preview_payload.get("entries") != []:
+    raise SystemExit("empty vendor business read preview should return empty entries")
+for forbidden_key in ("password_hash", "site_id", "sheet_id", "allowed_site_ids", "allowed_sheet_ids"):
+    if forbidden_key in empty_vendor_preview_payload:
+        raise SystemExit(f"empty vendor business read preview must not return {forbidden_key}")
 
 internal_route_with_vendor_session = client.get("/sheet", follow_redirects=False)
 if internal_route_with_vendor_session.status_code != 302 or not internal_route_with_vendor_session.headers.get("Location", "").endswith("/login"):

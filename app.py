@@ -2216,6 +2216,59 @@ def require_current_vendor_business_identity() -> dict[str, object]:
     }
 
 
+def authorize_vendor_business_read() -> dict[str, object]:
+    return require_current_vendor_business_identity()
+
+
+def fetch_vendor_business_read_preview(
+    conn: sqlite3.Connection,
+    *,
+    vendor_name: str,
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT vendor_name, business_date, planned_at, planned_headcount,
+               actual_headcount, work_content, work_headcount, entry_order
+        FROM vendor_work_entries
+        WHERE vendor_name = ?
+        ORDER BY business_date DESC, entry_order ASC, rowid ASC
+        """,
+        (vendor_name,),
+    ).fetchall()
+
+
+def serialize_vendor_business_read_preview(
+    *,
+    business_identity: dict[str, object],
+    rows: list[sqlite3.Row],
+) -> dict[str, object]:
+    vendor_name = str(business_identity["vendor_name"])
+    entries = [serialize_vendor_business_read_entry(row) for row in rows]
+    business_dates = sorted({entry["business_date"] for entry in entries}, reverse=True)
+    return {
+        "ok": True,
+        "vendor_account_id": int(business_identity["vendor_account_id"]),
+        "vendor_username": str(business_identity["vendor_username"]),
+        "vendor_name": vendor_name,
+        "entry_count": len(entries),
+        "business_dates": business_dates,
+        "entries": entries,
+    }
+
+
+def serialize_vendor_business_read_entry(row: sqlite3.Row) -> dict[str, object]:
+    return {
+        "vendor_name": str(row["vendor_name"]),
+        "business_date": str(row["business_date"]),
+        "planned_at": str(row["planned_at"] or ""),
+        "planned_headcount": int(row["planned_headcount"] or 0),
+        "actual_headcount": int(row["actual_headcount"] or 0),
+        "work_content": str(row["work_content"] or ""),
+        "work_headcount": int(row["work_headcount"] or 0),
+        "entry_order": int(row["entry_order"] or 0),
+    }
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -3619,46 +3672,19 @@ def vendor_scope():
 @app.route("/vendor/business-read-preview", methods=["GET"])
 @vendor_login_required
 def vendor_business_read_preview():
-    business_identity = require_current_vendor_business_identity()
-    vendor_name = str(business_identity["vendor_name"])
+    business_identity = authorize_vendor_business_read()
 
     with db() as conn:
-        rows = conn.execute(
-            """
-            SELECT vendor_name, business_date, planned_at, planned_headcount,
-                   actual_headcount, work_content, work_headcount, entry_order
-            FROM vendor_work_entries
-            WHERE vendor_name = ?
-            ORDER BY business_date DESC, entry_order ASC, rowid ASC
-            """,
-            (vendor_name,),
-        ).fetchall()
-
-    entries = [
-        {
-            "vendor_name": str(row["vendor_name"]),
-            "business_date": str(row["business_date"]),
-            "planned_at": str(row["planned_at"] or ""),
-            "planned_headcount": int(row["planned_headcount"] or 0),
-            "actual_headcount": int(row["actual_headcount"] or 0),
-            "work_content": str(row["work_content"] or ""),
-            "work_headcount": int(row["work_headcount"] or 0),
-            "entry_order": int(row["entry_order"] or 0),
-        }
-        for row in rows
-    ]
-    business_dates = sorted({entry["business_date"] for entry in entries}, reverse=True)
+        rows = fetch_vendor_business_read_preview(
+            conn,
+            vendor_name=str(business_identity["vendor_name"]),
+        )
 
     return jsonify(
-        {
-            "ok": True,
-            "vendor_account_id": int(business_identity["vendor_account_id"]),
-            "vendor_username": str(business_identity["vendor_username"]),
-            "vendor_name": vendor_name,
-            "entry_count": len(entries),
-            "business_dates": business_dates,
-            "entries": entries,
-        }
+        serialize_vendor_business_read_preview(
+            business_identity=business_identity,
+            rows=rows,
+        )
     )
 
 
