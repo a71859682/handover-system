@@ -6190,6 +6190,37 @@ vendor_work_preflight_cross_vendor_payload = vendor_work_preflight_cross_vendor.
 if vendor_work_preflight_cross_vendor_payload["error"]["code"] != "vendor_cross_vendor_write_forbidden":
     raise SystemExit("vendor cross-vendor preflight should preserve vendor_cross_vendor_write_forbidden")
 
+vendor_work_preflight_update = client.post(
+    "/api/vendor/work-entry/preflight",
+    json={
+        "id": int(vendor_a_entry_id),
+        "sheet_id": 1,
+        "business_date": business_date,
+        "vendor_name": "Vendor A",
+    },
+)
+if vendor_work_preflight_update.status_code != 200:
+    raise SystemExit("vendor update preflight should return 200 when business_date matches existing entry")
+vendor_work_preflight_update_payload = vendor_work_preflight_update.get_json()
+vendor_work_preflight_update_context = vendor_work_preflight_update_payload.get("preflight")
+if vendor_work_preflight_update_context.get("entry_id") != int(vendor_a_entry_id) or vendor_work_preflight_update_context.get("write_mode") != "update":
+    raise SystemExit("vendor update preflight should preserve trusted update context")
+
+vendor_work_preflight_business_date_mismatch = client.post(
+    "/api/vendor/work-entry/preflight",
+    json={
+        "id": int(vendor_a_entry_id),
+        "sheet_id": 1,
+        "business_date": earlier_business_date,
+        "vendor_name": "Vendor A",
+    },
+)
+if vendor_work_preflight_business_date_mismatch.status_code != 409:
+    raise SystemExit("vendor update preflight business_date mismatch should be rejected with 409")
+vendor_work_preflight_business_date_mismatch_payload = vendor_work_preflight_business_date_mismatch.get_json()
+if vendor_work_preflight_business_date_mismatch_payload["error"]["code"] != "vendor_business_date_mismatch":
+    raise SystemExit("vendor update preflight business_date mismatch should preserve vendor_business_date_mismatch")
+
 vendor_work_internal_route_with_vendor_session = client.post(
     "/api/vendor-work-entry",
     json={

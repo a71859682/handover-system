@@ -1878,6 +1878,8 @@ def _handle_vendor_write_preflight_error(exc: LookupError):
         return crew_api_error("vendor_name_mismatch", "payload vendor_name does not match authenticated vendor identity.", status=403)
     if code == "vendor_cross_vendor_write_forbidden":
         return crew_api_error("vendor_cross_vendor_write_forbidden", "authenticated vendor cannot write another vendor's entry.", status=403)
+    if code == "vendor_business_date_mismatch":
+        return crew_api_error("vendor_business_date_mismatch", "payload business_date must match the existing vendor work entry business_date.", status=409)
     raise exc
 
 
@@ -2242,6 +2244,7 @@ def vendor_write_preflight(
     business_date: str,
     entry_id: int | None = None,
     payload_vendor_name: str | None = None,
+    payload_business_date_provided: bool = False,
 ) -> dict[str, object]:
     business_identity = require_current_vendor_business_identity()
     trusted_vendor_name = str(business_identity["vendor_name"])
@@ -2257,7 +2260,7 @@ def vendor_write_preflight(
     if entry_id is not None:
         existing_entry = conn.execute(
             """
-            SELECT vendor_name
+            SELECT vendor_name, business_date
             FROM vendor_work_entries
             WHERE id = ?
             """,
@@ -2267,6 +2270,8 @@ def vendor_write_preflight(
             raise LookupError("entry_not_found")
         if str(existing_entry["vendor_name"]) != trusted_vendor_name:
             raise LookupError("vendor_cross_vendor_write_forbidden")
+        if payload_business_date_provided and str(existing_entry["business_date"]) != str(business_date):
+            raise LookupError("vendor_business_date_mismatch")
 
     return {
         "vendor_account_id": int(business_identity["vendor_account_id"]),
@@ -4226,9 +4231,10 @@ def api_vendor_work_entry_preflight():
             raise ValueError("sheet_id must be a positive integer.")
         raw_vendor_name = str(data.get("vendor_name", "")).strip()
         payload_vendor_name = normalize_vendor_name(raw_vendor_name) if raw_vendor_name else None
+        raw_business_date = str(data.get("business_date", "")).strip()
         business_date = (
-            parse_crew_business_date(str(data.get("business_date", "")))
-            if str(data.get("business_date", "")).strip()
+            parse_crew_business_date(raw_business_date)
+            if raw_business_date
             else resolve_crew_business_date()
         )
     except ValueError as exc:
@@ -4242,6 +4248,7 @@ def api_vendor_work_entry_preflight():
                 business_date=business_date,
                 entry_id=entry_id,
                 payload_vendor_name=payload_vendor_name,
+                payload_business_date_provided=bool(raw_business_date),
             )
         except LookupError as exc:
             return _handle_vendor_write_preflight_error(exc)
