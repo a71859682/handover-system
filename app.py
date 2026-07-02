@@ -2156,6 +2156,20 @@ def current_vendor_account() -> dict[str, object] | None:
     }
 
 
+def current_vendor_scope() -> dict[str, object] | None:
+    vendor_account = current_vendor_account()
+    if vendor_account is None:
+        return None
+    return {
+        "identity_type": "vendor",
+        "vendor_account_id": int(vendor_account["id"]),
+        "vendor_username": str(vendor_account["username"]),
+        "vendor_name": str(vendor_account["vendor_name"]),
+        "scope_type": "vendor_identity_only",
+        "scope_version": 1,
+    }
+
+
 def set_vendor_session(vendor_account) -> None:
     session.clear()
     session["identity_type"] = "vendor"
@@ -3582,6 +3596,15 @@ def vendor_profile():
             "vendor_name": str(vendor_account["vendor_name"]),
         }
     )
+
+
+@app.route("/vendor/scope", methods=["GET"])
+@vendor_login_required
+def vendor_scope():
+    scope = current_vendor_scope()
+    if scope is None:
+        return redirect(url_for("vendor_login"))
+    return jsonify({"ok": True, "scope": scope})
 
 
 @app.route("/site-selector", methods=["GET", "POST"])
