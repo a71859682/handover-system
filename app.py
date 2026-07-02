@@ -2243,19 +2243,7 @@ def serialize_vendor_business_read_preview(
     rows: list[sqlite3.Row],
 ) -> dict[str, object]:
     vendor_name = str(business_identity["vendor_name"])
-    entries = [
-        {
-            "vendor_name": str(row["vendor_name"]),
-            "business_date": str(row["business_date"]),
-            "planned_at": str(row["planned_at"] or ""),
-            "planned_headcount": int(row["planned_headcount"] or 0),
-            "actual_headcount": int(row["actual_headcount"] or 0),
-            "work_content": str(row["work_content"] or ""),
-            "work_headcount": int(row["work_headcount"] or 0),
-            "entry_order": int(row["entry_order"] or 0),
-        }
-        for row in rows
-    ]
+    entries = [serialize_vendor_business_read_entry(row) for row in rows]
     business_dates = sorted({entry["business_date"] for entry in entries}, reverse=True)
     return {
         "ok": True,
@@ -2265,6 +2253,19 @@ def serialize_vendor_business_read_preview(
         "entry_count": len(entries),
         "business_dates": business_dates,
         "entries": entries,
+    }
+
+
+def serialize_vendor_business_read_entry(row: sqlite3.Row) -> dict[str, object]:
+    return {
+        "vendor_name": str(row["vendor_name"]),
+        "business_date": str(row["business_date"]),
+        "planned_at": str(row["planned_at"] or ""),
+        "planned_headcount": int(row["planned_headcount"] or 0),
+        "actual_headcount": int(row["actual_headcount"] or 0),
+        "work_content": str(row["work_content"] or ""),
+        "work_headcount": int(row["work_headcount"] or 0),
+        "entry_order": int(row["entry_order"] or 0),
     }
 
 
