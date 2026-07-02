@@ -2146,6 +2146,16 @@ def is_vendor_session() -> bool:
     )
 
 
+def current_vendor_account() -> dict[str, object] | None:
+    if not is_vendor_session():
+        return None
+    return {
+        "id": int(session["vendor_account_id"]),
+        "username": str(session["vendor_username"]),
+        "vendor_name": str(session["vendor_name"]),
+    }
+
+
 def set_vendor_session(vendor_account) -> None:
     session.clear()
     session["identity_type"] = "vendor"
@@ -2168,12 +2178,19 @@ def verify_vendor_account(username: str, password: str) -> sqlite3.Row | None:
 def vendor_login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if not is_vendor_session():
+        if current_vendor_account() is None:
             clear_vendor_session()
             return redirect(url_for("vendor_login"))
         return fn(*args, **kwargs)
 
     return wrapper
+
+
+def require_current_vendor_account() -> dict[str, object]:
+    vendor_account = current_vendor_account()
+    if vendor_account is None:
+        raise LookupError("vendor_auth_required")
+    return vendor_account
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
@@ -3540,6 +3557,17 @@ def logout():
 def vendor_logout():
     session.clear()
     return redirect(url_for("vendor_login"))
+
+
+@app.route("/vendor/home", methods=["GET"])
+@vendor_login_required
+def vendor_home():
+    vendor_account = require_current_vendor_account()
+    return (
+        f"Vendor Home: {vendor_account['vendor_name']} ({vendor_account['username']})",
+        200,
+        {"Content-Type": "text/plain; charset=utf-8"},
+    )
 
 
 @app.route("/site-selector", methods=["GET", "POST"])
