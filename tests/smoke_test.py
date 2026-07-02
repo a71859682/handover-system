@@ -5922,6 +5922,10 @@ for fragment in (
     if fragment not in vendor_login_html:
         raise SystemExit(f"vendor login page missing fragment: {fragment}")
 
+vendor_home_unauthenticated = client.get("/vendor/home", follow_redirects=False)
+if vendor_home_unauthenticated.status_code != 302 or not vendor_home_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("unauthenticated vendor home should redirect to /vendor/login")
+
 with client.session_transaction() as session:
     session["user_id"] = 999
     session["role"] = "admin"
@@ -5990,6 +5994,18 @@ for fragment in (
 ):
     if fragment not in vendor_logged_in_html:
         raise SystemExit(f"vendor logged-in page missing fragment: {fragment}")
+
+vendor_home = client.get("/vendor/home", follow_redirects=False)
+if vendor_home.status_code != 200:
+    raise SystemExit("vendor authenticated home should return 200")
+vendor_home_body = vendor_home.get_data(as_text=True)
+for fragment in ("Vendor Home:", "Vendor A", "vendor_active"):
+    if fragment not in vendor_home_body:
+        raise SystemExit(f"vendor home missing fragment: {fragment}")
+
+internal_route_with_vendor_session = client.get("/sheet", follow_redirects=False)
+if internal_route_with_vendor_session.status_code != 302 or not internal_route_with_vendor_session.headers.get("Location", "").endswith("/login"):
+    raise SystemExit("vendor session must not pass internal protected route")
 
 vendor_logout = client.get("/vendor/logout", follow_redirects=False)
 if vendor_logout.status_code != 302 or not vendor_logout.headers.get("Location", "").endswith("/vendor/login"):
