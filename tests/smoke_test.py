@@ -6103,6 +6103,17 @@ if vendor_business_preview.status_code != 200:
 vendor_business_preview_payload = vendor_business_preview.get_json()
 if not isinstance(vendor_business_preview_payload, dict) or vendor_business_preview_payload.get("ok") is not True:
     raise SystemExit("vendor business read preview should return ok=true payload")
+expected_top_level_keys = {
+    "ok",
+    "vendor_account_id",
+    "vendor_username",
+    "vendor_name",
+    "entry_count",
+    "business_dates",
+    "entries",
+}
+if set(vendor_business_preview_payload.keys()) != expected_top_level_keys:
+    raise SystemExit("vendor business read preview should keep stable top-level response shape")
 if vendor_business_preview_payload.get("vendor_account_id") is None:
     raise SystemExit("vendor business read preview should return vendor_account_id")
 if vendor_business_preview_payload.get("vendor_username") != "vendor_active":
@@ -6120,6 +6131,18 @@ if not isinstance(entries, list):
 if len(entries) != 2:
     raise SystemExit("vendor business read preview should only return current vendor entries")
 for entry in entries:
+    expected_entry_keys = {
+        "vendor_name",
+        "business_date",
+        "planned_at",
+        "planned_headcount",
+        "actual_headcount",
+        "work_content",
+        "work_headcount",
+        "entry_order",
+    }
+    if set(entry.keys()) != expected_entry_keys:
+        raise SystemExit("vendor business read preview entries should keep stable response shape")
     if entry.get("vendor_name") != "Vendor A":
         raise SystemExit("vendor business read preview must only return current vendor data")
     if "password_hash" in entry:
