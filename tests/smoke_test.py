@@ -4234,6 +4234,10 @@ if admin_by_id is None or admin_by_id["id"] != 1:
 listed_users = module.list_users()
 if not listed_users:
     raise SystemExit("list_users smoke returned no users")
+actual_ids = [int(row["id"]) for row in listed_users]
+expected_ids = sorted(actual_ids)
+if actual_ids != expected_ids:
+    raise SystemExit("list_users should return users in id ASC order")
 first_payload = dict(listed_users[0])
 if "password_hash" in first_payload:
     raise SystemExit("list_users should not expose password_hash")
