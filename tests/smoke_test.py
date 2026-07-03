@@ -4956,6 +4956,11 @@ missing_site_response = client.post(
 )
 if missing_site_response.status_code != 403:
     raise SystemExit("missing current site should be rejected with 403")
+missing_site_payload = missing_site_response.get_json()
+if missing_site_payload.get("ok") is not False:
+    raise SystemExit("missing current site should return ok=false")
+if missing_site_payload.get("message") != "current_site_id is missing or invalid.":
+    raise SystemExit("missing current site should return deterministic progress error message")
 
 set_member_session()
 conn.execute("DELETE FROM user_site_permissions WHERE user_id = ?", (member_id,))
