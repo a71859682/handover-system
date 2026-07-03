@@ -4343,10 +4343,16 @@ def api_crew_daily_summary():
             for row in rows
         ]
         totals = {
-            "vendors": len({item["vendor_name"] for item in items}),
-            "actual_headcount_sum": sum(int(item["actual_headcount"]) for item in items),
-            "work_headcount_sum": sum(int(item["work_headcount"]) for item in items),
+            "vendors": 0,
+            "actual_headcount_sum": 0,
+            "work_headcount_sum": 0,
         }
+        if items:
+            totals = {
+                "vendors": len({item["vendor_name"] for item in items}),
+                "actual_headcount_sum": sum(int(item["actual_headcount"]) for item in items),
+                "work_headcount_sum": sum(int(item["work_headcount"]) for item in items),
+            }
 
     return jsonify(
         {

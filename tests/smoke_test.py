@@ -1218,6 +1218,25 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-daily-summary returned unexpected actual_headcount_sum")
     if summary["totals"]["work_headcount_sum"] != 3:
         raise SystemExit("/api/crew-daily-summary returned unexpected work_headcount_sum")
+    empty_business_date = "2099-01-01"
+    empty_summary_response = client.get(
+        f"/api/crew-daily-summary?sheet_id={sheet_id}&business_date={empty_business_date}"
+    )
+    if empty_summary_response.status_code != 200:
+        raise SystemExit("/api/crew-daily-summary should return 200 for empty business_date results")
+    empty_summary = empty_summary_response.get_json()
+    if empty_summary != {
+        "ok": True,
+        "sheet_id": sheet_id,
+        "business_date": empty_business_date,
+        "items": [],
+        "totals": {
+            "vendors": 0,
+            "actual_headcount_sum": 0,
+            "work_headcount_sum": 0,
+        },
+    }:
+        raise SystemExit("/api/crew-daily-summary should return deterministic empty-result payload")
 
     missing_response = client.get(f"/api/crew-missing?sheet_id={sheet_id}&business_date={business_date}")
     if missing_response.status_code != 200:
