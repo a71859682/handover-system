@@ -6354,6 +6354,12 @@ if not isinstance(entries, list):
     raise SystemExit("vendor business read preview should return entries list")
 if len(entries) != 3:
     raise SystemExit("vendor business read preview should only return current vendor entries")
+actual_entry_order = [(entry["business_date"], entry["entry_order"]) for entry in entries]
+expected_entry_order = sorted(actual_entry_order, key=lambda item: (item[0], -item[1]), reverse=True)
+if actual_entry_order != expected_entry_order:
+    raise SystemExit(
+        "vendor business read preview entries should keep stable ordering by business_date DESC then entry_order ASC"
+    )
 for entry in entries:
     expected_entry_keys = {
         "vendor_name",
