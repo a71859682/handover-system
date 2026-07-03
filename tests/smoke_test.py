@@ -802,6 +802,21 @@ with module.db() as conn:
     if sheet_row is None:
         raise SystemExit("expected a seeded sheet for crew API smoke")
     sheet_id = int(sheet_row["id"])
+    sheet_site_id = int(
+        conn.execute("SELECT site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()["site_id"]
+    )
+    member_password_hash = module.generate_password_hash("x")
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("crew_read_member", "crew_read_member", member_password_hash, "member"),
+    )
+    crew_read_member_id = int(
+        conn.execute("SELECT id FROM users WHERE username = ?", ("crew_read_member",)).fetchone()["id"]
+    )
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (crew_read_member_id, sheet_site_id, "member"),
+    )
     conn.execute(
         "INSERT OR IGNORE INTO sheets (id, name, sort_order, created_at) VALUES (2, 'Sheet B', 2, CURRENT_TIMESTAMP)"
     )
@@ -1237,6 +1252,33 @@ with module.app.test_client() as client:
         },
     }:
         raise SystemExit("/api/crew-daily-summary should return deterministic empty-result payload")
+
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = crew_read_member_id
+        session["username"] = "crew_read_member"
+        session["display_name"] = "crew_read_member"
+        session["role"] = "member"
+    missing_site_summary_response = client.get(
+        f"/api/crew-daily-summary?sheet_id={sheet_id}&business_date={business_date}"
+    )
+    if missing_site_summary_response.status_code != 403:
+        raise SystemExit("/api/crew-daily-summary missing current site should return 403")
+    missing_site_summary_payload = missing_site_summary_response.get_json()
+    if missing_site_summary_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-daily-summary missing current site should return ok=false")
+    error = missing_site_summary_payload.get("error") or {}
+    if error.get("code") != "site_context_invalid":
+        raise SystemExit("/api/crew-daily-summary missing current site should preserve site_context_invalid")
+    if error.get("message") != "current_site_id is missing or invalid.":
+        raise SystemExit("/api/crew-daily-summary missing current site should return deterministic error message")
+
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "Admin"
+        session["role"] = "admin"
 
     missing_response = client.get(f"/api/crew-missing?sheet_id={sheet_id}&business_date={business_date}")
     if missing_response.status_code != 200:
