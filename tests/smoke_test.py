@@ -1426,6 +1426,18 @@ with module.app.test_client() as client:
     expected_missing_top_level_keys = {"ok", "sheet_id", "business_date", "items"}
     if set(missing.keys()) != expected_missing_top_level_keys:
         raise SystemExit("/api/crew-missing should keep stable top-level response shape")
+    expected_missing_item_keys = {
+        "vendor_name",
+        "contact_name",
+        "contact_phone",
+        "planned_at",
+        "planned_headcount",
+        "actual_headcount",
+        "pending_items",
+    }
+    for item in missing["items"]:
+        if set(item.keys()) != expected_missing_item_keys:
+            raise SystemExit("/api/crew-missing items should keep stable response shape")
     missing_names = {item["vendor_name"] for item in missing["items"]}
     if "VendorA" not in missing_names:
         raise SystemExit("/api/crew-missing should include planned vendor with zero actual headcount")
