@@ -1261,6 +1261,9 @@ with module.app.test_client() as client:
     if summary_response.status_code != 200:
         raise SystemExit("/api/crew-daily-summary should return 200")
     summary = summary_response.get_json()
+    expected_summary_top_level_keys = {"ok", "sheet_id", "business_date", "items", "totals"}
+    if set(summary.keys()) != expected_summary_top_level_keys:
+        raise SystemExit("/api/crew-daily-summary should keep stable top-level response shape")
     if not summary.get("ok"):
         raise SystemExit("/api/crew-daily-summary should report ok=true")
     summary_contents = {item["work_content"] for item in summary["items"]}
