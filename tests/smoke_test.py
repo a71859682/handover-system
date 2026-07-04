@@ -1264,6 +1264,19 @@ with module.app.test_client() as client:
     expected_summary_top_level_keys = {"ok", "sheet_id", "business_date", "items", "totals"}
     if set(summary.keys()) != expected_summary_top_level_keys:
         raise SystemExit("/api/crew-daily-summary should keep stable top-level response shape")
+    expected_summary_item_keys = {
+        "id",
+        "vendor_name",
+        "actual_headcount",
+        "work_content",
+        "work_headcount",
+        "planned_at",
+        "planned_headcount",
+        "entry_order",
+    }
+    for item in summary["items"]:
+        if set(item.keys()) != expected_summary_item_keys:
+            raise SystemExit("/api/crew-daily-summary items should keep stable response shape")
     if not summary.get("ok"):
         raise SystemExit("/api/crew-daily-summary should report ok=true")
     summary_contents = {item["work_content"] for item in summary["items"]}
