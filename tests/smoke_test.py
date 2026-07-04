@@ -1353,6 +1353,34 @@ with module.app.test_client() as client:
     if "Pending Paint" not in missing_item["pending_items"] and "Pending Patch" not in missing_item["pending_items"]:
         raise SystemExit("/api/crew-missing should include pending_items for active vendor")
 
+    invalid_missing_response = client.get(
+        f"/api/crew-missing?sheet_id={sheet_id}&business_date=abc"
+    )
+    if invalid_missing_response.status_code != 400:
+        raise SystemExit("/api/crew-missing invalid business_date should return 400")
+    invalid_missing_payload = invalid_missing_response.get_json()
+    if invalid_missing_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-missing invalid business_date should return ok=false")
+    invalid_missing_error = invalid_missing_payload.get("error") or {}
+    if invalid_missing_error.get("code") != "invalid_business_date":
+        raise SystemExit("/api/crew-missing invalid business_date should preserve invalid_business_date")
+    if invalid_missing_error.get("message") != "business_date must use YYYY-MM-DD.":
+        raise SystemExit("/api/crew-missing invalid business_date should return deterministic error message")
+
+    impossible_missing_response = client.get(
+        f"/api/crew-missing?sheet_id={sheet_id}&business_date=2026-02-30"
+    )
+    if impossible_missing_response.status_code != 400:
+        raise SystemExit("/api/crew-missing impossible business_date should return 400")
+    impossible_missing_payload = impossible_missing_response.get_json()
+    if impossible_missing_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-missing impossible business_date should return ok=false")
+    impossible_missing_error = impossible_missing_payload.get("error") or {}
+    if impossible_missing_error.get("code") != "invalid_business_date":
+        raise SystemExit("/api/crew-missing impossible business_date should preserve invalid_business_date")
+    if impossible_missing_error.get("message") != "business_date must use YYYY-MM-DD.":
+        raise SystemExit("/api/crew-missing impossible business_date should return deterministic error message")
+
     refreshed_crew_forms = client.get(f"/api/crew-forms?sheet_id={sheet_id}").get_json()
     refreshed_inactive_names = {item["vendor_name"] for item in refreshed_crew_forms["inactive_contacts"]}
     if "VendorZ" not in refreshed_inactive_names:
