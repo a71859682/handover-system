@@ -1222,6 +1222,34 @@ with module.app.test_client() as client:
     if "VendorA" in followup_names:
         raise SystemExit("/api/crew-followups should exclude vendor with planned_at entries")
 
+    invalid_followups_response = client.get(
+        f"/api/crew-followups?sheet_id={sheet_id}&business_date=abc"
+    )
+    if invalid_followups_response.status_code != 400:
+        raise SystemExit("/api/crew-followups invalid business_date should return 400")
+    invalid_followups_payload = invalid_followups_response.get_json()
+    if invalid_followups_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-followups invalid business_date should return ok=false")
+    invalid_followups_error = invalid_followups_payload.get("error") or {}
+    if invalid_followups_error.get("code") != "invalid_business_date":
+        raise SystemExit("/api/crew-followups invalid business_date should preserve invalid_business_date")
+    if invalid_followups_error.get("message") != "business_date must use YYYY-MM-DD.":
+        raise SystemExit("/api/crew-followups invalid business_date should return deterministic error message")
+
+    impossible_followups_response = client.get(
+        f"/api/crew-followups?sheet_id={sheet_id}&business_date=2026-02-30"
+    )
+    if impossible_followups_response.status_code != 400:
+        raise SystemExit("/api/crew-followups impossible business_date should return 400")
+    impossible_followups_payload = impossible_followups_response.get_json()
+    if impossible_followups_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-followups impossible business_date should return ok=false")
+    impossible_followups_error = impossible_followups_payload.get("error") or {}
+    if impossible_followups_error.get("code") != "invalid_business_date":
+        raise SystemExit("/api/crew-followups impossible business_date should preserve invalid_business_date")
+    if impossible_followups_error.get("message") != "business_date must use YYYY-MM-DD.":
+        raise SystemExit("/api/crew-followups impossible business_date should return deterministic error message")
+
     summary_response = client.get(f"/api/crew-daily-summary?sheet_id={sheet_id}&business_date={business_date}")
     if summary_response.status_code != 200:
         raise SystemExit("/api/crew-daily-summary should return 200")
