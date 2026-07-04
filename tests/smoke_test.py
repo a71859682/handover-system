@@ -1338,6 +1338,33 @@ with module.app.test_client() as client:
         session["display_name"] = "Admin"
         session["role"] = "admin"
 
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = crew_read_member_id
+        session["username"] = "crew_read_member"
+        session["display_name"] = "crew_read_member"
+        session["role"] = "member"
+    missing_site_missing_response = client.get(
+        f"/api/crew-missing?sheet_id={sheet_id}&business_date={business_date}"
+    )
+    if missing_site_missing_response.status_code != 403:
+        raise SystemExit("/api/crew-missing missing current site should return 403")
+    missing_site_missing_payload = missing_site_missing_response.get_json()
+    if missing_site_missing_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-missing missing current site should return ok=false")
+    missing_site_missing_error = missing_site_missing_payload.get("error") or {}
+    if missing_site_missing_error.get("code") != "site_context_invalid":
+        raise SystemExit("/api/crew-missing missing current site should preserve site_context_invalid")
+    if missing_site_missing_error.get("message") != "current_site_id is missing or invalid.":
+        raise SystemExit("/api/crew-missing missing current site should return deterministic error message")
+
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "Admin"
+        session["role"] = "admin"
+
     missing_response = client.get(f"/api/crew-missing?sheet_id={sheet_id}&business_date={business_date}")
     if missing_response.status_code != 200:
         raise SystemExit("/api/crew-missing should return 200")
