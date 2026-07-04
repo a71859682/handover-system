@@ -1290,6 +1290,20 @@ with module.app.test_client() as client:
     }:
         raise SystemExit("/api/crew-daily-summary should return deterministic empty-result payload")
 
+    invalid_summary_sheet_response = client.get(
+        f"/api/crew-daily-summary?sheet_id=abc&business_date={business_date}"
+    )
+    if invalid_summary_sheet_response.status_code != 400:
+        raise SystemExit("/api/crew-daily-summary invalid sheet_id should return 400")
+    invalid_summary_sheet_payload = invalid_summary_sheet_response.get_json()
+    if invalid_summary_sheet_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-daily-summary invalid sheet_id should return ok=false")
+    invalid_summary_sheet_error = invalid_summary_sheet_payload.get("error") or {}
+    if invalid_summary_sheet_error.get("code") != "invalid_sheet_id":
+        raise SystemExit("/api/crew-daily-summary invalid sheet_id should preserve invalid_sheet_id")
+    if invalid_summary_sheet_error.get("message") != "sheet_id is required and must be a valid integer.":
+        raise SystemExit("/api/crew-daily-summary invalid sheet_id should return deterministic error message")
+
     invalid_summary_response = client.get(
         f"/api/crew-daily-summary?sheet_id={sheet_id}&business_date=abc"
     )
