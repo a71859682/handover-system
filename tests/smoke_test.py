@@ -1277,6 +1277,13 @@ with module.app.test_client() as client:
     for item in summary["items"]:
         if set(item.keys()) != expected_summary_item_keys:
             raise SystemExit("/api/crew-daily-summary items should keep stable response shape")
+    expected_summary_totals_keys = {
+        "vendors",
+        "actual_headcount_sum",
+        "work_headcount_sum",
+    }
+    if set(summary["totals"].keys()) != expected_summary_totals_keys:
+        raise SystemExit("/api/crew-daily-summary totals should keep stable response shape")
     if not summary.get("ok"):
         raise SystemExit("/api/crew-daily-summary should report ok=true")
     summary_contents = {item["work_content"] for item in summary["items"]}
