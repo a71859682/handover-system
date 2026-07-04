@@ -1423,6 +1423,9 @@ with module.app.test_client() as client:
     if missing_response.status_code != 200:
         raise SystemExit("/api/crew-missing should return 200")
     missing = missing_response.get_json()
+    expected_missing_top_level_keys = {"ok", "sheet_id", "business_date", "items"}
+    if set(missing.keys()) != expected_missing_top_level_keys:
+        raise SystemExit("/api/crew-missing should keep stable top-level response shape")
     missing_names = {item["vendor_name"] for item in missing["items"]}
     if "VendorA" not in missing_names:
         raise SystemExit("/api/crew-missing should include planned vendor with zero actual headcount")
@@ -1441,6 +1444,8 @@ with module.app.test_client() as client:
     if empty_missing_response.status_code != 200:
         raise SystemExit("/api/crew-missing should return 200 for empty business_date results")
     empty_missing = empty_missing_response.get_json()
+    if set(empty_missing.keys()) != expected_missing_top_level_keys:
+        raise SystemExit("/api/crew-missing empty result should keep stable top-level response shape")
     if empty_missing != {
         "ok": True,
         "sheet_id": sheet_id,
