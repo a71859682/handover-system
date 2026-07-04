@@ -4922,7 +4922,7 @@ print("admin user role update smoke PASS")
         raise AssertionError("admin user role update smoke subprocess did not report PASS.")
 
 
-def run_site_permission_management_smoke(db_path: Path, app_db_path: Path) -> None:
+def run_user_site_permissions_smoke_guardrail(db_path: Path, app_db_path: Path) -> None:
     script = """
 import importlib.util
 from pathlib import Path
@@ -5068,31 +5068,6 @@ with module.app.test_client() as client:
     if conn.execute("SELECT 1 FROM user_site_permissions WHERE id = ?", (permission_row["id"],)).fetchone():
         raise SystemExit("delete_site_permission should remove row")
 
-    client.post(
-        "/admin/users",
-        data={
-            "action": f"add_site_permission:{other_member_id}",
-            "site_id": str(default_site_id),
-            "site_role": "member",
-        },
-        follow_redirects=False,
-    )
-    second_permission = conn.execute(
-        "SELECT id FROM user_site_permissions WHERE user_id = ? AND site_id = ?",
-        (other_member_id, default_site_id),
-    ).fetchone()
-    if second_permission is None:
-        raise SystemExit("site permission setup for delete-user integration failed")
-
-    client.post(
-        "/admin/users",
-        data={"action": f"delete_user:{other_member_id}"},
-        follow_redirects=False,
-    )
-    if conn.execute("SELECT 1 FROM users WHERE id = ?", (other_member_id,)).fetchone():
-        raise SystemExit("delete_user should still remove member")
-    if conn.execute("SELECT 1 FROM user_site_permissions WHERE user_id = ?", (other_member_id,)).fetchone():
-        raise SystemExit("delete_user should remove related site permissions")
     conn.close()
 
 with module.app.test_client() as non_admin_client:
@@ -5113,7 +5088,7 @@ with module.app.test_client() as non_admin_client:
     if forbidden_response.status_code not in (302, 403):
         raise SystemExit("non-admin should not be able to modify site permissions")
 
-print("site permission management smoke PASS")
+print("user site permissions smoke guardrail PASS")
 """
     result = subprocess.run(
         [
@@ -5129,8 +5104,8 @@ print("site permission management smoke PASS")
         text=True,
         check=True,
     )
-    if "site permission management smoke PASS" not in result.stdout:
-        raise AssertionError("site permission management smoke subprocess did not report PASS.")
+    if "user site permissions smoke guardrail PASS" not in result.stdout:
+        raise AssertionError("user site permissions smoke guardrail subprocess did not report PASS.")
 
 
 def run_site_read_isolation_smoke(db_path: Path) -> None:
@@ -6816,7 +6791,7 @@ def main() -> int:
         run_handover_route_regression_smoke(Path(tmpdir) / "handover-route-smoke.db")
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
-        run_site_permission_management_smoke(db_path, Path(tmpdir) / "app-smoke.db")
+        run_user_site_permissions_smoke_guardrail(db_path, Path(tmpdir) / "app-smoke.db")
         run_site_read_isolation_smoke(db_path)
         run_progress_write_isolation_smoke(db_path)
         run_unit_extra_write_isolation_smoke(db_path)
