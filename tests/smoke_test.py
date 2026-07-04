@@ -1389,6 +1389,31 @@ with module.app.test_client() as client:
 
     with client.session_transaction() as session:
         session.clear()
+        session["user_id"] = crew_read_member_id
+        session["username"] = "crew_read_member"
+        session["display_name"] = "crew_read_member"
+        session["role"] = "member"
+        session["current_site_id"] = sheet_site_id
+        session["current_site_name"] = module.DEFAULT_SITE_NAME
+    with module.db() as conn:
+        conn.execute("DELETE FROM user_site_permissions WHERE user_id = ?", (crew_read_member_id,))
+        conn.commit()
+    permission_missing_response = client.get(
+        f"/api/crew-missing?sheet_id={sheet_id}&business_date={business_date}"
+    )
+    if permission_missing_response.status_code != 403:
+        raise SystemExit("/api/crew-missing permission removed should return 403")
+    permission_missing_payload = permission_missing_response.get_json()
+    if permission_missing_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-missing permission removed should return ok=false")
+    permission_missing_error = permission_missing_payload.get("error") or {}
+    if permission_missing_error.get("code") != "site_permission_missing":
+        raise SystemExit("/api/crew-missing permission removed should preserve site_permission_missing")
+    if permission_missing_error.get("message") != "current user no longer has permission for the current site.":
+        raise SystemExit("/api/crew-missing permission removed should return deterministic error message")
+
+    with client.session_transaction() as session:
+        session.clear()
         session["user_id"] = 1
         session["username"] = "admin"
         session["display_name"] = "Admin"
