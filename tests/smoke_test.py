@@ -819,8 +819,15 @@ with module.db() as conn:
         "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
         (crew_read_member_id, sheet_site_id, "member"),
     )
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+            ("__crew_read_site_b__", "crew-read-site-b"),
+        ).fetchone()["id"]
+    )
     conn.execute(
-        "INSERT OR IGNORE INTO sheets (id, name, sort_order, created_at) VALUES (2, 'Sheet B', 2, CURRENT_TIMESTAMP)"
+        "INSERT OR IGNORE INTO sheets (id, name, sort_order, site_id, created_at) VALUES (2, 'Sheet B', 2, ?, CURRENT_TIMESTAMP)",
+        (secondary_site_id,),
     )
 
     task_rows = conn.execute(
@@ -1357,6 +1364,28 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-missing missing current site should preserve site_context_invalid")
     if missing_site_missing_error.get("message") != "current_site_id is missing or invalid.":
         raise SystemExit("/api/crew-missing missing current site should return deterministic error message")
+
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = crew_read_member_id
+        session["username"] = "crew_read_member"
+        session["display_name"] = "crew_read_member"
+        session["role"] = "member"
+        session["current_site_id"] = sheet_site_id
+        session["current_site_name"] = module.DEFAULT_SITE_NAME
+    cross_site_missing_response = client.get(
+        f"/api/crew-missing?sheet_id=2&business_date={business_date}"
+    )
+    if cross_site_missing_response.status_code != 403:
+        raise SystemExit("/api/crew-missing cross-site read should return 403")
+    cross_site_missing_payload = cross_site_missing_response.get_json()
+    if cross_site_missing_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-missing cross-site read should return ok=false")
+    cross_site_missing_error = cross_site_missing_payload.get("error") or {}
+    if cross_site_missing_error.get("code") != "sheet_not_in_current_site":
+        raise SystemExit("/api/crew-missing cross-site read should preserve sheet_not_in_current_site")
+    if cross_site_missing_error.get("message") != "sheet_id does not belong to the current site.":
+        raise SystemExit("/api/crew-missing cross-site read should return deterministic error message")
 
     with client.session_transaction() as session:
         session.clear()
