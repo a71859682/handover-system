@@ -788,6 +788,8 @@ import sys
 from pathlib import Path
 
 app_db_path, root_dir = sys.argv[1:3]
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
 module = importlib.util.module_from_spec(spec)
 os.environ["APP_DB_PATH"] = app_db_path
@@ -1392,19 +1394,24 @@ with module.app.test_client() as client:
 
 print("crew API smoke PASS")
 """
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            script,
-            str(app_db_path),
-            str(ROOT_DIR),
-        ],
-        cwd=ROOT_DIR,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix="-crew-api-smoke.py", delete=False) as handle:
+        handle.write(script)
+        script_path = Path(handle.name)
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(script_path),
+                str(app_db_path),
+                str(ROOT_DIR),
+            ],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    finally:
+        script_path.unlink(missing_ok=True)
     if "crew API smoke PASS" not in result.stdout:
         raise AssertionError("crew API smoke subprocess did not report PASS.")
 
