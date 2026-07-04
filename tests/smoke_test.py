@@ -1353,6 +1353,20 @@ with module.app.test_client() as client:
     if "Pending Paint" not in missing_item["pending_items"] and "Pending Patch" not in missing_item["pending_items"]:
         raise SystemExit("/api/crew-missing should include pending_items for active vendor")
 
+    invalid_missing_sheet_response = client.get(
+        f"/api/crew-missing?sheet_id=abc&business_date={business_date}"
+    )
+    if invalid_missing_sheet_response.status_code != 400:
+        raise SystemExit("/api/crew-missing invalid sheet_id should return 400")
+    invalid_missing_sheet_payload = invalid_missing_sheet_response.get_json()
+    if invalid_missing_sheet_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-missing invalid sheet_id should return ok=false")
+    invalid_missing_sheet_error = invalid_missing_sheet_payload.get("error") or {}
+    if invalid_missing_sheet_error.get("code") != "invalid_sheet_id":
+        raise SystemExit("/api/crew-missing invalid sheet_id should preserve invalid_sheet_id")
+    if invalid_missing_sheet_error.get("message") != "sheet_id is required and must be a valid integer.":
+        raise SystemExit("/api/crew-missing invalid sheet_id should return deterministic error message")
+
     invalid_missing_response = client.get(
         f"/api/crew-missing?sheet_id={sheet_id}&business_date=abc"
     )
