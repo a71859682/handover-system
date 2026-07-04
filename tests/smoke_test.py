@@ -1353,6 +1353,21 @@ with module.app.test_client() as client:
     if "Pending Paint" not in missing_item["pending_items"] and "Pending Patch" not in missing_item["pending_items"]:
         raise SystemExit("/api/crew-missing should include pending_items for active vendor")
 
+    empty_missing_business_date = "2099-01-01"
+    empty_missing_response = client.get(
+        f"/api/crew-missing?sheet_id={sheet_id}&business_date={empty_missing_business_date}"
+    )
+    if empty_missing_response.status_code != 200:
+        raise SystemExit("/api/crew-missing should return 200 for empty business_date results")
+    empty_missing = empty_missing_response.get_json()
+    if empty_missing != {
+        "ok": True,
+        "sheet_id": sheet_id,
+        "business_date": empty_missing_business_date,
+        "items": [],
+    }:
+        raise SystemExit("/api/crew-missing should return deterministic empty-result payload")
+
     invalid_missing_sheet_response = client.get(
         f"/api/crew-missing?sheet_id=abc&business_date={business_date}"
     )
