@@ -1253,6 +1253,34 @@ with module.app.test_client() as client:
     }:
         raise SystemExit("/api/crew-daily-summary should return deterministic empty-result payload")
 
+    invalid_summary_response = client.get(
+        f"/api/crew-daily-summary?sheet_id={sheet_id}&business_date=abc"
+    )
+    if invalid_summary_response.status_code != 400:
+        raise SystemExit("/api/crew-daily-summary invalid business_date should return 400")
+    invalid_summary_payload = invalid_summary_response.get_json()
+    if invalid_summary_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-daily-summary invalid business_date should return ok=false")
+    invalid_summary_error = invalid_summary_payload.get("error") or {}
+    if invalid_summary_error.get("code") != "invalid_business_date":
+        raise SystemExit("/api/crew-daily-summary invalid business_date should preserve invalid_business_date")
+    if invalid_summary_error.get("message") != "business_date must use YYYY-MM-DD.":
+        raise SystemExit("/api/crew-daily-summary invalid business_date should return deterministic error message")
+
+    impossible_summary_response = client.get(
+        f"/api/crew-daily-summary?sheet_id={sheet_id}&business_date=2026-02-30"
+    )
+    if impossible_summary_response.status_code != 400:
+        raise SystemExit("/api/crew-daily-summary impossible business_date should return 400")
+    impossible_summary_payload = impossible_summary_response.get_json()
+    if impossible_summary_payload.get("ok") is not False:
+        raise SystemExit("/api/crew-daily-summary impossible business_date should return ok=false")
+    impossible_summary_error = impossible_summary_payload.get("error") or {}
+    if impossible_summary_error.get("code") != "invalid_business_date":
+        raise SystemExit("/api/crew-daily-summary impossible business_date should preserve invalid_business_date")
+    if impossible_summary_error.get("message") != "business_date must use YYYY-MM-DD.":
+        raise SystemExit("/api/crew-daily-summary impossible business_date should return deterministic error message")
+
     with client.session_transaction() as session:
         session.clear()
         session["user_id"] = crew_read_member_id
