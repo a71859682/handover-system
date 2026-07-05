@@ -6366,6 +6366,12 @@ if vendor_scope_unauthenticated.status_code != 302 or not vendor_scope_unauthent
 vendor_business_preview_unauthenticated = client.get("/vendor/business-read-preview", follow_redirects=False)
 if vendor_business_preview_unauthenticated.status_code != 302 or not vendor_business_preview_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
     raise SystemExit("unauthenticated vendor business read preview should redirect to /vendor/login")
+with client.session_transaction() as session:
+    for key in ("identity_type", "vendor_account_id", "vendor_username", "vendor_name"):
+        if session.get(key) is not None:
+            raise SystemExit("unauthenticated vendor business read preview should not create vendor session")
+    if session.get("user_id") is not None or session.get("role") is not None:
+        raise SystemExit("unauthenticated vendor business read preview should not create internal session")
 
 vendor_work_preflight_unauthenticated = client.post(
     "/api/vendor/work-entry/preflight",
