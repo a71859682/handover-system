@@ -3797,32 +3797,42 @@ def vendor_work_entry_page():
             conn,
             vendor_name=str(business_identity["vendor_name"]),
         )
+        preview_entries = list(preview_payload.get("entries", []))
+        today_entries = [
+            entry
+            for entry in preview_entries
+            if str(entry.get("business_date", "")) == business_date
+        ]
+        requested_active_today_entry_index = request.args.get("today_entry_index", "")
+        try:
+            active_today_entry_index = int(requested_active_today_entry_index)
+        except (TypeError, ValueError):
+            active_today_entry_index = 0
+        if active_today_entry_index < 0 or active_today_entry_index >= len(today_entries):
+            active_today_entry_index = 0
+        active_today_entry = today_entries[active_today_entry_index] if today_entries else None
+        active_entry_id = (
+            int(active_today_entry["entry_id"])
+            if active_today_entry is not None and active_today_entry.get("entry_id") is not None
+            else None
+        )
         preflight_payload = None
         if preflight_sheet_id is not None:
+            preflight_kwargs = {
+                "sheet_id": preflight_sheet_id,
+                "business_date": business_date,
+            }
+            if active_entry_id is not None:
+                preflight_kwargs["entry_id"] = active_entry_id
             preflight_payload = {
                 "ok": True,
                 "preflight": vendor_write_preflight(
                     conn,
-                    sheet_id=preflight_sheet_id,
-                    business_date=business_date,
+                    **preflight_kwargs,
                 ),
             }
     pending_items = get_pending_items_by_vendor(preflight_sheet_id) if preflight_sheet_id is not None else {}
     vendor_pending_items = list(pending_items.get(str(business_identity["vendor_name"]), []))
-    preview_entries = list(preview_payload.get("entries", []))
-    today_entries = [
-        entry
-        for entry in preview_entries
-        if str(entry.get("business_date", "")) == business_date
-    ]
-    requested_active_today_entry_index = request.args.get("today_entry_index", "")
-    try:
-        active_today_entry_index = int(requested_active_today_entry_index)
-    except (TypeError, ValueError):
-        active_today_entry_index = 0
-    if active_today_entry_index < 0 or active_today_entry_index >= len(today_entries):
-        active_today_entry_index = 0
-    active_today_entry = today_entries[active_today_entry_index] if today_entries else None
     preflight_context = preflight_payload.get("preflight") if isinstance(preflight_payload, dict) else {}
     has_work_content = bool(str((active_today_entry or {}).get("work_content", "")).strip())
     today_entries_summary = {

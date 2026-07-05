@@ -6384,6 +6384,10 @@ with module.db() as conn:
         "SELECT id FROM vendor_work_entries WHERE sheet_id = 1 AND vendor_name = ? AND entry_order = 0",
         ("Vendor A",),
     ).fetchone()["id"]
+    vendor_a_second_entry_id = conn.execute(
+        "SELECT id FROM vendor_work_entries WHERE sheet_id = 1 AND vendor_name = ? AND business_date = ? AND entry_order = 1",
+        ("Vendor A", business_date),
+    ).fetchone()["id"]
     vendor_other_entry_id = conn.execute(
         "SELECT id FROM vendor_work_entries WHERE sheet_id = 1 AND vendor_name = ?",
         ("Vendor Other",),
@@ -6724,9 +6728,10 @@ for fragment in (
     'data-testid="vendor-work-entry-summary-vendor-name"',
     'data-testid="vendor-work-entry-summary-active-entry-id"',
     'data-testid="vendor-work-entry-summary-write-mode"',
+    'data-testid="vendor-work-entry-summary-entry-id"',
     'data-testid="vendor-work-entry-summary-pending-item-count"',
     'data-testid="vendor-work-entry-summary-pending-items"',
-    "create",
+    "update",
     "Vendor A",
 ):
     if fragment not in vendor_work_entry_page_html:
@@ -6752,6 +6757,9 @@ for fragment in (
         raise SystemExit(f"vendor work entry history missing fragment: {fragment}")
 for fragment in (
     'data-testid="vendor-work-entry-draft-business-date"',
+    'data-testid="vendor-work-entry-draft-entry-id"',
+    'data-testid="vendor-work-entry-draft-write-mode"',
+    'data-testid="vendor-work-entry-draft-hidden-entry-id"',
     'data-testid="vendor-work-entry-draft-planned-at"',
     'data-testid="vendor-work-entry-draft-submit-button"',
     'data-testid="vendor-work-entry-draft-context-group"',
@@ -6770,6 +6778,19 @@ for fragment in (
         raise SystemExit(f"vendor work entry draft submit preparation missing fragment: {fragment}")
 if 'data-testid="vendor-work-entry-draft-submit-button" disabled' in vendor_work_entry_page_html:
     raise SystemExit("vendor work entry draft submit button should be enabled for first write wiring")
+expected_default_entry_id_fragment = f'data-testid="vendor-work-entry-today-entry-active-id">{vendor_a_entry_id}<'
+if expected_default_entry_id_fragment not in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry page should align active today entry id with default selected entry")
+if f'data-testid="vendor-work-entry-summary-active-entry-id">{vendor_a_entry_id}<' not in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry readiness summary should expose active entry id")
+if f'data-testid="vendor-work-entry-summary-entry-id">{vendor_a_entry_id}<' not in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry readiness summary entry_id should align with active entry preflight")
+if f'data-testid="vendor-work-entry-draft-entry-id">{vendor_a_entry_id}<' not in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry draft visible entry id should align with active entry preflight")
+if f'data-testid="vendor-work-entry-draft-write-mode">update<' not in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry draft write mode should align with active entry preflight")
+if f'data-testid="vendor-work-entry-draft-hidden-entry-id"' not in vendor_work_entry_page_html or f'value="{vendor_a_entry_id}"' not in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry draft hidden entry id should align with active entry preflight")
 
 vendor_work_entry_page_first_today_entry = client.get(
     "/vendor/work-entry?today_entry_index=0",
@@ -6793,13 +6814,30 @@ for fragment in (
     'data-testid="vendor-work-entry-today-entry-active-id"',
     'data-testid="vendor-work-entry-readiness-summary"',
     'data-testid="vendor-work-entry-summary-active-entry-id"',
+    'data-testid="vendor-work-entry-summary-entry-id"',
     'data-testid="vendor-work-entry-draft-submit"',
+    'data-testid="vendor-work-entry-draft-entry-id"',
+    'data-testid="vendor-work-entry-draft-hidden-entry-id"',
+    'data-testid="vendor-work-entry-draft-write-mode"',
     'data-testid="vendor-work-entry-history"',
     'data-testid="vendor-work-entry-pending-items"',
     "2000-01-01 10:00",
+    "update",
 ):
     if fragment not in vendor_work_entry_page_second_today_entry_html:
         raise SystemExit(f"vendor work entry page missing switched today entry fragment: {fragment}")
+if f'data-testid="vendor-work-entry-today-entry-active-id">{vendor_a_second_entry_id}<' not in vendor_work_entry_page_second_today_entry_html:
+    raise SystemExit("vendor work entry switched page should expose selected active entry id")
+if f'data-testid="vendor-work-entry-summary-active-entry-id">{vendor_a_second_entry_id}<' not in vendor_work_entry_page_second_today_entry_html:
+    raise SystemExit("vendor work entry switched readiness summary should expose selected active entry id")
+if f'data-testid="vendor-work-entry-summary-entry-id">{vendor_a_second_entry_id}<' not in vendor_work_entry_page_second_today_entry_html:
+    raise SystemExit("vendor work entry switched readiness summary entry_id should align with selected active entry")
+if f'data-testid="vendor-work-entry-draft-entry-id">{vendor_a_second_entry_id}<' not in vendor_work_entry_page_second_today_entry_html:
+    raise SystemExit("vendor work entry switched draft visible entry id should align with selected active entry")
+if f'data-testid="vendor-work-entry-draft-hidden-entry-id"' not in vendor_work_entry_page_second_today_entry_html or f'value="{vendor_a_second_entry_id}"' not in vendor_work_entry_page_second_today_entry_html:
+    raise SystemExit("vendor work entry switched draft hidden entry id should align with selected active entry")
+if f'data-testid="vendor-work-entry-draft-write-mode">update<' not in vendor_work_entry_page_second_today_entry_html:
+    raise SystemExit("vendor work entry switched draft write mode should align with selected active entry")
 
 vendor_work_entry_submit_result_page = client.get(
     "/vendor/work-entry?submit_status=success&submit_mode=create",
