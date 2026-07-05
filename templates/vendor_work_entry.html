@@ -133,6 +133,7 @@
     data-vendor-work-entry-submit-method="POST"
     data-vendor-work-entry-context="trusted"
   >
+    <div data-testid="vendor-work-entry-draft-validation-summary" hidden></div>
     <input
       type="hidden"
       name="sheet_id"
@@ -167,6 +168,7 @@
             name="planned_at"
             value="{{ draft_submit_preparation.planned_at }}"
           >
+          <span data-testid="vendor-work-entry-draft-validation-error-planned-at" hidden></span>
         </label>
         <label>預計進場人數
           <input
@@ -175,6 +177,7 @@
             name="planned_headcount"
             value="{{ draft_submit_preparation.planned_headcount }}"
           >
+          <span data-testid="vendor-work-entry-draft-validation-error-planned-headcount" hidden></span>
         </label>
         <label>實際進場人數
           <input
@@ -183,6 +186,7 @@
             name="actual_headcount"
             value="{{ draft_submit_preparation.actual_headcount }}"
           >
+          <span data-testid="vendor-work-entry-draft-validation-error-actual-headcount" hidden></span>
         </label>
       </div>
     </div>
@@ -202,6 +206,7 @@
             name="work_headcount"
             value="{{ draft_submit_preparation.work_headcount }}"
           >
+          <span data-testid="vendor-work-entry-draft-validation-error-work-headcount" hidden></span>
         </label>
       </div>
     </div>
@@ -215,6 +220,7 @@
             name="entry_order"
             value="{{ draft_submit_preparation.entry_order }}"
           >
+          <span data-testid="vendor-work-entry-draft-validation-error-entry-order" hidden></span>
         </label>
       </div>
     </div>
@@ -235,14 +241,42 @@
 
     const successMessage = document.querySelector('[data-testid="vendor-work-entry-draft-submit-success"]');
     const errorMessage = document.querySelector('[data-testid="vendor-work-entry-draft-submit-error"]');
+    const validationSummary = document.querySelector('[data-testid="vendor-work-entry-draft-validation-summary"]');
     const submitButton = document.querySelector('[data-testid="vendor-work-entry-draft-submit-button"]');
     const submitUrl = form.dataset.vendorWorkEntrySubmitUrl || "";
     const submitMethod = form.dataset.vendorWorkEntrySubmitMethod || "POST";
+    const validationMarkers = {
+      planned_at: document.querySelector('[data-testid="vendor-work-entry-draft-validation-error-planned-at"]'),
+      planned_headcount: document.querySelector('[data-testid="vendor-work-entry-draft-validation-error-planned-headcount"]'),
+      actual_headcount: document.querySelector('[data-testid="vendor-work-entry-draft-validation-error-actual-headcount"]'),
+      work_headcount: document.querySelector('[data-testid="vendor-work-entry-draft-validation-error-work-headcount"]'),
+      entry_order: document.querySelector('[data-testid="vendor-work-entry-draft-validation-error-entry-order"]'),
+    };
+
+    const clearValidationState = () => {
+      if (validationSummary) {
+        validationSummary.hidden = true;
+        validationSummary.textContent = "";
+      }
+      Object.values(validationMarkers).forEach((marker) => {
+        if (!marker) return;
+        marker.hidden = true;
+        marker.textContent = "";
+      });
+    };
+
+    const setValidationError = (fieldName, message) => {
+      const marker = validationMarkers[fieldName];
+      if (!marker) return;
+      marker.textContent = message;
+      marker.hidden = false;
+    };
 
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (!submitUrl || !submitButton) return;
 
+      clearValidationState();
       if (successMessage) {
         successMessage.hidden = true;
         successMessage.textContent = "";
@@ -255,17 +289,58 @@
       submitButton.disabled = true;
       try {
         const formData = new FormData(form);
+        const plannedAtValue = String(formData.get("planned_at") || "").trim();
+        const parseNumberValue = (fieldName) => {
+          const rawValue = String(formData.get(fieldName) || "").trim();
+          const numericValue = rawValue === "" ? 0 : Number(rawValue);
+          return Number.isFinite(numericValue) ? numericValue : Number.NaN;
+        };
+        const plannedHeadcountValue = parseNumberValue("planned_headcount");
+        const actualHeadcountValue = parseNumberValue("actual_headcount");
+        const workHeadcountValue = parseNumberValue("work_headcount");
+        const entryOrderValue = parseNumberValue("entry_order");
+        const validationErrors = [];
+
+        if (!plannedAtValue) {
+          validationErrors.push("planned_at is required.");
+          setValidationError("planned_at", "planned_at is required.");
+        }
+        if (!Number.isFinite(plannedHeadcountValue) || plannedHeadcountValue < 0) {
+          validationErrors.push("planned_headcount must be 0 or greater.");
+          setValidationError("planned_headcount", "planned_headcount must be 0 or greater.");
+        }
+        if (!Number.isFinite(actualHeadcountValue) || actualHeadcountValue < 0) {
+          validationErrors.push("actual_headcount must be 0 or greater.");
+          setValidationError("actual_headcount", "actual_headcount must be 0 or greater.");
+        }
+        if (!Number.isFinite(workHeadcountValue) || workHeadcountValue < 0) {
+          validationErrors.push("work_headcount must be 0 or greater.");
+          setValidationError("work_headcount", "work_headcount must be 0 or greater.");
+        }
+        if (!Number.isFinite(entryOrderValue) || entryOrderValue < 0) {
+          validationErrors.push("entry_order must be 0 or greater.");
+          setValidationError("entry_order", "entry_order must be 0 or greater.");
+        }
+        if (validationErrors.length) {
+          if (validationSummary) {
+            validationSummary.textContent = validationErrors.join(" ");
+            validationSummary.hidden = false;
+          }
+          submitButton.disabled = false;
+          return;
+        }
+
         const payload = {
           id: formData.get("id") || null,
           sheet_id: formData.get("sheet_id"),
           vendor_name: formData.get("vendor_name"),
           business_date: formData.get("business_date"),
-          planned_at: formData.get("planned_at") || "",
-          planned_headcount: formData.get("planned_headcount") || 0,
-          actual_headcount: formData.get("actual_headcount") || 0,
+          planned_at: plannedAtValue,
+          planned_headcount: plannedHeadcountValue,
+          actual_headcount: actualHeadcountValue,
           work_content: formData.get("work_content") || "",
-          work_headcount: formData.get("work_headcount") || 0,
-          entry_order: formData.get("entry_order") || 0,
+          work_headcount: workHeadcountValue,
+          entry_order: entryOrderValue,
         };
 
         if (!payload.id) {
