@@ -6366,6 +6366,12 @@ if vendor_scope_unauthenticated.status_code != 302 or not vendor_scope_unauthent
 vendor_business_preview_unauthenticated = client.get("/vendor/business-read-preview", follow_redirects=False)
 if vendor_business_preview_unauthenticated.status_code != 302 or not vendor_business_preview_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
     raise SystemExit("unauthenticated vendor business read preview should redirect to /vendor/login")
+with client.session_transaction() as session:
+    for key in ("identity_type", "vendor_account_id", "vendor_username", "vendor_name"):
+        if session.get(key) is not None:
+            raise SystemExit("unauthenticated vendor business read preview should not create vendor session")
+    if session.get("user_id") is not None or session.get("role") is not None:
+        raise SystemExit("unauthenticated vendor business read preview should not create internal session")
 
 vendor_work_preflight_unauthenticated = client.post(
     "/api/vendor/work-entry/preflight",
@@ -6597,6 +6603,14 @@ if vendor_profile.status_code != 200:
 vendor_profile_payload = vendor_profile.get_json()
 if not isinstance(vendor_profile_payload, dict) or vendor_profile_payload.get("ok") is not True:
     raise SystemExit("vendor profile should return ok=true payload")
+expected_vendor_profile_keys = {
+    "ok",
+    "vendor_account_id",
+    "vendor_username",
+    "vendor_name",
+}
+if set(vendor_profile_payload.keys()) != expected_vendor_profile_keys:
+    raise SystemExit("vendor profile should keep stable top-level response shape")
 if vendor_profile_payload.get("vendor_account_id") is None:
     raise SystemExit("vendor profile should return vendor_account_id")
 if vendor_profile_payload.get("vendor_username") != "vendor_active":
@@ -6612,6 +6626,9 @@ if vendor_scope.status_code != 200:
 vendor_scope_payload = vendor_scope.get_json()
 if not isinstance(vendor_scope_payload, dict) or vendor_scope_payload.get("ok") is not True:
     raise SystemExit("vendor scope should return ok=true payload")
+expected_vendor_scope_keys = {"ok", "scope"}
+if set(vendor_scope_payload.keys()) != expected_vendor_scope_keys:
+    raise SystemExit("vendor scope should keep stable top-level response shape")
 scope = vendor_scope_payload.get("scope")
 if not isinstance(scope, dict):
     raise SystemExit("vendor scope should return scope object")
