@@ -1510,6 +1510,35 @@ def _handle_admin_reset_sheet_lookup_error(exc: LookupError):
     raise exc
 
 
+def build_admin_site_write_render_state(
+    conn,
+    *,
+    sheet_id,
+    missing_current_site_message,
+    sheet_not_in_current_site_message,
+):
+    state = {
+        "enabled": True,
+        "block_reason": "",
+        "block_message": "",
+    }
+    try:
+        authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+    except LookupError as exc:
+        code = exc.args[0] if exc.args else ""
+        if code == "site_context_invalid":
+            state["enabled"] = False
+            state["block_reason"] = "missing_current_site"
+            state["block_message"] = missing_current_site_message
+        elif code == "write_target_not_in_current_site":
+            state["enabled"] = False
+            state["block_reason"] = "sheet_not_in_current_site"
+            state["block_message"] = sheet_not_in_current_site_message
+        else:
+            raise
+    return state
+
+
 def authorize_sheet_read(conn: sqlite3.Connection, sheet_id: int) -> None:
     sheet_row = _get_sheet_row(conn, int(sheet_id))
     if sheet_row is None:
@@ -4814,95 +4843,51 @@ def table_admin():
         extra_fields = conn.execute("SELECT * FROM extra_fields WHERE sheet_id = ? AND active = 1 ORDER BY sort_order, id", (sheet_id,)).fetchall()
         floors = conn.execute("SELECT * FROM floors WHERE sheet_id = ? ORDER BY sort_order", (sheet_id,)).fetchall()
         units = {floor["id"]: conn.execute("SELECT * FROM units WHERE floor_id = ? ORDER BY sort_order", (floor["id"],)).fetchall() for floor in floors}
-        unit_write_enabled = True
-        unit_write_block_reason = ""
-        unit_write_block_message = ""
-        try:
-            authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
-        except LookupError as exc:
-            code = exc.args[0] if exc.args else ""
-            if code == "site_context_invalid":
-                unit_write_enabled = False
-                unit_write_block_reason = "missing_current_site"
-                unit_write_block_message = "請先選擇目前工地，才能管理戶別。"
-            elif code == "write_target_not_in_current_site":
-                unit_write_enabled = False
-                unit_write_block_reason = "sheet_not_in_current_site"
-                unit_write_block_message = "目前工地與此表單不一致，不能修改戶別。"
-            else:
-                raise
-        floor_write_enabled = True
-        floor_write_block_reason = ""
-        floor_write_block_message = ""
-        try:
-            authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
-        except LookupError as exc:
-            code = exc.args[0] if exc.args else ""
-            if code == "site_context_invalid":
-                floor_write_enabled = False
-                floor_write_block_reason = "missing_current_site"
-                floor_write_block_message = "請先選擇目前工地，才能管理樓層。"
-            elif code == "write_target_not_in_current_site":
-                floor_write_enabled = False
-                floor_write_block_reason = "sheet_not_in_current_site"
-                floor_write_block_message = "目前工地與此表單不一致，不能修改樓層。"
-            else:
-                raise
-        task_write_enabled = True
-        task_write_block_reason = ""
-        task_write_block_message = ""
-        try:
-            authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
-        except LookupError as exc:
-            code = exc.args[0] if exc.args else ""
-            if code == "site_context_invalid":
-                task_write_enabled = False
-                task_write_block_reason = "missing_current_site"
-                task_write_block_message = "請先選擇目前工地，才能管理工項。"
-            elif code == "write_target_not_in_current_site":
-                task_write_enabled = False
-                task_write_block_reason = "sheet_not_in_current_site"
-                task_write_block_message = "目前工地與此表單不一致，不能修改工項。"
-            else:
-                raise
-        extra_field_write_enabled = True
-        extra_field_write_block_reason = ""
-        extra_field_write_block_message = ""
-        try:
-            authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
-        except LookupError as exc:
-            code = exc.args[0] if exc.args else ""
-            if code == "site_context_invalid":
-                extra_field_write_enabled = False
-                extra_field_write_block_reason = "missing_current_site"
-                extra_field_write_block_message = "請先選擇目前工地，才能管理驗收／交屋欄位。"
-            elif code == "write_target_not_in_current_site":
-                extra_field_write_enabled = False
-                extra_field_write_block_reason = "sheet_not_in_current_site"
-                extra_field_write_block_message = "目前工地與此表單不一致，不能修改驗收／交屋欄位。"
-            else:
-                raise
+        unit_write_state = build_admin_site_write_render_state(
+            conn,
+            sheet_id=sheet_id,
+            missing_current_site_message="請先選擇目前工地，才能管理戶別。",
+            sheet_not_in_current_site_message="目前工地與此表單不一致，不能修改戶別。",
+        )
+        floor_write_state = build_admin_site_write_render_state(
+            conn,
+            sheet_id=sheet_id,
+            missing_current_site_message="請先選擇目前工地，才能管理樓層。",
+            sheet_not_in_current_site_message="目前工地與此表單不一致，不能修改樓層。",
+        )
+        task_write_state = build_admin_site_write_render_state(
+            conn,
+            sheet_id=sheet_id,
+            missing_current_site_message="請先選擇目前工地，才能管理工項。",
+            sheet_not_in_current_site_message="目前工地與此表單不一致，不能修改工項。",
+        )
+        extra_field_write_state = build_admin_site_write_render_state(
+            conn,
+            sheet_id=sheet_id,
+            missing_current_site_message="請先選擇目前工地，才能管理驗收／交屋欄位。",
+            sheet_not_in_current_site_message="目前工地與此表單不一致，不能修改驗收／交屋欄位。",
+        )
     return render_template(
         "table_admin.html",
         settings=settings,
         sheets=sheets,
         current_sheet=current_sheet,
         tasks=tasks,
-        unit_write_enabled=unit_write_enabled,
-        unit_write_block_reason=unit_write_block_reason,
-        unit_write_block_message=unit_write_block_message,
-        floor_write_enabled=floor_write_enabled,
-        floor_write_block_reason=floor_write_block_reason,
-        floor_write_block_message=floor_write_block_message,
-        task_write_enabled=task_write_enabled,
-        task_write_block_reason=task_write_block_reason,
-        task_write_block_message=task_write_block_message,
+        unit_write_enabled=unit_write_state["enabled"],
+        unit_write_block_reason=unit_write_state["block_reason"],
+        unit_write_block_message=unit_write_state["block_message"],
+        floor_write_enabled=floor_write_state["enabled"],
+        floor_write_block_reason=floor_write_state["block_reason"],
+        floor_write_block_message=floor_write_state["block_message"],
+        task_write_enabled=task_write_state["enabled"],
+        task_write_block_reason=task_write_state["block_reason"],
+        task_write_block_message=task_write_state["block_message"],
         extra_fields=extra_fields,
         floors=floors,
         units=units,
-        extra_field_write_enabled=extra_field_write_enabled,
-        extra_field_write_block_reason=extra_field_write_block_reason,
-        extra_field_write_block_message=extra_field_write_block_message,
+        extra_field_write_enabled=extra_field_write_state["enabled"],
+        extra_field_write_block_reason=extra_field_write_state["block_reason"],
+        extra_field_write_block_message=extra_field_write_state["block_message"],
     )
 
 
