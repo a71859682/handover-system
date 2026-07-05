@@ -6792,6 +6792,63 @@ if f'data-testid="vendor-work-entry-draft-write-mode">update<' not in vendor_wor
 if f'data-testid="vendor-work-entry-draft-hidden-entry-id"' not in vendor_work_entry_page_html or f'value="{vendor_a_entry_id}"' not in vendor_work_entry_page_html:
     raise SystemExit("vendor work entry draft hidden entry id should align with active entry preflight")
 
+def extract_hidden_vendor_work_entry_id(html: str) -> str:
+    marker = 'data-testid="vendor-work-entry-draft-hidden-entry-id"'
+    marker_index = html.find(marker)
+    if marker_index == -1:
+        raise SystemExit("vendor work entry page should expose hidden entry id marker")
+    tag_start = html.rfind("<input", 0, marker_index)
+    if tag_start == -1:
+        raise SystemExit("vendor work entry page hidden entry id marker should belong to an input tag")
+    tag_end = html.find(">", marker_index)
+    if tag_end == -1:
+        raise SystemExit("vendor work entry page hidden entry id input tag should terminate")
+    input_tag = html[tag_start:tag_end]
+    value_marker = 'value="'
+    value_index = input_tag.find(value_marker)
+    if value_index == -1:
+        raise SystemExit("vendor work entry page hidden entry id marker should expose value")
+    value_start = value_index + len(value_marker)
+    value_end = input_tag.find('"', value_start)
+    if value_end == -1:
+        raise SystemExit("vendor work entry page hidden entry id value should terminate")
+    return input_tag[value_start:value_end]
+
+
+def fetch_vendor_work_entry_snapshot(entry_id: int) -> dict[str, object]:
+    row = conn.execute(
+        '''
+        SELECT
+            id,
+            vendor_name,
+            business_date,
+            planned_at,
+            planned_headcount,
+            actual_headcount,
+            work_content,
+            work_headcount,
+            entry_order
+        FROM vendor_work_entries
+        WHERE id = ?
+        ''',
+        (int(entry_id),),
+    ).fetchone()
+    if row is None:
+        raise SystemExit(f"vendor work entry {entry_id} should exist")
+    return dict(row)
+
+
+def build_internal_vendor_work_entry_update_client():
+    internal_client = module.app.test_client()
+    internal_login = internal_client.post(
+        "/login",
+        data={"username": "admin", "display_name": "Admin", "password": "admin"},
+        follow_redirects=False,
+    )
+    if internal_login.status_code != 302:
+        raise SystemExit("internal login should succeed for selected entry submit target verification")
+    return internal_client
+
 vendor_work_entry_page_first_today_entry = client.get(
     "/vendor/work-entry?today_entry_index=0",
     follow_redirects=False,
@@ -6838,6 +6895,95 @@ if f'data-testid="vendor-work-entry-draft-hidden-entry-id"' not in vendor_work_e
     raise SystemExit("vendor work entry switched draft hidden entry id should align with selected active entry")
 if f'data-testid="vendor-work-entry-draft-write-mode">update<' not in vendor_work_entry_page_second_today_entry_html:
     raise SystemExit("vendor work entry switched draft write mode should align with selected active entry")
+
+vendor_work_entry_page_first_today_entry_html = vendor_work_entry_page_first_today_entry.get_data(as_text=True)
+selected_first_entry_id = extract_hidden_vendor_work_entry_id(vendor_work_entry_page_first_today_entry_html)
+if selected_first_entry_id != str(vendor_a_entry_id):
+    raise SystemExit("selected first today entry should submit with first entry id")
+vendor_work_entry_count_before_first_selected_submit = conn.execute(
+    "SELECT COUNT(*) FROM vendor_work_entries"
+).fetchone()[0]
+first_entry_before_first_selected_submit = fetch_vendor_work_entry_snapshot(vendor_a_entry_id)
+second_entry_before_first_selected_submit = fetch_vendor_work_entry_snapshot(vendor_a_second_entry_id)
+selected_first_entry_submit_client = build_internal_vendor_work_entry_update_client()
+selected_first_entry_submit = selected_first_entry_submit_client.post(
+    "/api/vendor-work-entry",
+    json={
+        "id": int(selected_first_entry_id),
+        "sheet_id": 1,
+        "vendor_name": str(first_entry_before_first_selected_submit["vendor_name"]),
+        "business_date": str(first_entry_before_first_selected_submit["business_date"]),
+        "planned_at": str(first_entry_before_first_selected_submit["planned_at"]),
+        "planned_headcount": int(first_entry_before_first_selected_submit["planned_headcount"]),
+        "actual_headcount": int(first_entry_before_first_selected_submit["actual_headcount"]),
+        "work_content": "Selected first entry target verification",
+        "work_headcount": int(first_entry_before_first_selected_submit["work_headcount"]),
+        "entry_order": int(first_entry_before_first_selected_submit["entry_order"]),
+    },
+    follow_redirects=False,
+)
+if selected_first_entry_submit.status_code != 200:
+    raise SystemExit("selected first today entry submit should return 200")
+selected_first_entry_submit_payload = selected_first_entry_submit.get_json()
+if not isinstance(selected_first_entry_submit_payload, dict) or selected_first_entry_submit_payload.get("ok") is not True:
+    raise SystemExit("selected first today entry submit should return ok=true payload")
+if int(selected_first_entry_submit_payload.get("id")) != int(vendor_a_entry_id):
+    raise SystemExit("selected first today entry submit should preserve first entry id")
+vendor_work_entry_count_after_first_selected_submit = conn.execute(
+    "SELECT COUNT(*) FROM vendor_work_entries"
+).fetchone()[0]
+if vendor_work_entry_count_after_first_selected_submit != vendor_work_entry_count_before_first_selected_submit:
+    raise SystemExit("selected first today entry submit must not create a new vendor work entry row")
+first_entry_after_first_selected_submit = fetch_vendor_work_entry_snapshot(vendor_a_entry_id)
+second_entry_after_first_selected_submit = fetch_vendor_work_entry_snapshot(vendor_a_second_entry_id)
+if first_entry_after_first_selected_submit["work_content"] != "Selected first entry target verification":
+    raise SystemExit("selected first today entry submit should update the first entry only")
+if second_entry_after_first_selected_submit != second_entry_before_first_selected_submit:
+    raise SystemExit("selected first today entry submit must not mutate the second entry")
+
+selected_second_entry_id = extract_hidden_vendor_work_entry_id(vendor_work_entry_page_second_today_entry_html)
+if selected_second_entry_id != str(vendor_a_second_entry_id):
+    raise SystemExit("selected second today entry should submit with second entry id")
+vendor_work_entry_count_before_second_selected_submit = conn.execute(
+    "SELECT COUNT(*) FROM vendor_work_entries"
+).fetchone()[0]
+first_entry_before_second_selected_submit = fetch_vendor_work_entry_snapshot(vendor_a_entry_id)
+second_entry_before_second_selected_submit = fetch_vendor_work_entry_snapshot(vendor_a_second_entry_id)
+selected_second_entry_submit_client = build_internal_vendor_work_entry_update_client()
+selected_second_entry_submit = selected_second_entry_submit_client.post(
+    "/api/vendor-work-entry",
+    json={
+        "id": int(selected_second_entry_id),
+        "sheet_id": 1,
+        "vendor_name": str(second_entry_before_second_selected_submit["vendor_name"]),
+        "business_date": str(second_entry_before_second_selected_submit["business_date"]),
+        "planned_at": str(second_entry_before_second_selected_submit["planned_at"]),
+        "planned_headcount": int(second_entry_before_second_selected_submit["planned_headcount"]),
+        "actual_headcount": int(second_entry_before_second_selected_submit["actual_headcount"]),
+        "work_content": "Selected second entry target verification",
+        "work_headcount": int(second_entry_before_second_selected_submit["work_headcount"]),
+        "entry_order": int(second_entry_before_second_selected_submit["entry_order"]),
+    },
+    follow_redirects=False,
+)
+if selected_second_entry_submit.status_code != 200:
+    raise SystemExit("selected second today entry submit should return 200")
+selected_second_entry_submit_payload = selected_second_entry_submit.get_json()
+if not isinstance(selected_second_entry_submit_payload, dict) or selected_second_entry_submit_payload.get("ok") is not True:
+    raise SystemExit("selected second today entry submit should return ok=true payload")
+if int(selected_second_entry_submit_payload.get("id")) != int(vendor_a_second_entry_id):
+    raise SystemExit("selected second today entry submit should preserve second entry id")
+vendor_work_entry_count_after_second_selected_submit = conn.execute(
+    "SELECT COUNT(*) FROM vendor_work_entries"
+).fetchone()[0]
+if vendor_work_entry_count_after_second_selected_submit != vendor_work_entry_count_before_second_selected_submit:
+    raise SystemExit("selected second today entry submit must not create a new vendor work entry row")
+first_entry_after_second_selected_submit = fetch_vendor_work_entry_snapshot(vendor_a_entry_id)
+second_entry_after_second_selected_submit = fetch_vendor_work_entry_snapshot(vendor_a_second_entry_id)
+if first_entry_after_second_selected_submit != first_entry_before_second_selected_submit:
+    raise SystemExit("selected second today entry submit must not mutate the first entry")
+if second_entry_after_second_selected_submit["work_content"] != "Selected second entry target verification":
+    raise SystemExit("selected second today entry submit should update the second entry only")
 
 vendor_work_entry_submit_result_page = client.get(
     "/vendor/work-entry?submit_status=success&submit_mode=create",
