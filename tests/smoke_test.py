@@ -6040,8 +6040,13 @@ entry_mismatch = client.post(
 )
 if entry_mismatch.status_code != 409:
     raise SystemExit("entry mismatch should be rejected with 409")
-if entry_mismatch.get_json()["error"]["code"] != "sheet_mismatch":
+entry_mismatch_payload = entry_mismatch.get_json()
+if entry_mismatch_payload.get("ok") is not False:
+    raise SystemExit("entry mismatch should return ok=false")
+if entry_mismatch_payload["error"]["code"] != "sheet_mismatch":
     raise SystemExit("entry mismatch should preserve sheet_mismatch error code")
+if entry_mismatch_payload["error"]["message"] != "vendor work entry belongs to a different sheet_id.":
+    raise SystemExit("entry mismatch should preserve deterministic error message")
 after_entry_mismatch = dict(fetch_entry(default_entry_id))
 if after_entry_mismatch != before_entry_mismatch:
     raise SystemExit("entry mismatch must not modify stored row")
