@@ -5859,6 +5859,11 @@ same_site_create = client.post(
 )
 if same_site_create.status_code != 200 or not same_site_create.get_json().get("ok"):
     raise SystemExit("same-site vendor-work-entry create should succeed")
+same_site_create_payload = same_site_create.get_json()
+if set(same_site_create_payload.keys()) != {"ok", "entry"}:
+    raise SystemExit("same-site vendor-work-entry create should preserve top-level response shape")
+if not isinstance(same_site_create_payload.get("entry"), dict):
+    raise SystemExit("same-site vendor-work-entry create should return entry payload")
 if count_entries(1, "VendorAllowedDefaultEntry") != 2:
     raise SystemExit("same-site vendor-work-entry create should insert a new row")
 
@@ -5947,6 +5952,13 @@ missing_site = client.post(
 )
 if missing_site.status_code != 403:
     raise SystemExit("missing current site should reject vendor-work-entry write with 403")
+missing_site_payload = missing_site.get_json()
+if missing_site_payload.get("ok") is not False:
+    raise SystemExit("missing current site should return ok=false")
+if missing_site_payload["error"]["code"] != "site_context_invalid":
+    raise SystemExit("missing current site should preserve site_context_invalid")
+if missing_site_payload["error"]["message"] != "current_site_id is missing or invalid.":
+    raise SystemExit("missing current site should preserve deterministic error message")
 after_missing_site = dict(fetch_entry(default_entry_id))
 if after_missing_site != before_missing_site:
     raise SystemExit("missing current site must not change existing vendor-work-entry row")
@@ -5972,6 +5984,13 @@ permission_removed = client.post(
 )
 if permission_removed.status_code != 403:
     raise SystemExit("permission removed should reject vendor-work-entry write with 403")
+permission_removed_payload = permission_removed.get_json()
+if permission_removed_payload.get("ok") is not False:
+    raise SystemExit("permission removed should return ok=false")
+if permission_removed_payload["error"]["code"] != "site_permission_missing":
+    raise SystemExit("permission removed should preserve site_permission_missing")
+if permission_removed_payload["error"]["message"] != "current user no longer has permission for the current site.":
+    raise SystemExit("permission removed should preserve deterministic error message")
 after_permission_removed = dict(fetch_entry(default_entry_id))
 if after_permission_removed != before_permission_removed:
     raise SystemExit("permission removed must not change existing vendor-work-entry row")
@@ -5999,6 +6018,13 @@ vendor_not_in_sheet = client.post(
 )
 if vendor_not_in_sheet.status_code != 404:
     raise SystemExit("vendor not in sheet should be rejected with 404")
+vendor_not_in_sheet_payload = vendor_not_in_sheet.get_json()
+if vendor_not_in_sheet_payload.get("ok") is not False:
+    raise SystemExit("vendor not in sheet should return ok=false")
+if vendor_not_in_sheet_payload["error"]["code"] != "vendor_not_in_sheet":
+    raise SystemExit("vendor not in sheet should preserve vendor_not_in_sheet error code")
+if vendor_not_in_sheet_payload["error"]["message"] != "vendor_name does not belong to the requested sheet.":
+    raise SystemExit("vendor not in sheet should preserve deterministic error message")
 if count_entries(1, "VendorAllowedDefaultEntry") != before_vendor_not_in_sheet:
     raise SystemExit("vendor-not-in-sheet rejection must not affect existing rows")
 
@@ -6021,8 +6047,13 @@ entry_mismatch = client.post(
 )
 if entry_mismatch.status_code != 409:
     raise SystemExit("entry mismatch should be rejected with 409")
-if entry_mismatch.get_json()["error"]["code"] != "sheet_mismatch":
+entry_mismatch_payload = entry_mismatch.get_json()
+if entry_mismatch_payload.get("ok") is not False:
+    raise SystemExit("entry mismatch should return ok=false")
+if entry_mismatch_payload["error"]["code"] != "sheet_mismatch":
     raise SystemExit("entry mismatch should preserve sheet_mismatch error code")
+if entry_mismatch_payload["error"]["message"] != "vendor work entry belongs to a different sheet_id.":
+    raise SystemExit("entry mismatch should preserve deterministic error message")
 after_entry_mismatch = dict(fetch_entry(default_entry_id))
 if after_entry_mismatch != before_entry_mismatch:
     raise SystemExit("entry mismatch must not modify stored row")
