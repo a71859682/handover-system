@@ -3123,6 +3123,27 @@ with module.db() as conn:
 if before_delete_cross != after_delete_cross:
     raise SystemExit("delete_extra_field cross-site should not change rows")
 
+set_admin_session()
+with module.db() as conn:
+    before_delete_missing = {
+        "count": conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_a,)).fetchone()[0],
+        "active": conn.execute("SELECT active FROM extra_fields WHERE id = ?", (field_a,)).fetchone()[0],
+    }
+delete_missing = client.post(
+    f"/admin/table?sheet_id={sheet_a}",
+    data={"action": f"delete_extra_field:{field_a}"},
+    follow_redirects=False,
+)
+if delete_missing.status_code != 302 or not delete_missing.headers.get("Location", "").endswith("/site-selector"):
+    raise SystemExit("delete_extra_field missing current site should redirect to /site-selector")
+with module.db() as conn:
+    after_delete_missing = {
+        "count": conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_a,)).fetchone()[0],
+        "active": conn.execute("SELECT active FROM extra_fields WHERE id = ?", (field_a,)).fetchone()[0],
+    }
+if before_delete_missing != after_delete_missing:
+    raise SystemExit("delete_extra_field missing current site should not change rows")
+
 set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
 with module.db() as conn:
     before_mismatch = {
