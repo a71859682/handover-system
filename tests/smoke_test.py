@@ -6722,11 +6722,14 @@ for fragment in (
     'data-testid="vendor-work-entry-draft-business-date"',
     'data-testid="vendor-work-entry-draft-planned-at"',
     'data-testid="vendor-work-entry-draft-submit-button"',
-    'data-testid="vendor-work-entry-draft-submit-helper"',
-    "disabled",
+    'data-vendor-work-entry-submit-url="/api/vendor-work-entry"',
+    'data-vendor-work-entry-context="trusted"',
+    'data-submit-enabled="true"',
 ):
     if fragment not in vendor_work_entry_page_html:
         raise SystemExit(f"vendor work entry draft submit preparation missing fragment: {fragment}")
+if 'data-testid="vendor-work-entry-draft-submit-button" disabled' in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry draft submit button should be enabled for first write wiring")
 
 vendor_profile = client.get("/vendor/profile", follow_redirects=False)
 if vendor_profile.status_code != 200:

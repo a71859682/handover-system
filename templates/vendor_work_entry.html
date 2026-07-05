@@ -62,8 +62,10 @@
 <section class="admin-section" data-testid="vendor-work-entry-draft-submit">
   <h2>Draft Submit Preparation</h2>
   <p data-testid="vendor-work-entry-draft-submit-helper">
-    送出功能尚未啟用，本區目前僅供草稿填寫準備。
+    Submit is now wired to the existing write API. This form remains limited to the current draft fields only.
   </p>
+  <div data-testid="vendor-work-entry-draft-submit-success" hidden></div>
+  <div data-testid="vendor-work-entry-draft-submit-error" hidden></div>
   <div class="settings-grid">
     <label>Trusted Sheet
       <span data-testid="vendor-work-entry-draft-sheet-id">{{ draft_submit_preparation.sheet_id if draft_submit_preparation.sheet_id is not none else '' }}</span>
@@ -81,12 +83,42 @@
       <span data-testid="vendor-work-entry-draft-write-mode">{{ draft_submit_preparation.write_mode or '' }}</span>
     </label>
   </div>
-  <form data-testid="vendor-work-entry-draft-form">
+  <form
+    data-testid="vendor-work-entry-draft-form"
+    data-vendor-work-entry-submit-url="/api/vendor-work-entry"
+    data-vendor-work-entry-submit-method="POST"
+    data-vendor-work-entry-context="trusted"
+  >
+    <input
+      type="hidden"
+      name="sheet_id"
+      value="{{ draft_submit_preparation.sheet_id if draft_submit_preparation.sheet_id is not none else '' }}"
+      data-testid="vendor-work-entry-draft-hidden-sheet-id"
+    >
+    <input
+      type="hidden"
+      name="business_date"
+      value="{{ draft_submit_preparation.business_date }}"
+      data-testid="vendor-work-entry-draft-hidden-business-date"
+    >
+    <input
+      type="hidden"
+      name="vendor_name"
+      value="{{ draft_submit_preparation.vendor_name }}"
+      data-testid="vendor-work-entry-draft-hidden-vendor-name"
+    >
+    <input
+      type="hidden"
+      name="id"
+      value="{{ draft_submit_preparation.entry_id if draft_submit_preparation.entry_id is not none else '' }}"
+      data-testid="vendor-work-entry-draft-hidden-entry-id"
+    >
     <div class="settings-grid">
       <label>Planned At
         <input
           data-testid="vendor-work-entry-draft-planned-at"
           type="text"
+          name="planned_at"
           value="{{ draft_submit_preparation.planned_at }}"
         >
       </label>
@@ -94,6 +126,7 @@
         <input
           data-testid="vendor-work-entry-draft-planned-headcount"
           type="number"
+          name="planned_headcount"
           value="{{ draft_submit_preparation.planned_headcount }}"
         >
       </label>
@@ -101,6 +134,7 @@
         <input
           data-testid="vendor-work-entry-draft-actual-headcount"
           type="number"
+          name="actual_headcount"
           value="{{ draft_submit_preparation.actual_headcount }}"
         >
       </label>
@@ -108,6 +142,7 @@
         <input
           data-testid="vendor-work-entry-draft-work-headcount"
           type="number"
+          name="work_headcount"
           value="{{ draft_submit_preparation.work_headcount }}"
         >
       </label>
@@ -115,22 +150,98 @@
         <input
           data-testid="vendor-work-entry-draft-entry-order"
           type="number"
+          name="entry_order"
           value="{{ draft_submit_preparation.entry_order }}"
         >
       </label>
       <label>Work Content
-        <textarea data-testid="vendor-work-entry-draft-work-content">{{ draft_submit_preparation.work_content }}</textarea>
+        <textarea
+          data-testid="vendor-work-entry-draft-work-content"
+          name="work_content"
+        >{{ draft_submit_preparation.work_content }}</textarea>
       </label>
     </div>
     <button
-      type="button"
-      disabled
+      type="submit"
       data-testid="vendor-work-entry-draft-submit-button"
+      data-submit-enabled="true"
     >
-      Submit (Coming Soon)
+      Submit Draft
     </button>
   </form>
 </section>
+
+<script>
+  (() => {
+    const form = document.querySelector('[data-testid="vendor-work-entry-draft-form"]');
+    if (!form) return;
+
+    const successMessage = document.querySelector('[data-testid="vendor-work-entry-draft-submit-success"]');
+    const errorMessage = document.querySelector('[data-testid="vendor-work-entry-draft-submit-error"]');
+    const submitButton = document.querySelector('[data-testid="vendor-work-entry-draft-submit-button"]');
+    const submitUrl = form.dataset.vendorWorkEntrySubmitUrl || "";
+    const submitMethod = form.dataset.vendorWorkEntrySubmitMethod || "POST";
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!submitUrl || !submitButton) return;
+
+      if (successMessage) {
+        successMessage.hidden = true;
+        successMessage.textContent = "";
+      }
+      if (errorMessage) {
+        errorMessage.hidden = true;
+        errorMessage.textContent = "";
+      }
+
+      submitButton.disabled = true;
+      try {
+        const formData = new FormData(form);
+        const payload = {
+          id: formData.get("id") || null,
+          sheet_id: formData.get("sheet_id"),
+          vendor_name: formData.get("vendor_name"),
+          business_date: formData.get("business_date"),
+          planned_at: formData.get("planned_at") || "",
+          planned_headcount: formData.get("planned_headcount") || 0,
+          actual_headcount: formData.get("actual_headcount") || 0,
+          work_content: formData.get("work_content") || "",
+          work_headcount: formData.get("work_headcount") || 0,
+          entry_order: formData.get("entry_order") || 0,
+        };
+
+        if (!payload.id) {
+          delete payload.id;
+        }
+
+        const response = await fetch(submitUrl, {
+          method: submitMethod,
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          throw new Error((data.error && data.error.message) || "Submit failed.");
+        }
+
+        if (successMessage) {
+          successMessage.textContent = "Draft submitted successfully. Reloading...";
+          successMessage.hidden = false;
+        }
+        window.setTimeout(() => window.location.reload(), 300);
+      } catch (error) {
+        if (errorMessage) {
+          errorMessage.textContent = error instanceof Error ? error.message : "Submit failed.";
+          errorMessage.hidden = false;
+        }
+        submitButton.disabled = false;
+      }
+    });
+  })();
+</script>
 
 <section class="admin-section" data-testid="vendor-work-entry-profile">
   <h2>Profile</h2>
