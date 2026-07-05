@@ -2467,6 +2467,18 @@ if before_cross_progress != after_cross_progress:
 if unexpected_cross is not None:
     raise SystemExit("add_task cross-site should not create a task")
 
+set_admin_session()
+missing_site_page = client.get(f"/admin/table?sheet_id={sheet_a}")
+missing_site_html = missing_site_page.get_data(as_text=True)
+if missing_site_page.status_code != 200:
+    raise SystemExit("task admin page should still render without current site")
+if 'data-task-write-enabled="false"' not in missing_site_html:
+    raise SystemExit("task admin page should disable writes when current site is missing")
+if 'data-task-write-block-reason="missing_current_site"' not in missing_site_html:
+    raise SystemExit("task admin page should mark missing current-site block reason")
+if 'data-task-write-blocked="true"' not in missing_site_html:
+    raise SystemExit("task admin page should show blocked-state helper message")
+
 delete_task_id = int(created_task["id"])
 set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
 with module.db() as conn:

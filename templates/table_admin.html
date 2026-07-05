@@ -44,12 +44,19 @@
 
   <section class="admin-section">
     <h2>&#24037;&#38917;&#35373;&#23450;</h2>
-    <div class="inline-form add-row">
-      <input name="new_task_vendor" placeholder="&#24288;&#21830;">
-      <input name="new_task_location" placeholder="&#20301;&#32622;">
-      <input name="new_task_name" placeholder="&#24037;&#38917;&#21517;&#31281;">
-      <button type="submit" name="action" value="add_task">&#26032;&#22686;&#24037;&#38917;</button>
+    <div
+      class="inline-form add-row"
+      data-task-write-enabled="{{ 'true' if task_write_enabled else 'false' }}"
+      data-task-write-block-reason="{{ task_write_block_reason }}"
+    >
+      <input name="new_task_vendor" placeholder="&#24288;&#21830;" {{ 'disabled' if not task_write_enabled else '' }}>
+      <input name="new_task_location" placeholder="&#20301;&#32622;" {{ 'disabled' if not task_write_enabled else '' }}>
+      <input name="new_task_name" placeholder="&#24037;&#38917;&#21517;&#31281;" {{ 'disabled' if not task_write_enabled else '' }}>
+      <button type="submit" name="action" value="add_task" {{ 'disabled' if not task_write_enabled else '' }}>&#26032;&#22686;&#24037;&#38917;</button>
     </div>
+    {% if task_write_block_message %}
+    <p class="helper-text" data-task-write-blocked="true">{{ task_write_block_message }}</p>
+    {% endif %}
     <table class="edit-table">
       <thead>
         <tr>
@@ -67,7 +74,7 @@
           <td><input name="task_vendor_{{ task.id }}" value="{{ task.vendor or '' }}"></td>
           <td><input name="task_location_{{ task.id }}" value="{{ task.location or '' }}"></td>
           <td><input name="task_name_{{ task.id }}" value="{{ task.name }}"></td>
-          <td><button type="submit" name="action" value="delete_task:{{ task.id }}" class="link-danger" onclick="return confirm('&#30906;&#23450;&#21034;&#38500;&#27492;&#24037;&#38917;&#65311;')">&#21034;&#38500;</button></td>
+          <td><button type="submit" name="action" value="delete_task:{{ task.id }}" class="link-danger" onclick="return confirm('&#30906;&#23450;&#21034;&#38500;&#27492;&#24037;&#38917;&#65311;')" {{ 'disabled' if not task_write_enabled else '' }}>&#21034;&#38500;</button></td>
         </tr>
         {% endfor %}
       </tbody>
