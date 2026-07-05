@@ -5947,6 +5947,13 @@ missing_site = client.post(
 )
 if missing_site.status_code != 403:
     raise SystemExit("missing current site should reject vendor-work-entry write with 403")
+missing_site_payload = missing_site.get_json()
+if missing_site_payload.get("ok") is not False:
+    raise SystemExit("missing current site should return ok=false")
+if missing_site_payload["error"]["code"] != "site_context_invalid":
+    raise SystemExit("missing current site should preserve site_context_invalid")
+if missing_site_payload["error"]["message"] != "current_site_id is missing or invalid.":
+    raise SystemExit("missing current site should preserve deterministic error message")
 after_missing_site = dict(fetch_entry(default_entry_id))
 if after_missing_site != before_missing_site:
     raise SystemExit("missing current site must not change existing vendor-work-entry row")
