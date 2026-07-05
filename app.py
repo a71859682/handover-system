@@ -4814,6 +4814,23 @@ def table_admin():
         extra_fields = conn.execute("SELECT * FROM extra_fields WHERE sheet_id = ? AND active = 1 ORDER BY sort_order, id", (sheet_id,)).fetchall()
         floors = conn.execute("SELECT * FROM floors WHERE sheet_id = ? ORDER BY sort_order", (sheet_id,)).fetchall()
         units = {floor["id"]: conn.execute("SELECT * FROM units WHERE floor_id = ? ORDER BY sort_order", (floor["id"],)).fetchall() for floor in floors}
+        unit_write_enabled = True
+        unit_write_block_reason = ""
+        unit_write_block_message = ""
+        try:
+            authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+        except LookupError as exc:
+            code = exc.args[0] if exc.args else ""
+            if code == "site_context_invalid":
+                unit_write_enabled = False
+                unit_write_block_reason = "missing_current_site"
+                unit_write_block_message = "請先選擇目前工地，才能管理戶別。"
+            elif code == "write_target_not_in_current_site":
+                unit_write_enabled = False
+                unit_write_block_reason = "sheet_not_in_current_site"
+                unit_write_block_message = "目前工地與此表單不一致，不能修改戶別。"
+            else:
+                raise
         floor_write_enabled = True
         floor_write_block_reason = ""
         floor_write_block_message = ""
@@ -4871,6 +4888,9 @@ def table_admin():
         sheets=sheets,
         current_sheet=current_sheet,
         tasks=tasks,
+        unit_write_enabled=unit_write_enabled,
+        unit_write_block_reason=unit_write_block_reason,
+        unit_write_block_message=unit_write_block_message,
         floor_write_enabled=floor_write_enabled,
         floor_write_block_reason=floor_write_block_reason,
         floor_write_block_message=floor_write_block_message,

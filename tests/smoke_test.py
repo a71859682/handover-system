@@ -2899,6 +2899,18 @@ if before_cross != after_cross:
 if unexpected_unit is not None:
     raise SystemExit("add_unit cross-site should not create unit row")
 
+set_admin_session()
+missing_site_page = client.get(f"/admin/table?sheet_id={sheet_a}")
+missing_site_html = missing_site_page.get_data(as_text=True)
+if missing_site_page.status_code != 200:
+    raise SystemExit("unit admin page should still render without current site")
+if 'data-unit-write-enabled="false"' not in missing_site_html:
+    raise SystemExit("unit admin page should disable writes when current site is missing")
+if 'data-unit-write-block-reason="missing_current_site"' not in missing_site_html:
+    raise SystemExit("unit admin page should mark missing current-site block reason")
+if 'data-unit-write-blocked="true"' not in missing_site_html:
+    raise SystemExit("unit admin page should show blocked-state helper message")
+
 delete_unit_id = int(added_unit["id"])
 set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
 with module.db() as conn:

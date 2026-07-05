@@ -146,18 +146,25 @@
         <label>&#27155;&#23652;&#21517;&#31281;<input name="floor_name_{{ floor.id }}" value="{{ floor.name }}"></label>
         <label>&#26847;&#21029;<input name="floor_block_{{ floor.id }}" value="{{ floor.block_name or '' }}"></label>
         <label>&#26032;&#22686;&#25142;&#21029;
-          <span class="inline-form">
-            <input name="new_unit_name_{{ floor.id }}" placeholder="&#25142;&#21029;&#21517;&#31281;">
-            <button type="submit" name="action" value="add_unit:{{ floor.id }}">&#26032;&#22686;</button>
+          <span
+            class="inline-form"
+            data-unit-write-enabled="{{ 'true' if unit_write_enabled else 'false' }}"
+            data-unit-write-block-reason="{{ unit_write_block_reason }}"
+          >
+            <input name="new_unit_name_{{ floor.id }}" placeholder="&#25142;&#21029;&#21517;&#31281;" {{ 'disabled' if not unit_write_enabled else '' }}>
+            <button type="submit" name="action" value="add_unit:{{ floor.id }}" {{ 'disabled' if not unit_write_enabled else '' }}>&#26032;&#22686;</button>
           </span>
         </label>
       </div>
+      {% if unit_write_block_message %}
+      <p class="helper-text" data-unit-write-blocked="true">{{ unit_write_block_message }}</p>
+      {% endif %}
       <div class="unit-edit-grid">
         {% for unit in units[floor.id] %}
         <label>{{ loop.index }}
           <span class="unit-edit-item">
             <input name="unit_name_{{ unit.id }}" value="{{ unit.name }}">
-            <button type="submit" name="action" value="delete_unit:{{ unit.id }}" class="link-danger" onclick="return confirm('&#30906;&#23450;&#21034;&#38500;&#27492;&#25142;&#21029;&#65311;')">&#21034;&#38500;</button>
+            <button type="submit" name="action" value="delete_unit:{{ unit.id }}" class="link-danger" onclick="return confirm('&#30906;&#23450;&#21034;&#38500;&#27492;&#25142;&#21029;&#65311;')" {{ 'disabled' if not unit_write_enabled else '' }}>&#21034;&#38500;</button>
           </span>
         </label>
         {% endfor %}
