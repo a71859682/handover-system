@@ -2313,6 +2313,26 @@ def vendor_write_preflight(
     }
 
 
+def find_vendor_work_entry_preflight_sheet_id(
+    conn: sqlite3.Connection,
+    *,
+    vendor_name: str,
+) -> int | None:
+    row = conn.execute(
+        """
+        SELECT DISTINCT sheet_id
+        FROM tasks
+        WHERE TRIM(COALESCE(vendor, '')) = ?
+        ORDER BY sheet_id
+        LIMIT 1
+        """,
+        (vendor_name,),
+    ).fetchone()
+    if row is None:
+        return None
+    return int(row["sheet_id"])
+
+
 def authorize_vendor_business_read() -> dict[str, object]:
     return require_current_vendor_business_identity()
 
@@ -3742,11 +3762,60 @@ def vendor_logout():
 @app.route("/vendor/home", methods=["GET"])
 @vendor_login_required
 def vendor_home():
+    return vendor_work_entry_page()
+
+
+@app.route("/vendor/work-entry", methods=["GET"])
+@vendor_login_required
+def vendor_work_entry_page():
     vendor_account = require_current_vendor_account()
-    return (
-        f"Vendor Home: {vendor_account['vendor_name']} ({vendor_account['username']})",
-        200,
-        {"Content-Type": "text/plain; charset=utf-8"},
+    business_identity = authorize_vendor_business_read()
+    scope = current_vendor_scope()
+    if scope is None:
+        return redirect(url_for("vendor_login"))
+
+    business_date = resolve_crew_business_date()
+    profile_payload = {
+        "ok": True,
+        "vendor_account_id": int(vendor_account["id"]),
+        "vendor_username": str(vendor_account["username"]),
+        "vendor_name": str(vendor_account["vendor_name"]),
+    }
+    scope_payload = {"ok": True, "scope": scope}
+
+    with db() as conn:
+        rows = fetch_vendor_business_read_preview(
+            conn,
+            vendor_name=str(business_identity["vendor_name"]),
+        )
+        preview_payload = serialize_vendor_business_read_preview(
+            business_identity=business_identity,
+            rows=rows,
+        )
+        preflight_sheet_id = find_vendor_work_entry_preflight_sheet_id(
+            conn,
+            vendor_name=str(business_identity["vendor_name"]),
+        )
+        preflight_payload = None
+        if preflight_sheet_id is not None:
+            preflight_payload = {
+                "ok": True,
+                "preflight": vendor_write_preflight(
+                    conn,
+                    sheet_id=preflight_sheet_id,
+                    business_date=business_date,
+                ),
+            }
+
+    return render_template(
+        "vendor_work_entry.html",
+        settings=query_settings(),
+        profile_payload=profile_payload,
+        scope_payload=scope_payload,
+        preview_payload=preview_payload,
+        preflight_payload=preflight_payload,
+        preflight_sheet_id=preflight_sheet_id,
+        preflight_business_date=business_date,
     )
 
 

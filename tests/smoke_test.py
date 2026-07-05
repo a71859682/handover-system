@@ -6443,6 +6443,10 @@ vendor_home_unauthenticated = client.get("/vendor/home", follow_redirects=False)
 if vendor_home_unauthenticated.status_code != 302 or not vendor_home_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
     raise SystemExit("unauthenticated vendor home should redirect to /vendor/login")
 
+vendor_work_entry_page_unauthenticated = client.get("/vendor/work-entry", follow_redirects=False)
+if vendor_work_entry_page_unauthenticated.status_code != 302 or not vendor_work_entry_page_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
+    raise SystemExit("unauthenticated vendor work entry page should redirect to /vendor/login")
+
 vendor_profile_unauthenticated = client.get("/vendor/profile", follow_redirects=False)
 if vendor_profile_unauthenticated.status_code != 302 or not vendor_profile_unauthenticated.headers.get("Location", "").endswith("/vendor/login"):
     raise SystemExit("unauthenticated vendor profile should redirect to /vendor/login")
@@ -6681,9 +6685,26 @@ vendor_home = client.get("/vendor/home", follow_redirects=False)
 if vendor_home.status_code != 200:
     raise SystemExit("vendor authenticated home should return 200")
 vendor_home_body = vendor_home.get_data(as_text=True)
-for fragment in ("Vendor Home:", "Vendor A", "vendor_active"):
+for fragment in ('data-testid="vendor-work-entry-page"', "Vendor Home:", "Vendor A", "vendor_active"):
     if fragment not in vendor_home_body:
         raise SystemExit(f"vendor home missing fragment: {fragment}")
+
+vendor_work_entry_page = client.get("/vendor/work-entry", follow_redirects=False)
+if vendor_work_entry_page.status_code != 200:
+    raise SystemExit("vendor authenticated work entry page should return 200")
+vendor_work_entry_page_html = vendor_work_entry_page.get_data(as_text=True)
+for fragment in (
+    'data-testid="vendor-work-entry-profile"',
+    'data-testid="vendor-work-entry-scope"',
+    'data-testid="vendor-work-entry-preview"',
+    'data-testid="vendor-work-entry-preflight"',
+    'data-vendor-preflight-available="true"',
+    "Vendor A",
+    "vendor_active",
+    business_date,
+):
+    if fragment not in vendor_work_entry_page_html:
+        raise SystemExit(f"vendor work entry page missing fragment: {fragment}")
 
 vendor_profile = client.get("/vendor/profile", follow_redirects=False)
 if vendor_profile.status_code != 200:

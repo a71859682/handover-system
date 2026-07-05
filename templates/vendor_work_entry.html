@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Vendor Work Entry{% endblock %}
+{% block content %}
+<section class="section-header" data-testid="vendor-work-entry-page">
+  <h1>Vendor Work Entry</h1>
+  <p>Vendor Home: {{ profile_payload.vendor_name }} ({{ profile_payload.vendor_username }})</p>
+</section>
+
+<section class="admin-section" data-testid="vendor-work-entry-profile">
+  <h2>Profile</h2>
+  <pre data-testid="vendor-work-entry-profile-json">{{ profile_payload | tojson(indent=2) }}</pre>
+</section>
+
+<section class="admin-section" data-testid="vendor-work-entry-scope">
+  <h2>Scope</h2>
+  <pre data-testid="vendor-work-entry-scope-json">{{ scope_payload | tojson(indent=2) }}</pre>
+</section>
+
+<section class="admin-section" data-testid="vendor-work-entry-preview">
+  <h2>Business Read Preview</h2>
+  <pre data-testid="vendor-work-entry-preview-json">{{ preview_payload | tojson(indent=2) }}</pre>
+</section>
+
+<section
+  class="admin-section"
+  data-testid="vendor-work-entry-preflight"
+  data-vendor-preflight-available="{{ 'true' if preflight_payload else 'false' }}"
+>
+  <h2>Write Preflight</h2>
+  {% if preflight_payload %}
+  <p data-testid="vendor-work-entry-preflight-sheet">Sheet ID: {{ preflight_sheet_id }}</p>
+  <p data-testid="vendor-work-entry-preflight-business-date">Business Date: {{ preflight_business_date }}</p>
+  <pre data-testid="vendor-work-entry-preflight-json">{{ preflight_payload | tojson(indent=2) }}</pre>
+  {% else %}
+  <p data-testid="vendor-work-entry-preflight-empty">Preflight is unavailable until a vendor-linked sheet is found.</p>
+  {% endif %}
+</section>
+{% endblock %}
