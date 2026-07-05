@@ -80,6 +80,26 @@
   </ul>
 </section>
 
+<section class="admin-section" data-testid="vendor-work-entry-pending-items">
+  <h2>進場前待處理事項</h2>
+  <p data-testid="vendor-work-entry-pending-items-helper">
+    這些是目前仍在進行中的工作項目，供進場前確認。
+  </p>
+  <p>
+    待處理項目數：
+    <span data-testid="vendor-work-entry-pending-items-count">{{ readiness_summary.pending_item_count }}</span>
+  </p>
+  {% if readiness_summary.pending_items %}
+  <ul data-testid="vendor-work-entry-pending-items-list">
+    {% for item in readiness_summary.pending_items %}
+    <li data-testid="vendor-work-entry-pending-items-item">{{ item }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p data-testid="vendor-work-entry-pending-items-empty">目前沒有待處理事項。</p>
+  {% endif %}
+</section>
+
 <section class="admin-section" data-testid="vendor-work-entry-draft-submit">
   <h2>進場填報草稿</h2>
   <p data-testid="vendor-work-entry-draft-submit-helper">

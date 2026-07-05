@@ -6695,6 +6695,7 @@ if vendor_work_entry_page.status_code != 200:
 vendor_work_entry_page_html = vendor_work_entry_page.get_data(as_text=True)
 for fragment in (
     'data-testid="vendor-work-entry-readiness-summary"',
+    'data-testid="vendor-work-entry-pending-items"',
     'data-testid="vendor-work-entry-draft-submit"',
     'data-testid="vendor-work-entry-history"',
     'data-testid="vendor-work-entry-profile"',
@@ -6719,6 +6720,17 @@ for fragment in (
 ):
     if fragment not in vendor_work_entry_page_html:
         raise SystemExit(f"vendor work entry readiness summary missing fragment: {fragment}")
+for fragment in (
+    'data-testid="vendor-work-entry-pending-items-helper"',
+    'data-testid="vendor-work-entry-pending-items-count"',
+):
+    if fragment not in vendor_work_entry_page_html:
+        raise SystemExit(f"vendor work entry pending items missing fragment: {fragment}")
+if (
+    'data-testid="vendor-work-entry-pending-items-list"' not in vendor_work_entry_page_html
+    and 'data-testid="vendor-work-entry-pending-items-empty"' not in vendor_work_entry_page_html
+):
+    raise SystemExit("vendor work entry pending items should render either list or empty state")
 for fragment in (
     'data-testid="vendor-work-entry-history-list"',
     'data-testid="vendor-work-entry-history-item"',
