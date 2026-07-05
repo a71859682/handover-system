@@ -5999,6 +5999,13 @@ vendor_not_in_sheet = client.post(
 )
 if vendor_not_in_sheet.status_code != 404:
     raise SystemExit("vendor not in sheet should be rejected with 404")
+vendor_not_in_sheet_payload = vendor_not_in_sheet.get_json()
+if vendor_not_in_sheet_payload.get("ok") is not False:
+    raise SystemExit("vendor not in sheet should return ok=false")
+if vendor_not_in_sheet_payload["error"]["code"] != "vendor_not_in_sheet":
+    raise SystemExit("vendor not in sheet should preserve vendor_not_in_sheet error code")
+if vendor_not_in_sheet_payload["error"]["message"] != "vendor_name does not belong to the requested sheet.":
+    raise SystemExit("vendor not in sheet should preserve deterministic error message")
 if count_entries(1, "VendorAllowedDefaultEntry") != before_vendor_not_in_sheet:
     raise SystemExit("vendor-not-in-sheet rejection must not affect existing rows")
 
