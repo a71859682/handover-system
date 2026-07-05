@@ -5859,6 +5859,11 @@ same_site_create = client.post(
 )
 if same_site_create.status_code != 200 or not same_site_create.get_json().get("ok"):
     raise SystemExit("same-site vendor-work-entry create should succeed")
+same_site_create_payload = same_site_create.get_json()
+if set(same_site_create_payload.keys()) != {"ok", "entry"}:
+    raise SystemExit("same-site vendor-work-entry create should preserve top-level response shape")
+if not isinstance(same_site_create_payload.get("entry"), dict):
+    raise SystemExit("same-site vendor-work-entry create should return entry payload")
 if count_entries(1, "VendorAllowedDefaultEntry") != 2:
     raise SystemExit("same-site vendor-work-entry create should insert a new row")
 
