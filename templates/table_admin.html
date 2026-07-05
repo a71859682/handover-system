@@ -127,11 +127,18 @@
 
   <section class="admin-section">
     <h2>&#27155;&#23652;&#33287;&#25142;&#21029;&#35373;&#23450;</h2>
-    <div class="inline-form add-row">
-      <input name="new_floor_name" placeholder="&#27155;&#23652;&#21517;&#31281;">
-      <input name="new_floor_block" placeholder="&#26847;&#21029;">
-      <button type="submit" name="action" value="add_floor">&#26032;&#22686;&#27155;&#23652;</button>
+    <div
+      class="inline-form add-row"
+      data-floor-write-enabled="{{ 'true' if floor_write_enabled else 'false' }}"
+      data-floor-write-block-reason="{{ floor_write_block_reason }}"
+    >
+      <input name="new_floor_name" placeholder="&#27155;&#23652;&#21517;&#31281;" {{ 'disabled' if not floor_write_enabled else '' }}>
+      <input name="new_floor_block" placeholder="&#26847;&#21029;" {{ 'disabled' if not floor_write_enabled else '' }}>
+      <button type="submit" name="action" value="add_floor" {{ 'disabled' if not floor_write_enabled else '' }}>&#26032;&#22686;&#27155;&#23652;</button>
     </div>
+    {% if floor_write_block_message %}
+    <p class="helper-text" data-floor-write-blocked="true">{{ floor_write_block_message }}</p>
+    {% endif %}
     {% for floor in floors %}
     <details class="floor-edit" data-floor-id="{{ floor.id }}">
       <summary>{{ floor.name }} - {{ floor.unit_count }} &#25142;</summary>
@@ -155,7 +162,7 @@
         </label>
         {% endfor %}
       </div>
-      <button type="submit" name="action" value="delete_floor:{{ floor.id }}" class="danger-button" onclick="return confirm('&#30906;&#23450;&#21034;&#38500;&#27492;&#27155;&#23652;&#33287;&#20840;&#37096;&#25142;&#21029;&#65311;')">&#21034;&#38500;&#25972;&#20491;&#27155;&#23652;</button>
+      <button type="submit" name="action" value="delete_floor:{{ floor.id }}" class="danger-button" onclick="return confirm('&#30906;&#23450;&#21034;&#38500;&#27492;&#27155;&#23652;&#33287;&#20840;&#37096;&#25142;&#21029;&#65311;')" {{ 'disabled' if not floor_write_enabled else '' }}>&#21034;&#38500;&#25972;&#20491;&#27155;&#23652;</button>
     </details>
     {% endfor %}
   </section>

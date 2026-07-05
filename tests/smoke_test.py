@@ -2651,6 +2651,18 @@ if before_cross_floors != after_cross_floors:
 if unexpected_floor is not None:
     raise SystemExit("add_floor cross-site should not create floor row")
 
+set_admin_session()
+missing_site_page = client.get(f"/admin/table?sheet_id={sheet_a}")
+missing_site_html = missing_site_page.get_data(as_text=True)
+if missing_site_page.status_code != 200:
+    raise SystemExit("floor admin page should still render without current site")
+if 'data-floor-write-enabled="false"' not in missing_site_html:
+    raise SystemExit("floor admin page should disable writes when current site is missing")
+if 'data-floor-write-block-reason="missing_current_site"' not in missing_site_html:
+    raise SystemExit("floor admin page should mark missing current-site block reason")
+if 'data-floor-write-blocked="true"' not in missing_site_html:
+    raise SystemExit("floor admin page should show blocked-state helper message")
+
 set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
 with module.db() as conn:
     before_delete_floor = conn.execute("SELECT COUNT(*) FROM floors WHERE id = ?", (floor_a,)).fetchone()[0]
