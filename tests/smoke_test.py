@@ -6695,6 +6695,7 @@ if vendor_work_entry_page.status_code != 200:
 vendor_work_entry_page_html = vendor_work_entry_page.get_data(as_text=True)
 for fragment in (
     'data-testid="vendor-work-entry-readiness-summary"',
+    'data-testid="vendor-work-entry-draft-submit"',
     'data-testid="vendor-work-entry-profile"',
     'data-testid="vendor-work-entry-scope"',
     'data-testid="vendor-work-entry-preview"',
@@ -6717,6 +6718,15 @@ for fragment in (
 ):
     if fragment not in vendor_work_entry_page_html:
         raise SystemExit(f"vendor work entry readiness summary missing fragment: {fragment}")
+for fragment in (
+    'data-testid="vendor-work-entry-draft-business-date"',
+    'data-testid="vendor-work-entry-draft-planned-at"',
+    'data-testid="vendor-work-entry-draft-submit-button"',
+    'data-testid="vendor-work-entry-draft-submit-helper"',
+    "disabled",
+):
+    if fragment not in vendor_work_entry_page_html:
+        raise SystemExit(f"vendor work entry draft submit preparation missing fragment: {fragment}")
 
 vendor_profile = client.get("/vendor/profile", follow_redirects=False)
 if vendor_profile.status_code != 200:

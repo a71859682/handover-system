@@ -3836,11 +3836,25 @@ def vendor_work_entry_page():
         "pending_items": vendor_pending_items,
         "pending_item_count": len(vendor_pending_items),
     }
+    draft_submit_preparation = {
+        "sheet_id": preflight_context.get("sheet_id"),
+        "business_date": business_date,
+        "vendor_name": str(profile_payload["vendor_name"]),
+        "entry_id": preflight_context.get("entry_id"),
+        "write_mode": preflight_context.get("write_mode"),
+        "planned_at": str((today_entry or {}).get("planned_at", "")),
+        "planned_headcount": int((today_entry or {}).get("planned_headcount", 0) or 0),
+        "actual_headcount": int((today_entry or {}).get("actual_headcount", 0) or 0),
+        "work_content": str((today_entry or {}).get("work_content", "")),
+        "work_headcount": int((today_entry or {}).get("work_headcount", 0) or 0),
+        "entry_order": int((today_entry or {}).get("entry_order", 0) or 0),
+    }
 
     return render_template(
         "vendor_work_entry.html",
         settings=query_settings(),
         profile_payload=profile_payload,
+        draft_submit_preparation=draft_submit_preparation,
         readiness_summary=readiness_summary,
         scope_payload=scope_payload,
         preview_payload=preview_payload,

@@ -59,6 +59,79 @@
   </ul>
 </section>
 
+<section class="admin-section" data-testid="vendor-work-entry-draft-submit">
+  <h2>Draft Submit Preparation</h2>
+  <p data-testid="vendor-work-entry-draft-submit-helper">
+    送出功能尚未啟用，本區目前僅供草稿填寫準備。
+  </p>
+  <div class="settings-grid">
+    <label>Trusted Sheet
+      <span data-testid="vendor-work-entry-draft-sheet-id">{{ draft_submit_preparation.sheet_id if draft_submit_preparation.sheet_id is not none else '' }}</span>
+    </label>
+    <label>Trusted Business Date
+      <span data-testid="vendor-work-entry-draft-business-date">{{ draft_submit_preparation.business_date }}</span>
+    </label>
+    <label>Trusted Vendor
+      <span data-testid="vendor-work-entry-draft-vendor-name">{{ draft_submit_preparation.vendor_name }}</span>
+    </label>
+    <label>Trusted Entry ID
+      <span data-testid="vendor-work-entry-draft-entry-id">{{ draft_submit_preparation.entry_id if draft_submit_preparation.entry_id is not none else '' }}</span>
+    </label>
+    <label>Trusted Write Mode
+      <span data-testid="vendor-work-entry-draft-write-mode">{{ draft_submit_preparation.write_mode or '' }}</span>
+    </label>
+  </div>
+  <form data-testid="vendor-work-entry-draft-form">
+    <div class="settings-grid">
+      <label>Planned At
+        <input
+          data-testid="vendor-work-entry-draft-planned-at"
+          type="text"
+          value="{{ draft_submit_preparation.planned_at }}"
+        >
+      </label>
+      <label>Planned Headcount
+        <input
+          data-testid="vendor-work-entry-draft-planned-headcount"
+          type="number"
+          value="{{ draft_submit_preparation.planned_headcount }}"
+        >
+      </label>
+      <label>Actual Headcount
+        <input
+          data-testid="vendor-work-entry-draft-actual-headcount"
+          type="number"
+          value="{{ draft_submit_preparation.actual_headcount }}"
+        >
+      </label>
+      <label>Work Headcount
+        <input
+          data-testid="vendor-work-entry-draft-work-headcount"
+          type="number"
+          value="{{ draft_submit_preparation.work_headcount }}"
+        >
+      </label>
+      <label>Entry Order
+        <input
+          data-testid="vendor-work-entry-draft-entry-order"
+          type="number"
+          value="{{ draft_submit_preparation.entry_order }}"
+        >
+      </label>
+      <label>Work Content
+        <textarea data-testid="vendor-work-entry-draft-work-content">{{ draft_submit_preparation.work_content }}</textarea>
+      </label>
+    </div>
+    <button
+      type="button"
+      disabled
+      data-testid="vendor-work-entry-draft-submit-button"
+    >
+      Submit (Coming Soon)
+    </button>
+  </form>
+</section>
+
 <section class="admin-section" data-testid="vendor-work-entry-profile">
   <h2>Profile</h2>
   <pre data-testid="vendor-work-entry-profile-json">{{ profile_payload | tojson(indent=2) }}</pre>
