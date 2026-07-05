@@ -6597,6 +6597,14 @@ if vendor_profile.status_code != 200:
 vendor_profile_payload = vendor_profile.get_json()
 if not isinstance(vendor_profile_payload, dict) or vendor_profile_payload.get("ok") is not True:
     raise SystemExit("vendor profile should return ok=true payload")
+expected_vendor_profile_keys = {
+    "ok",
+    "vendor_account_id",
+    "vendor_username",
+    "vendor_name",
+}
+if set(vendor_profile_payload.keys()) != expected_vendor_profile_keys:
+    raise SystemExit("vendor profile should keep stable top-level response shape")
 if vendor_profile_payload.get("vendor_account_id") is None:
     raise SystemExit("vendor profile should return vendor_account_id")
 if vendor_profile_payload.get("vendor_username") != "vendor_active":
