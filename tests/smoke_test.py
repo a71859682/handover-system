@@ -6694,6 +6694,12 @@ if vendor_work_entry_page.status_code != 200:
     raise SystemExit("vendor authenticated work entry page should return 200")
 vendor_work_entry_page_html = vendor_work_entry_page.get_data(as_text=True)
 for fragment in (
+    'data-testid="vendor-work-entry-today-entries"',
+    'data-testid="vendor-work-entry-today-entry-count"',
+    'data-testid="vendor-work-entry-today-entry-list"',
+    'data-testid="vendor-work-entry-today-entry-item"',
+    'data-testid="vendor-work-entry-today-entry-switch"',
+    'data-testid="vendor-work-entry-today-entry-active"',
     'data-testid="vendor-work-entry-readiness-summary"',
     'data-testid="vendor-work-entry-pending-items"',
     'data-testid="vendor-work-entry-draft-submit"',
@@ -6709,6 +6715,8 @@ for fragment in (
 ):
     if fragment not in vendor_work_entry_page_html:
         raise SystemExit(f"vendor work entry page missing fragment: {fragment}")
+if "2000-01-01 09:00" not in vendor_work_entry_page_html or "2000-01-01 10:00" not in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry page should render today's multiple planned entries")
 for fragment in (
     'data-testid="vendor-work-entry-summary-business-date"',
     'data-testid="vendor-work-entry-summary-vendor-name"',
@@ -6759,6 +6767,33 @@ for fragment in (
         raise SystemExit(f"vendor work entry draft submit preparation missing fragment: {fragment}")
 if 'data-testid="vendor-work-entry-draft-submit-button" disabled' in vendor_work_entry_page_html:
     raise SystemExit("vendor work entry draft submit button should be enabled for first write wiring")
+
+vendor_work_entry_page_first_today_entry = client.get(
+    "/vendor/work-entry?today_entry_index=0",
+    follow_redirects=False,
+)
+if vendor_work_entry_page_first_today_entry.status_code != 200:
+    raise SystemExit("vendor work entry page should return 200 when today entry index is 0")
+
+vendor_work_entry_page_second_today_entry = client.get(
+    "/vendor/work-entry?today_entry_index=1",
+    follow_redirects=False,
+)
+if vendor_work_entry_page_second_today_entry.status_code != 200:
+    raise SystemExit("vendor work entry page should return 200 when switching today entry index")
+vendor_work_entry_page_second_today_entry_html = vendor_work_entry_page_second_today_entry.get_data(as_text=True)
+for fragment in (
+    'data-testid="vendor-work-entry-today-entries"',
+    'data-testid="vendor-work-entry-today-entry-count"',
+    'data-testid="vendor-work-entry-today-entry-active"',
+    'data-testid="vendor-work-entry-readiness-summary"',
+    'data-testid="vendor-work-entry-draft-submit"',
+    'data-testid="vendor-work-entry-history"',
+    'data-testid="vendor-work-entry-pending-items"',
+    "2000-01-01 10:00",
+):
+    if fragment not in vendor_work_entry_page_second_today_entry_html:
+        raise SystemExit(f"vendor work entry page missing switched today entry fragment: {fragment}")
 
 vendor_work_entry_submit_result_page = client.get(
     "/vendor/work-entry?submit_status=success&submit_mode=create",

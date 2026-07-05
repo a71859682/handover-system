@@ -27,6 +27,40 @@
 </section>
 {% endif %}
 
+<section class="admin-section" data-testid="vendor-work-entry-today-entries">
+  <h2>Today Planned Entries</h2>
+  <p data-testid="vendor-work-entry-today-entries-helper">
+    You can switch the entry currently being viewed for today without changing submit target or write behavior.
+  </p>
+  <p>
+    Today's entry count:
+    <span data-testid="vendor-work-entry-today-entry-count">{{ today_entries_summary.entry_count }}</span>
+  </p>
+  {% if today_entries_summary.entries %}
+  <ul data-testid="vendor-work-entry-today-entry-list">
+    {% for entry in today_entries_summary.entries %}
+    <li data-testid="vendor-work-entry-today-entry-item">
+      <a
+        href="{{ url_for('vendor_work_entry_page', today_entry_index=loop.index0) }}"
+        data-testid="vendor-work-entry-today-entry-switch"
+      >
+        View entry {{ loop.index }}
+      </a>
+      <span data-testid="vendor-work-entry-today-entry-business-date">{{ entry.business_date }}</span>
+      <span data-testid="vendor-work-entry-today-entry-planned-at">{{ entry.planned_at }}</span>
+      <span data-testid="vendor-work-entry-today-entry-order">{{ entry.entry_order }}</span>
+      <span data-testid="vendor-work-entry-today-entry-planned-headcount">{{ entry.planned_headcount }}</span>
+      {% if loop.index0 == today_entries_summary.active_index %}
+      <span data-testid="vendor-work-entry-today-entry-active">Currently viewing this entry.</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p data-testid="vendor-work-entry-today-entry-empty">There are no planned entries for today.</p>
+  {% endif %}
+</section>
+
 <section class="admin-section" data-testid="vendor-work-entry-readiness-summary">
   <h2>Today Readiness Summary</h2>
   <div class="settings-grid">

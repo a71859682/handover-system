@@ -3809,16 +3809,26 @@ def vendor_work_entry_page():
     pending_items = get_pending_items_by_vendor(preflight_sheet_id) if preflight_sheet_id is not None else {}
     vendor_pending_items = list(pending_items.get(str(business_identity["vendor_name"]), []))
     preview_entries = list(preview_payload.get("entries", []))
-    today_entry = next(
-        (
-            entry
-            for entry in preview_entries
-            if str(entry.get("business_date", "")) == business_date
-        ),
-        None,
-    )
+    today_entries = [
+        entry
+        for entry in preview_entries
+        if str(entry.get("business_date", "")) == business_date
+    ]
+    requested_active_today_entry_index = request.args.get("today_entry_index", "")
+    try:
+        active_today_entry_index = int(requested_active_today_entry_index)
+    except (TypeError, ValueError):
+        active_today_entry_index = 0
+    if active_today_entry_index < 0 or active_today_entry_index >= len(today_entries):
+        active_today_entry_index = 0
+    active_today_entry = today_entries[active_today_entry_index] if today_entries else None
     preflight_context = preflight_payload.get("preflight") if isinstance(preflight_payload, dict) else {}
-    has_work_content = bool(str((today_entry or {}).get("work_content", "")).strip())
+    has_work_content = bool(str((active_today_entry or {}).get("work_content", "")).strip())
+    today_entries_summary = {
+        "entry_count": len(today_entries),
+        "active_index": active_today_entry_index,
+        "entries": today_entries,
+    }
     readiness_summary = {
         "vendor_name": str(profile_payload["vendor_name"]),
         "vendor_username": str(profile_payload["vendor_username"]),
@@ -3827,12 +3837,12 @@ def vendor_work_entry_page():
         "sheet_id": preflight_context.get("sheet_id"),
         "write_mode": preflight_context.get("write_mode"),
         "entry_id": preflight_context.get("entry_id"),
-        "has_today_entry": today_entry is not None,
-        "planned_at": str((today_entry or {}).get("planned_at", "")),
-        "planned_headcount": int((today_entry or {}).get("planned_headcount", 0) or 0),
-        "actual_headcount": int((today_entry or {}).get("actual_headcount", 0) or 0),
+        "has_today_entry": active_today_entry is not None,
+        "planned_at": str((active_today_entry or {}).get("planned_at", "")),
+        "planned_headcount": int((active_today_entry or {}).get("planned_headcount", 0) or 0),
+        "actual_headcount": int((active_today_entry or {}).get("actual_headcount", 0) or 0),
         "has_work_content": has_work_content,
-        "work_headcount": int((today_entry or {}).get("work_headcount", 0) or 0),
+        "work_headcount": int((active_today_entry or {}).get("work_headcount", 0) or 0),
         "pending_items": vendor_pending_items,
         "pending_item_count": len(vendor_pending_items),
     }
@@ -3842,12 +3852,12 @@ def vendor_work_entry_page():
         "vendor_name": str(profile_payload["vendor_name"]),
         "entry_id": preflight_context.get("entry_id"),
         "write_mode": preflight_context.get("write_mode"),
-        "planned_at": str((today_entry or {}).get("planned_at", "")),
-        "planned_headcount": int((today_entry or {}).get("planned_headcount", 0) or 0),
-        "actual_headcount": int((today_entry or {}).get("actual_headcount", 0) or 0),
-        "work_content": str((today_entry or {}).get("work_content", "")),
-        "work_headcount": int((today_entry or {}).get("work_headcount", 0) or 0),
-        "entry_order": int((today_entry or {}).get("entry_order", 0) or 0),
+        "planned_at": str((active_today_entry or {}).get("planned_at", "")),
+        "planned_headcount": int((active_today_entry or {}).get("planned_headcount", 0) or 0),
+        "actual_headcount": int((active_today_entry or {}).get("actual_headcount", 0) or 0),
+        "work_content": str((active_today_entry or {}).get("work_content", "")),
+        "work_headcount": int((active_today_entry or {}).get("work_headcount", 0) or 0),
+        "entry_order": int((active_today_entry or {}).get("entry_order", 0) or 0),
     }
     submit_result = {
         "status": str(request.args.get("submit_status", "") or ""),
@@ -3860,6 +3870,7 @@ def vendor_work_entry_page():
         profile_payload=profile_payload,
         draft_submit_preparation=draft_submit_preparation,
         readiness_summary=readiness_summary,
+        today_entries_summary=today_entries_summary,
         submit_result=submit_result,
         scope_payload=scope_payload,
         preview_payload=preview_payload,
