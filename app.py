@@ -3806,11 +3806,42 @@ def vendor_work_entry_page():
                     business_date=business_date,
                 ),
             }
+    pending_items = get_pending_items_by_vendor(preflight_sheet_id) if preflight_sheet_id is not None else {}
+    vendor_pending_items = list(pending_items.get(str(business_identity["vendor_name"]), []))
+    preview_entries = list(preview_payload.get("entries", []))
+    today_entry = next(
+        (
+            entry
+            for entry in preview_entries
+            if str(entry.get("business_date", "")) == business_date
+        ),
+        None,
+    )
+    preflight_context = preflight_payload.get("preflight") if isinstance(preflight_payload, dict) else {}
+    has_work_content = bool(str((today_entry or {}).get("work_content", "")).strip())
+    readiness_summary = {
+        "vendor_name": str(profile_payload["vendor_name"]),
+        "vendor_username": str(profile_payload["vendor_username"]),
+        "business_date": business_date,
+        "preflight_available": preflight_payload is not None,
+        "sheet_id": preflight_context.get("sheet_id"),
+        "write_mode": preflight_context.get("write_mode"),
+        "entry_id": preflight_context.get("entry_id"),
+        "has_today_entry": today_entry is not None,
+        "planned_at": str((today_entry or {}).get("planned_at", "")),
+        "planned_headcount": int((today_entry or {}).get("planned_headcount", 0) or 0),
+        "actual_headcount": int((today_entry or {}).get("actual_headcount", 0) or 0),
+        "has_work_content": has_work_content,
+        "work_headcount": int((today_entry or {}).get("work_headcount", 0) or 0),
+        "pending_items": vendor_pending_items,
+        "pending_item_count": len(vendor_pending_items),
+    }
 
     return render_template(
         "vendor_work_entry.html",
         settings=query_settings(),
         profile_payload=profile_payload,
+        readiness_summary=readiness_summary,
         scope_payload=scope_payload,
         preview_payload=preview_payload,
         preflight_payload=preflight_payload,

@@ -6694,6 +6694,7 @@ if vendor_work_entry_page.status_code != 200:
     raise SystemExit("vendor authenticated work entry page should return 200")
 vendor_work_entry_page_html = vendor_work_entry_page.get_data(as_text=True)
 for fragment in (
+    'data-testid="vendor-work-entry-readiness-summary"',
     'data-testid="vendor-work-entry-profile"',
     'data-testid="vendor-work-entry-scope"',
     'data-testid="vendor-work-entry-preview"',
@@ -6705,6 +6706,17 @@ for fragment in (
 ):
     if fragment not in vendor_work_entry_page_html:
         raise SystemExit(f"vendor work entry page missing fragment: {fragment}")
+for fragment in (
+    'data-testid="vendor-work-entry-summary-business-date"',
+    'data-testid="vendor-work-entry-summary-vendor-name"',
+    'data-testid="vendor-work-entry-summary-write-mode"',
+    'data-testid="vendor-work-entry-summary-pending-item-count"',
+    'data-testid="vendor-work-entry-summary-pending-items"',
+    "create",
+    "Vendor A",
+):
+    if fragment not in vendor_work_entry_page_html:
+        raise SystemExit(f"vendor work entry readiness summary missing fragment: {fragment}")
 
 vendor_profile = client.get("/vendor/profile", follow_redirects=False)
 if vendor_profile.status_code != 200:

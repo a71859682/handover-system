@@ -6,6 +6,59 @@
   <p>Vendor Home: {{ profile_payload.vendor_name }} ({{ profile_payload.vendor_username }})</p>
 </section>
 
+<section class="admin-section" data-testid="vendor-work-entry-readiness-summary">
+  <h2>Today Readiness Summary</h2>
+  <div class="settings-grid">
+    <label>Vendor
+      <span data-testid="vendor-work-entry-summary-vendor-name">{{ readiness_summary.vendor_name }}</span>
+    </label>
+    <label>Username
+      <span data-testid="vendor-work-entry-summary-vendor-username">{{ readiness_summary.vendor_username }}</span>
+    </label>
+    <label>Business Date
+      <span data-testid="vendor-work-entry-summary-business-date">{{ readiness_summary.business_date }}</span>
+    </label>
+    <label>Preflight Available
+      <span data-testid="vendor-work-entry-summary-preflight-available">{{ 'true' if readiness_summary.preflight_available else 'false' }}</span>
+    </label>
+    <label>Sheet
+      <span data-testid="vendor-work-entry-summary-sheet-id">{{ readiness_summary.sheet_id if readiness_summary.sheet_id is not none else '' }}</span>
+    </label>
+    <label>Write Mode
+      <span data-testid="vendor-work-entry-summary-write-mode">{{ readiness_summary.write_mode or '' }}</span>
+    </label>
+    <label>Entry ID
+      <span data-testid="vendor-work-entry-summary-entry-id">{{ readiness_summary.entry_id if readiness_summary.entry_id is not none else '' }}</span>
+    </label>
+    <label>Has Today Entry
+      <span data-testid="vendor-work-entry-summary-has-today-entry">{{ 'true' if readiness_summary.has_today_entry else 'false' }}</span>
+    </label>
+    <label>Planned At
+      <span data-testid="vendor-work-entry-summary-planned-at">{{ readiness_summary.planned_at }}</span>
+    </label>
+    <label>Planned Headcount
+      <span data-testid="vendor-work-entry-summary-planned-headcount">{{ readiness_summary.planned_headcount }}</span>
+    </label>
+    <label>Actual Headcount
+      <span data-testid="vendor-work-entry-summary-actual-headcount">{{ readiness_summary.actual_headcount }}</span>
+    </label>
+    <label>Has Work Content
+      <span data-testid="vendor-work-entry-summary-has-work-content">{{ 'true' if readiness_summary.has_work_content else 'false' }}</span>
+    </label>
+    <label>Work Headcount
+      <span data-testid="vendor-work-entry-summary-work-headcount">{{ readiness_summary.work_headcount }}</span>
+    </label>
+    <label>Pending Item Count
+      <span data-testid="vendor-work-entry-summary-pending-item-count">{{ readiness_summary.pending_item_count }}</span>
+    </label>
+  </div>
+  <ul data-testid="vendor-work-entry-summary-pending-items">
+    {% for item in readiness_summary.pending_items %}
+    <li>{{ item }}</li>
+    {% endfor %}
+  </ul>
+</section>
+
 <section class="admin-section" data-testid="vendor-work-entry-profile">
   <h2>Profile</h2>
   <pre data-testid="vendor-work-entry-profile-json">{{ profile_payload | tojson(indent=2) }}</pre>
