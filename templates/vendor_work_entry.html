@@ -300,6 +300,43 @@
   <pre data-testid="vendor-work-entry-preview-json">{{ preview_payload | tojson(indent=2) }}</pre>
 </section>
 
+<section class="admin-section" data-testid="vendor-work-entry-history">
+  <h2>進場紀錄</h2>
+  {% if preview_payload.entries %}
+  <div class="stack" data-testid="vendor-work-entry-history-list">
+    {% for entry in preview_payload.entries %}
+    <article class="admin-card" data-testid="vendor-work-entry-history-item">
+      <div class="settings-grid">
+        <label>Business Date
+          <span data-testid="vendor-work-entry-history-business-date">{{ entry.business_date }}</span>
+        </label>
+        <label>Planned At
+          <span data-testid="vendor-work-entry-history-planned-at">{{ entry.planned_at }}</span>
+        </label>
+        <label>Planned Headcount
+          <span data-testid="vendor-work-entry-history-planned-headcount">{{ entry.planned_headcount }}</span>
+        </label>
+        <label>Actual Headcount
+          <span data-testid="vendor-work-entry-history-actual-headcount">{{ entry.actual_headcount }}</span>
+        </label>
+        <label>Work Headcount
+          <span data-testid="vendor-work-entry-history-work-headcount">{{ entry.work_headcount }}</span>
+        </label>
+        <label>Has Work Content
+          <span data-testid="vendor-work-entry-history-has-work-content">{{ 'true' if entry.work_content | trim else 'false' }}</span>
+        </label>
+        <label>Entry Order
+          <span data-testid="vendor-work-entry-history-entry-order">{{ entry.entry_order }}</span>
+        </label>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p data-testid="vendor-work-entry-history-empty">No historical entries are available yet.</p>
+  {% endif %}
+</section>
+
 <section
   class="admin-section"
   data-testid="vendor-work-entry-preflight"
