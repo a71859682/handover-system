@@ -6731,6 +6731,25 @@ for fragment in (
 if 'data-testid="vendor-work-entry-draft-submit-button" disabled' in vendor_work_entry_page_html:
     raise SystemExit("vendor work entry draft submit button should be enabled for first write wiring")
 
+vendor_work_entry_submit_result_page = client.get(
+    "/vendor/work-entry?submit_status=success&submit_mode=create",
+    follow_redirects=False,
+)
+if vendor_work_entry_submit_result_page.status_code != 200:
+    raise SystemExit("vendor work entry submit result page should return 200")
+vendor_work_entry_submit_result_html = vendor_work_entry_submit_result_page.get_data(as_text=True)
+for fragment in (
+    'data-testid="vendor-work-entry-submit-result"',
+    'data-testid="vendor-work-entry-submit-result-status"',
+    'data-testid="vendor-work-entry-submit-result-mode"',
+    'data-testid="vendor-work-entry-readiness-summary"',
+    "Submit successful.",
+    "create",
+    business_date,
+):
+    if fragment not in vendor_work_entry_submit_result_html:
+        raise SystemExit(f"vendor work entry submit result page missing fragment: {fragment}")
+
 vendor_profile = client.get("/vendor/profile", follow_redirects=False)
 if vendor_profile.status_code != 200:
     raise SystemExit("vendor authenticated profile should return 200")

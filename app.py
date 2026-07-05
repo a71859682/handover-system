@@ -3849,6 +3849,10 @@ def vendor_work_entry_page():
         "work_headcount": int((today_entry or {}).get("work_headcount", 0) or 0),
         "entry_order": int((today_entry or {}).get("entry_order", 0) or 0),
     }
+    submit_result = {
+        "status": str(request.args.get("submit_status", "") or ""),
+        "mode": str(request.args.get("submit_mode", "") or ""),
+    }
 
     return render_template(
         "vendor_work_entry.html",
@@ -3856,6 +3860,7 @@ def vendor_work_entry_page():
         profile_payload=profile_payload,
         draft_submit_preparation=draft_submit_preparation,
         readiness_summary=readiness_summary,
+        submit_result=submit_result,
         scope_payload=scope_payload,
         preview_payload=preview_payload,
         preflight_payload=preflight_payload,

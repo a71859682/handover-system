@@ -6,6 +6,27 @@
   <p>Vendor Home: {{ profile_payload.vendor_name }} ({{ profile_payload.vendor_username }})</p>
 </section>
 
+{% if submit_result.status == "success" %}
+<section class="admin-section" data-testid="vendor-work-entry-submit-result">
+  <h2>Submit Result</h2>
+  <p data-testid="vendor-work-entry-submit-result-status">Submit successful.</p>
+  <div class="settings-grid">
+    <label>Submit Mode
+      <span data-testid="vendor-work-entry-submit-result-mode">{{ submit_result.mode }}</span>
+    </label>
+    <label>Entry ID
+      <span data-testid="vendor-work-entry-submit-result-entry-id">{{ readiness_summary.entry_id if readiness_summary.entry_id is not none else '' }}</span>
+    </label>
+    <label>Has Today Entry
+      <span data-testid="vendor-work-entry-submit-result-has-today-entry">{{ 'true' if readiness_summary.has_today_entry else 'false' }}</span>
+    </label>
+    <label>Business Date
+      <span data-testid="vendor-work-entry-submit-result-business-date">{{ readiness_summary.business_date }}</span>
+    </label>
+  </div>
+</section>
+{% endif %}
+
 <section class="admin-section" data-testid="vendor-work-entry-readiness-summary">
   <h2>Today Readiness Summary</h2>
   <div class="settings-grid">
@@ -231,7 +252,12 @@
           successMessage.textContent = "Draft submitted successfully. Reloading...";
           successMessage.hidden = false;
         }
-        window.setTimeout(() => window.location.reload(), 300);
+        const draftWriteModeElement = document.querySelector('[data-testid="vendor-work-entry-draft-write-mode"]');
+        const submitMode = (draftWriteModeElement && draftWriteModeElement.textContent ? draftWriteModeElement.textContent : "").trim() || "create";
+        const reloadUrl = new URL(window.location.href);
+        reloadUrl.searchParams.set("submit_status", "success");
+        reloadUrl.searchParams.set("submit_mode", submitMode);
+        window.setTimeout(() => window.location.assign(reloadUrl.toString()), 300);
       } catch (error) {
         if (errorMessage) {
           errorMessage.textContent = error instanceof Error ? error.message : "Submit failed.";
