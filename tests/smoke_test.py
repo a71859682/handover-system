@@ -6620,6 +6620,9 @@ if vendor_scope.status_code != 200:
 vendor_scope_payload = vendor_scope.get_json()
 if not isinstance(vendor_scope_payload, dict) or vendor_scope_payload.get("ok") is not True:
     raise SystemExit("vendor scope should return ok=true payload")
+expected_vendor_scope_keys = {"ok", "scope"}
+if set(vendor_scope_payload.keys()) != expected_vendor_scope_keys:
+    raise SystemExit("vendor scope should keep stable top-level response shape")
 scope = vendor_scope_payload.get("scope")
 if not isinstance(scope, dict):
     raise SystemExit("vendor scope should return scope object")
