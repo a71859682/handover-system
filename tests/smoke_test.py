@@ -6722,6 +6722,8 @@ for fragment in (
     'data-testid="vendor-work-entry-draft-business-date"',
     'data-testid="vendor-work-entry-draft-planned-at"',
     'data-testid="vendor-work-entry-draft-submit-button"',
+    'data-testid="vendor-work-entry-draft-context-group"',
+    'data-testid="vendor-work-entry-draft-work-group"',
     'data-vendor-work-entry-submit-url="/api/vendor-work-entry"',
     'data-vendor-work-entry-context="trusted"',
     'data-submit-enabled="true"',

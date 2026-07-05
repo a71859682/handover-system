@@ -81,28 +81,31 @@
 </section>
 
 <section class="admin-section" data-testid="vendor-work-entry-draft-submit">
-  <h2>Draft Submit Preparation</h2>
+  <h2>進場填報草稿</h2>
   <p data-testid="vendor-work-entry-draft-submit-helper">
-    Submit is now wired to the existing write API. This form remains limited to the current draft fields only.
+    請先確認下方進場資訊與施工內容。本頁僅整理既有送出欄位，不新增任何額外流程或規則。
   </p>
   <div data-testid="vendor-work-entry-draft-submit-success" hidden></div>
   <div data-testid="vendor-work-entry-draft-submit-error" hidden></div>
-  <div class="settings-grid">
-    <label>Trusted Sheet
+  <div data-testid="vendor-work-entry-draft-context-group">
+    <h3>Trusted Context（唯讀）</h3>
+    <div class="settings-grid">
+      <label>工地 Sheet
       <span data-testid="vendor-work-entry-draft-sheet-id">{{ draft_submit_preparation.sheet_id if draft_submit_preparation.sheet_id is not none else '' }}</span>
-    </label>
-    <label>Trusted Business Date
+      </label>
+      <label>施工日期
       <span data-testid="vendor-work-entry-draft-business-date">{{ draft_submit_preparation.business_date }}</span>
-    </label>
-    <label>Trusted Vendor
+      </label>
+      <label>廠商
       <span data-testid="vendor-work-entry-draft-vendor-name">{{ draft_submit_preparation.vendor_name }}</span>
-    </label>
-    <label>Trusted Entry ID
+      </label>
+      <label>Entry ID
       <span data-testid="vendor-work-entry-draft-entry-id">{{ draft_submit_preparation.entry_id if draft_submit_preparation.entry_id is not none else '' }}</span>
-    </label>
-    <label>Trusted Write Mode
+      </label>
+      <label>Write Mode
       <span data-testid="vendor-work-entry-draft-write-mode">{{ draft_submit_preparation.write_mode or '' }}</span>
-    </label>
+      </label>
+    </div>
   </div>
   <form
     data-testid="vendor-work-entry-draft-form"
@@ -134,60 +137,73 @@
       value="{{ draft_submit_preparation.entry_id if draft_submit_preparation.entry_id is not none else '' }}"
       data-testid="vendor-work-entry-draft-hidden-entry-id"
     >
-    <div class="settings-grid">
-      <label>Planned At
-        <input
-          data-testid="vendor-work-entry-draft-planned-at"
-          type="text"
-          name="planned_at"
-          value="{{ draft_submit_preparation.planned_at }}"
-        >
-      </label>
-      <label>Planned Headcount
-        <input
-          data-testid="vendor-work-entry-draft-planned-headcount"
-          type="number"
-          name="planned_headcount"
-          value="{{ draft_submit_preparation.planned_headcount }}"
-        >
-      </label>
-      <label>Actual Headcount
-        <input
-          data-testid="vendor-work-entry-draft-actual-headcount"
-          type="number"
-          name="actual_headcount"
-          value="{{ draft_submit_preparation.actual_headcount }}"
-        >
-      </label>
-      <label>Work Headcount
-        <input
-          data-testid="vendor-work-entry-draft-work-headcount"
-          type="number"
-          name="work_headcount"
-          value="{{ draft_submit_preparation.work_headcount }}"
-        >
-      </label>
-      <label>Entry Order
-        <input
-          data-testid="vendor-work-entry-draft-entry-order"
-          type="number"
-          name="entry_order"
-          value="{{ draft_submit_preparation.entry_order }}"
-        >
-      </label>
-      <label>Work Content
-        <textarea
-          data-testid="vendor-work-entry-draft-work-content"
-          name="work_content"
-        >{{ draft_submit_preparation.work_content }}</textarea>
-      </label>
+    <div data-testid="vendor-work-entry-draft-entry-group">
+      <h3>進場資訊</h3>
+      <div class="settings-grid">
+        <label>預計進場時間
+          <input
+            data-testid="vendor-work-entry-draft-planned-at"
+            type="text"
+            name="planned_at"
+            value="{{ draft_submit_preparation.planned_at }}"
+          >
+        </label>
+        <label>預計進場人數
+          <input
+            data-testid="vendor-work-entry-draft-planned-headcount"
+            type="number"
+            name="planned_headcount"
+            value="{{ draft_submit_preparation.planned_headcount }}"
+          >
+        </label>
+        <label>實際進場人數
+          <input
+            data-testid="vendor-work-entry-draft-actual-headcount"
+            type="number"
+            name="actual_headcount"
+            value="{{ draft_submit_preparation.actual_headcount }}"
+          >
+        </label>
+      </div>
+    </div>
+    <div data-testid="vendor-work-entry-draft-work-group">
+      <h3>施工內容</h3>
+      <div class="settings-grid">
+        <label>工作內容
+          <textarea
+            data-testid="vendor-work-entry-draft-work-content"
+            name="work_content"
+          >{{ draft_submit_preparation.work_content }}</textarea>
+        </label>
+        <label>工作人數
+          <input
+            data-testid="vendor-work-entry-draft-work-headcount"
+            type="number"
+            name="work_headcount"
+            value="{{ draft_submit_preparation.work_headcount }}"
+          >
+        </label>
+      </div>
+    </div>
+    <div data-testid="vendor-work-entry-draft-advanced-group">
+      <h3>其他</h3>
+      <div class="settings-grid">
+        <label>Entry Order（進階資訊）
+          <input
+            data-testid="vendor-work-entry-draft-entry-order"
+            type="number"
+            name="entry_order"
+            value="{{ draft_submit_preparation.entry_order }}"
+          >
+        </label>
+      </div>
     </div>
     <button
       type="submit"
       data-testid="vendor-work-entry-draft-submit-button"
       data-submit-enabled="true"
     >
-      Submit Draft
+      送出草稿
     </button>
   </form>
 </section>
