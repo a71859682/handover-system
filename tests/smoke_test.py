@@ -5984,6 +5984,13 @@ permission_removed = client.post(
 )
 if permission_removed.status_code != 403:
     raise SystemExit("permission removed should reject vendor-work-entry write with 403")
+permission_removed_payload = permission_removed.get_json()
+if permission_removed_payload.get("ok") is not False:
+    raise SystemExit("permission removed should return ok=false")
+if permission_removed_payload["error"]["code"] != "site_permission_missing":
+    raise SystemExit("permission removed should preserve site_permission_missing")
+if permission_removed_payload["error"]["message"] != "current user no longer has permission for the current site.":
+    raise SystemExit("permission removed should preserve deterministic error message")
 after_permission_removed = dict(fetch_entry(default_entry_id))
 if after_permission_removed != before_permission_removed:
     raise SystemExit("permission removed must not change existing vendor-work-entry row")
