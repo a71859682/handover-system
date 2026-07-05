@@ -76,14 +76,21 @@
 
   <section class="admin-section">
     <h2>&#39511;&#25910;&#65295;&#20132;&#23627;&#27396;&#20301;&#35373;&#23450;</h2>
-    <div class="inline-form add-row">
-      <input name="new_extra_name" placeholder="&#27396;&#20301;&#21517;&#31281;">
-      <select name="new_extra_type">
+    <div
+      class="inline-form add-row"
+      data-extra-field-write-enabled="{{ 'true' if extra_field_write_enabled else 'false' }}"
+      data-extra-field-write-block-reason="{{ extra_field_write_block_reason }}"
+    >
+      <input name="new_extra_name" placeholder="&#27396;&#20301;&#21517;&#31281;" {{ 'disabled' if not extra_field_write_enabled else '' }}>
+      <select name="new_extra_type" {{ 'disabled' if not extra_field_write_enabled else '' }}>
         <option value="date">&#26085;&#26399;</option>
         <option value="status">O/X</option>
       </select>
-      <button type="submit" name="action" value="add_extra_field">&#26032;&#22686;&#27396;&#20301;</button>
+      <button type="submit" name="action" value="add_extra_field" {{ 'disabled' if not extra_field_write_enabled else '' }}>&#26032;&#22686;&#27396;&#20301;</button>
     </div>
+    {% if extra_field_write_block_message %}
+    <p class="helper-text" data-extra-field-write-blocked="true">{{ extra_field_write_block_message }}</p>
+    {% endif %}
     <table class="edit-table">
       <thead>
         <tr>
@@ -104,7 +111,7 @@
               <option value="status" {{ 'selected' if field.field_type == 'status' else '' }}>O/X</option>
             </select>
           </td>
-          <td><button type="submit" name="action" value="delete_extra_field:{{ field.id }}" class="link-danger" onclick="return confirm('&#30906;&#23450;&#21034;&#38500;&#27492;&#27396;&#20301;&#65311;')">&#21034;&#38500;</button></td>
+          <td><button type="submit" name="action" value="delete_extra_field:{{ field.id }}" class="link-danger" onclick="return confirm('&#30906;&#23450;&#21034;&#38500;&#27492;&#27396;&#20301;&#65311;')" {{ 'disabled' if not extra_field_write_enabled else '' }}>&#21034;&#38500;</button></td>
         </tr>
         {% endfor %}
       </tbody>

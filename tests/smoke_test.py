@@ -3067,6 +3067,16 @@ if unexpected_row is not None:
     raise SystemExit("add_extra_field cross-site should not create a row")
 
 set_admin_session()
+missing_site_page = client.get(f"/admin/table?sheet_id={sheet_a}")
+missing_site_html = missing_site_page.get_data(as_text=True)
+if missing_site_page.status_code != 200:
+    raise SystemExit("extra field admin page should still render without current site")
+if 'data-extra-field-write-enabled="false"' not in missing_site_html:
+    raise SystemExit("extra field admin page should disable writes when current site is missing")
+if 'data-extra-field-write-block-reason="missing_current_site"' not in missing_site_html:
+    raise SystemExit("extra field admin page should mark missing current-site block reason")
+if 'data-extra-field-write-blocked="true"' not in missing_site_html:
+    raise SystemExit("extra field admin page should show blocked-state helper message")
 with module.db() as conn:
     before_missing = conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_a,)).fetchone()[0]
 add_missing = client.post(

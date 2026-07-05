@@ -4814,7 +4814,36 @@ def table_admin():
         extra_fields = conn.execute("SELECT * FROM extra_fields WHERE sheet_id = ? AND active = 1 ORDER BY sort_order, id", (sheet_id,)).fetchall()
         floors = conn.execute("SELECT * FROM floors WHERE sheet_id = ? ORDER BY sort_order", (sheet_id,)).fetchall()
         units = {floor["id"]: conn.execute("SELECT * FROM units WHERE floor_id = ? ORDER BY sort_order", (floor["id"],)).fetchall() for floor in floors}
-    return render_template("table_admin.html", settings=settings, sheets=sheets, current_sheet=current_sheet, tasks=tasks, extra_fields=extra_fields, floors=floors, units=units)
+        extra_field_write_enabled = True
+        extra_field_write_block_reason = ""
+        extra_field_write_block_message = ""
+        try:
+            authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+        except LookupError as exc:
+            code = exc.args[0] if exc.args else ""
+            if code == "site_context_invalid":
+                extra_field_write_enabled = False
+                extra_field_write_block_reason = "missing_current_site"
+                extra_field_write_block_message = "請先選擇目前工地，才能管理驗收／交屋欄位。"
+            elif code == "write_target_not_in_current_site":
+                extra_field_write_enabled = False
+                extra_field_write_block_reason = "sheet_not_in_current_site"
+                extra_field_write_block_message = "目前工地與此表單不一致，不能修改驗收／交屋欄位。"
+            else:
+                raise
+    return render_template(
+        "table_admin.html",
+        settings=settings,
+        sheets=sheets,
+        current_sheet=current_sheet,
+        tasks=tasks,
+        extra_fields=extra_fields,
+        floors=floors,
+        units=units,
+        extra_field_write_enabled=extra_field_write_enabled,
+        extra_field_write_block_reason=extra_field_write_block_reason,
+        extra_field_write_block_message=extra_field_write_block_message,
+    )
 
 
 bootstrap()
