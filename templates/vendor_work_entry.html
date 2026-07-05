@@ -46,12 +46,14 @@
       >
         View entry {{ loop.index }}
       </a>
+      <span data-testid="vendor-work-entry-today-entry-id">{{ entry.entry_id }}</span>
       <span data-testid="vendor-work-entry-today-entry-business-date">{{ entry.business_date }}</span>
       <span data-testid="vendor-work-entry-today-entry-planned-at">{{ entry.planned_at }}</span>
       <span data-testid="vendor-work-entry-today-entry-order">{{ entry.entry_order }}</span>
       <span data-testid="vendor-work-entry-today-entry-planned-headcount">{{ entry.planned_headcount }}</span>
       {% if loop.index0 == today_entries_summary.active_index %}
       <span data-testid="vendor-work-entry-today-entry-active">Currently viewing this entry.</span>
+      <span data-testid="vendor-work-entry-today-entry-active-id">{{ entry.entry_id }}</span>
       {% endif %}
     </li>
     {% endfor %}
@@ -75,6 +77,9 @@
     </label>
     <label>Preflight Available
       <span data-testid="vendor-work-entry-summary-preflight-available">{{ 'true' if readiness_summary.preflight_available else 'false' }}</span>
+    </label>
+    <label>Currently Viewed Entry ID
+      <span data-testid="vendor-work-entry-summary-active-entry-id">{{ readiness_summary.active_entry_id if readiness_summary.active_entry_id is not none else '' }}</span>
     </label>
     <label>Sheet
       <span data-testid="vendor-work-entry-summary-sheet-id">{{ readiness_summary.sheet_id if readiness_summary.sheet_id is not none else '' }}</span>

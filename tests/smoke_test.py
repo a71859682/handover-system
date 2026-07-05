@@ -6699,7 +6699,9 @@ for fragment in (
     'data-testid="vendor-work-entry-today-entry-list"',
     'data-testid="vendor-work-entry-today-entry-item"',
     'data-testid="vendor-work-entry-today-entry-switch"',
+    'data-testid="vendor-work-entry-today-entry-id"',
     'data-testid="vendor-work-entry-today-entry-active"',
+    'data-testid="vendor-work-entry-today-entry-active-id"',
     'data-testid="vendor-work-entry-readiness-summary"',
     'data-testid="vendor-work-entry-pending-items"',
     'data-testid="vendor-work-entry-draft-submit"',
@@ -6720,6 +6722,7 @@ if "2000-01-01 09:00" not in vendor_work_entry_page_html or "2000-01-01 10:00" n
 for fragment in (
     'data-testid="vendor-work-entry-summary-business-date"',
     'data-testid="vendor-work-entry-summary-vendor-name"',
+    'data-testid="vendor-work-entry-summary-active-entry-id"',
     'data-testid="vendor-work-entry-summary-write-mode"',
     'data-testid="vendor-work-entry-summary-pending-item-count"',
     'data-testid="vendor-work-entry-summary-pending-items"',
@@ -6785,8 +6788,11 @@ vendor_work_entry_page_second_today_entry_html = vendor_work_entry_page_second_t
 for fragment in (
     'data-testid="vendor-work-entry-today-entries"',
     'data-testid="vendor-work-entry-today-entry-count"',
+    'data-testid="vendor-work-entry-today-entry-id"',
     'data-testid="vendor-work-entry-today-entry-active"',
+    'data-testid="vendor-work-entry-today-entry-active-id"',
     'data-testid="vendor-work-entry-readiness-summary"',
+    'data-testid="vendor-work-entry-summary-active-entry-id"',
     'data-testid="vendor-work-entry-draft-submit"',
     'data-testid="vendor-work-entry-history"',
     'data-testid="vendor-work-entry-pending-items"',
@@ -6908,6 +6914,7 @@ if actual_entry_order != expected_entry_order:
     )
 for entry in entries:
     expected_entry_keys = {
+        "entry_id",
         "vendor_name",
         "business_date",
         "planned_at",
@@ -6919,6 +6926,8 @@ for entry in entries:
     }
     if set(entry.keys()) != expected_entry_keys:
         raise SystemExit("vendor business read preview entries should keep stable response shape")
+    if not isinstance(entry.get("entry_id"), int):
+        raise SystemExit("vendor business read preview entries must return int for entry_id")
     if entry.get("vendor_name") != "Vendor A":
         raise SystemExit("vendor business read preview must only return current vendor data")
     if "password_hash" in entry:

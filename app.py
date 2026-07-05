@@ -2344,7 +2344,7 @@ def fetch_vendor_business_read_preview(
 ) -> list[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT vendor_name, business_date, planned_at, planned_headcount,
+        SELECT id, vendor_name, business_date, planned_at, planned_headcount,
                actual_headcount, work_content, work_headcount, entry_order
         FROM vendor_work_entries
         WHERE vendor_name = ?
@@ -2375,6 +2375,7 @@ def serialize_vendor_business_read_preview(
 
 def serialize_vendor_business_read_entry(row: sqlite3.Row) -> dict[str, object]:
     return {
+        "entry_id": int(row["id"]),
         "vendor_name": str(row["vendor_name"]),
         "business_date": str(row["business_date"]),
         "planned_at": str(row["planned_at"] or ""),
@@ -3834,6 +3835,7 @@ def vendor_work_entry_page():
         "vendor_username": str(profile_payload["vendor_username"]),
         "business_date": business_date,
         "preflight_available": preflight_payload is not None,
+        "active_entry_id": (active_today_entry or {}).get("entry_id"),
         "sheet_id": preflight_context.get("sheet_id"),
         "write_mode": preflight_context.get("write_mode"),
         "entry_id": preflight_context.get("entry_id"),
