@@ -3066,6 +3066,27 @@ if before_cross != after_cross:
 if unexpected_row is not None:
     raise SystemExit("add_extra_field cross-site should not create a row")
 
+set_admin_session()
+with module.db() as conn:
+    before_missing = conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_a,)).fetchone()[0]
+add_missing = client.post(
+    f"/admin/table?sheet_id={sheet_a}",
+    data={"action": "add_extra_field", "new_extra_name": "Should Not Exist Missing Site", "new_extra_type": "text"},
+    follow_redirects=False,
+)
+if add_missing.status_code != 302 or not add_missing.headers.get("Location", "").endswith("/site-selector"):
+    raise SystemExit("add_extra_field missing current site should redirect to /site-selector")
+with module.db() as conn:
+    after_missing = conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_a,)).fetchone()[0]
+    missing_row = conn.execute(
+        "SELECT 1 FROM extra_fields WHERE sheet_id = ? AND name = ?",
+        (sheet_a, "Should Not Exist Missing Site"),
+    ).fetchone()
+if before_missing != after_missing:
+    raise SystemExit("add_extra_field missing current site should not change rows")
+if missing_row is not None:
+    raise SystemExit("add_extra_field missing current site should not create a row")
+
 set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
 with module.db() as conn:
     before_delete_active = conn.execute("SELECT active FROM extra_fields WHERE id = ?", (field_a,)).fetchone()[0]
