@@ -706,6 +706,7 @@ with module.db() as conn:
         "work_content",
         "work_headcount",
         "entry_order",
+        "pre_entry_requirement",
         "created_at",
         "updated_at",
     ):
@@ -1179,6 +1180,8 @@ with module.app.test_client() as client:
     inserted_entry = entry_insert.get_json()["entry"]
     if inserted_entry["business_date"] != business_date:
         raise SystemExit("/api/vendor-work-entry insert should default business_date from helper")
+    if "pre_entry_requirement" in inserted_entry:
+        raise SystemExit("/api/vendor-work-entry insert should preserve response contract without pre_entry_requirement")
 
     entry_update = client.post(
         "/api/vendor-work-entry",
@@ -1200,6 +1203,8 @@ with module.app.test_client() as client:
     updated_entry = entry_update.get_json()["entry"]
     if updated_entry["actual_headcount"] != 1 or updated_entry["work_content"] != "Insert Crew Updated":
         raise SystemExit("/api/vendor-work-entry update returned unexpected payload")
+    if "pre_entry_requirement" in updated_entry:
+        raise SystemExit("/api/vendor-work-entry update should preserve response contract without pre_entry_requirement")
 
     invalid_entry = client.post(
         "/api/vendor-work-entry",
@@ -1809,7 +1814,7 @@ with module.db() as conn:
     for required in (
         "id", "sheet_id", "vendor_name", "business_date", "planned_at",
         "planned_headcount", "actual_headcount", "work_content", "work_headcount",
-        "entry_order", "created_at", "updated_at",
+        "entry_order", "pre_entry_requirement", "created_at", "updated_at",
     ):
         if required not in vendor_work_entries_columns:
             raise SystemExit(f"vendor_work_entries missing required column: {required}")
@@ -1909,7 +1914,7 @@ with module.db() as conn:
                 raise SystemExit("legacy unique(sheet_id, vendor_name) should be removed after migration")
 
     work_columns = [col["name"] for col in conn.execute("PRAGMA table_info(vendor_work_entries)").fetchall()]
-    for required in ("sheet_id", "vendor_name", "business_date", "entry_order"):
+    for required in ("sheet_id", "vendor_name", "business_date", "entry_order", "pre_entry_requirement"):
         if required not in work_columns:
             raise SystemExit("vendor_work_entries should remain intact after vendor_contacts migration")
 
@@ -7665,6 +7670,8 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
     create_entry = create_response_payload.get("entry") if isinstance(create_response_payload, dict) else None
     if create_response_payload.get("ok") is not True or not isinstance(create_entry, dict):
         raise AssertionError("vendor submit pipeline regression smoke create path should preserve ok/entry response contract")
+    if "pre_entry_requirement" in create_entry:
+        raise AssertionError("vendor submit pipeline regression smoke create path should preserve response contract without pre_entry_requirement")
     if create_entry.get("id") is None or create_entry.get("vendor_name") != "Vendor A" or create_entry.get("entry_order") != 1:
         raise AssertionError("vendor submit pipeline regression smoke create path should preserve trusted create payload fields")
 
@@ -7687,6 +7694,8 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
     update_entry = update_response_payload.get("entry") if isinstance(update_response_payload, dict) else None
     if update_response_payload.get("ok") is not True or not isinstance(update_entry, dict):
         raise AssertionError("vendor submit pipeline regression smoke update path should preserve ok/entry response contract")
+    if "pre_entry_requirement" in update_entry:
+        raise AssertionError("vendor submit pipeline regression smoke update path should preserve response contract without pre_entry_requirement")
     if (
         int(update_entry.get("id") or 0) != int(first_entry_id)
         or update_entry.get("work_content") != "Vendor A Work Updated"

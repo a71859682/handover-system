@@ -2818,6 +2818,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
             work_content TEXT NOT NULL DEFAULT '',
             work_headcount INTEGER NOT NULL DEFAULT 0,
             entry_order INTEGER NOT NULL DEFAULT 0,
+            pre_entry_requirement TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
@@ -2839,6 +2840,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ON vendor_work_entries (business_date);
         """
     )
+    ensure_vendor_work_entries_schema(conn)
     ensure_vendor_contacts_schema(conn)
 
 
@@ -2854,6 +2856,59 @@ def seed_admin(conn: sqlite3.Connection) -> None:
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+
+
+def ensure_vendor_work_entries_schema(conn: sqlite3.Connection) -> None:
+    existing_tables = {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "vendor_work_entries" not in existing_tables:
+        conn.executescript(
+            """
+            CREATE TABLE vendor_work_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet_id INTEGER NOT NULL,
+                vendor_name TEXT NOT NULL,
+                business_date TEXT NOT NULL,
+                planned_at TEXT NOT NULL DEFAULT '',
+                planned_headcount INTEGER NOT NULL DEFAULT 0,
+                actual_headcount INTEGER NOT NULL DEFAULT 0,
+                work_content TEXT NOT NULL DEFAULT '',
+                work_headcount INTEGER NOT NULL DEFAULT 0,
+                entry_order INTEGER NOT NULL DEFAULT 0,
+                pre_entry_requirement TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
+            ON vendor_work_entries (sheet_id, business_date);
+
+            CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_vendor_date
+            ON vendor_work_entries (sheet_id, vendor_name, business_date);
+
+            CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_business_date
+            ON vendor_work_entries (business_date);
+            """
+        )
+        return
+
+    vendor_work_entry_columns = _table_columns(conn, "vendor_work_entries")
+    if "pre_entry_requirement" not in vendor_work_entry_columns:
+        conn.execute("ALTER TABLE vendor_work_entries ADD COLUMN pre_entry_requirement TEXT")
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
+        ON vendor_work_entries (sheet_id, business_date);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_vendor_date
+        ON vendor_work_entries (sheet_id, vendor_name, business_date);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_business_date
+        ON vendor_work_entries (business_date);
+        """
+    )
 
 
 def seed_default_site(conn: sqlite3.Connection) -> int:
@@ -3644,6 +3699,7 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
             work_content TEXT NOT NULL DEFAULT '',
             work_headcount INTEGER NOT NULL DEFAULT 0,
             entry_order INTEGER NOT NULL DEFAULT 0,
+            pre_entry_requirement TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
@@ -3659,6 +3715,7 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         ON vendor_work_entries (business_date);
         """
     )
+    ensure_vendor_work_entries_schema(conn)
     ensure_site_foundation_schema(conn)
     ensure_vendor_contacts_schema(conn)
 
