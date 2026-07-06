@@ -2453,6 +2453,83 @@ def resolve_vendor_work_entry_preflight_target(
     }
 
 
+def build_vendor_work_entry_draft_entry_defaults(
+    today_entries: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "planned_at": "",
+        "planned_headcount": 0,
+        "actual_headcount": 0,
+        "work_content": "",
+        "work_headcount": 0,
+        "entry_order": len(today_entries),
+    }
+
+
+def resolve_vendor_work_entry_draft_entry_source(
+    *,
+    is_new_entry_mode: bool,
+    active_today_entry: dict[str, object] | None,
+    today_entries: list[dict[str, object]],
+) -> dict[str, object]:
+    if is_new_entry_mode:
+        return build_vendor_work_entry_draft_entry_defaults(today_entries)
+    return active_today_entry or {}
+
+
+def build_vendor_work_entry_draft_submit_preparation(
+    *,
+    preflight_context: dict[str, object],
+    business_date: str,
+    vendor_name: str,
+    draft_entry_source: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "sheet_id": preflight_context.get("sheet_id"),
+        "business_date": business_date,
+        "vendor_name": vendor_name,
+        "entry_id": preflight_context.get("entry_id"),
+        "write_mode": preflight_context.get("write_mode"),
+        "planned_at": str(draft_entry_source.get("planned_at", "")),
+        "planned_headcount": int(draft_entry_source.get("planned_headcount", 0) or 0),
+        "actual_headcount": int(draft_entry_source.get("actual_headcount", 0) or 0),
+        "work_content": str(draft_entry_source.get("work_content", "")),
+        "work_headcount": int(draft_entry_source.get("work_headcount", 0) or 0),
+        "entry_order": int(draft_entry_source.get("entry_order", 0) or 0),
+    }
+
+
+def normalize_vendor_work_entry_submit_payload(data) -> dict[str, object]:
+    entry_id = parse_optional_positive_int(data.get("id"), field_name="id")
+    sheet_id = parse_non_negative_int(data.get("sheet_id"), field_name="sheet_id")
+    if sheet_id <= 0:
+        raise ValueError("sheet_id must be a positive integer.")
+    vendor_name = normalize_vendor_name(str(data.get("vendor_name", "")))
+    business_date = (
+        parse_crew_business_date(str(data.get("business_date", "")))
+        if str(data.get("business_date", "")).strip()
+        else resolve_crew_business_date()
+    )
+    planned_at = parse_crew_planned_at(str(data.get("planned_at", "")))
+    planned_headcount = parse_non_negative_int(data.get("planned_headcount", 0), field_name="planned_headcount")
+    actual_headcount = parse_non_negative_int(data.get("actual_headcount", 0), field_name="actual_headcount")
+    work_content = str(data.get("work_content", "")).strip()
+    work_headcount = parse_non_negative_int(data.get("work_headcount", 0), field_name="work_headcount")
+    entry_order = parse_non_negative_int(data.get("entry_order", 0), field_name="entry_order")
+    return {
+        "entry_id": entry_id,
+        "sheet_id": sheet_id,
+        "vendor_name": vendor_name,
+        "business_date": business_date,
+        "planned_at": planned_at,
+        "planned_headcount": planned_headcount,
+        "actual_headcount": actual_headcount,
+        "work_content": work_content,
+        "work_headcount": work_headcount,
+        "entry_order": entry_order,
+    }
+
+
 def build_vendor_work_entry_page_context(
     conn: sqlite3.Connection,
     vendor_account,
@@ -2518,15 +2595,11 @@ def build_vendor_work_entry_page_context(
         "entries": today_entries,
     }
     draft_mode = "create" if is_new_entry_mode else "selected_entry"
-    draft_entry_defaults = {
-        "planned_at": "",
-        "planned_headcount": 0,
-        "actual_headcount": 0,
-        "work_content": "",
-        "work_headcount": 0,
-        "entry_order": len(today_entries),
-    }
-    draft_entry_source = draft_entry_defaults if is_new_entry_mode else (active_today_entry or {})
+    draft_entry_source = resolve_vendor_work_entry_draft_entry_source(
+        is_new_entry_mode=is_new_entry_mode,
+        active_today_entry=active_today_entry,
+        today_entries=today_entries,
+    )
     readiness_summary = {
         "vendor_name": str(profile_payload["vendor_name"]),
         "vendor_username": str(profile_payload["vendor_username"]),
@@ -2545,19 +2618,12 @@ def build_vendor_work_entry_page_context(
         "pending_items": vendor_pending_items,
         "pending_item_count": len(vendor_pending_items),
     }
-    draft_submit_preparation = {
-        "sheet_id": preflight_context.get("sheet_id"),
-        "business_date": business_date,
-        "vendor_name": str(profile_payload["vendor_name"]),
-        "entry_id": preflight_context.get("entry_id"),
-        "write_mode": preflight_context.get("write_mode"),
-        "planned_at": str(draft_entry_source.get("planned_at", "")),
-        "planned_headcount": int(draft_entry_source.get("planned_headcount", 0) or 0),
-        "actual_headcount": int(draft_entry_source.get("actual_headcount", 0) or 0),
-        "work_content": str(draft_entry_source.get("work_content", "")),
-        "work_headcount": int(draft_entry_source.get("work_headcount", 0) or 0),
-        "entry_order": int(draft_entry_source.get("entry_order", 0) or 0),
-    }
+    draft_submit_preparation = build_vendor_work_entry_draft_submit_preparation(
+        preflight_context=preflight_context,
+        business_date=business_date,
+        vendor_name=str(profile_payload["vendor_name"]),
+        draft_entry_source=draft_entry_source,
+    )
     submit_result = {
         "status": str(submit_status_raw or ""),
         "mode": str(submit_mode_raw or ""),
@@ -4388,24 +4454,20 @@ def api_vendor_contact():
 def api_vendor_work_entry():
     data = request.get_json(silent=True) or {}
     try:
-        entry_id = parse_optional_positive_int(data.get("id"), field_name="id")
-        sheet_id = parse_non_negative_int(data.get("sheet_id"), field_name="sheet_id")
-        if sheet_id <= 0:
-            raise ValueError("sheet_id must be a positive integer.")
-        vendor_name = normalize_vendor_name(str(data.get("vendor_name", "")))
-        business_date = (
-            parse_crew_business_date(str(data.get("business_date", "")))
-            if str(data.get("business_date", "")).strip()
-            else resolve_crew_business_date()
-        )
-        planned_at = parse_crew_planned_at(str(data.get("planned_at", "")))
-        planned_headcount = parse_non_negative_int(data.get("planned_headcount", 0), field_name="planned_headcount")
-        actual_headcount = parse_non_negative_int(data.get("actual_headcount", 0), field_name="actual_headcount")
-        work_content = str(data.get("work_content", "")).strip()
-        work_headcount = parse_non_negative_int(data.get("work_headcount", 0), field_name="work_headcount")
-        entry_order = parse_non_negative_int(data.get("entry_order", 0), field_name="entry_order")
+        payload = normalize_vendor_work_entry_submit_payload(data)
     except ValueError as exc:
         return crew_api_error("invalid_request", str(exc))
+
+    entry_id = int(payload["entry_id"]) if payload["entry_id"] is not None else None
+    sheet_id = int(payload["sheet_id"])
+    vendor_name = str(payload["vendor_name"])
+    business_date = str(payload["business_date"])
+    planned_at = str(payload["planned_at"])
+    planned_headcount = int(payload["planned_headcount"])
+    actual_headcount = int(payload["actual_headcount"])
+    work_content = str(payload["work_content"])
+    work_headcount = int(payload["work_headcount"])
+    entry_order = int(payload["entry_order"])
 
     if len(work_content) > 500:
         return crew_api_error("invalid_work_content", "work_content must be 500 characters or fewer.")

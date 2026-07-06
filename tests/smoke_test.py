@@ -7519,6 +7519,150 @@ def run_vendor_work_entry_preflight_context_regression_smoke(db_path: Path) -> N
             raise AssertionError(f"vendor preflight context regression smoke create-mode page missing fragment: {fragment}")
 
 
+def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> None:
+    import importlib.util
+
+    os.environ["APP_DB_PATH"] = str(db_path)
+    module_name = "vendor_work_entry_submit_pipeline_under_test"
+    spec = importlib.util.spec_from_file_location(module_name, str(ROOT_DIR / "app.py"))
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "UPDATE users SET password_hash = ? WHERE username = 'admin'",
+            (module.generate_password_hash("admin"),),
+        )
+        conn.execute(
+            '''
+            INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
+            VALUES (?, ?, ?, ?)
+            ''',
+            ("vendor_active", module.generate_password_hash("vendor-pass"), "Vendor A", 1),
+        )
+        conn.execute(
+            '''
+            INSERT INTO tasks (sheet_id, col_index, vendor, location, name)
+            VALUES (?, ?, ?, ?, ?)
+            ''',
+            (1, 5, "Vendor A", "Vendor Zone", "Vendor A Task"),
+        )
+        business_date = module.resolve_crew_business_date()
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ''',
+            (1, "Vendor A", business_date, "2000-01-01 09:00", 3, 1, "Vendor A Work 1", 1, 0),
+        )
+        first_entry_id = conn.execute(
+            "SELECT id FROM vendor_work_entries WHERE vendor_name = ? AND business_date = ? AND entry_order = 0",
+            ("Vendor A", business_date),
+        ).fetchone()["id"]
+        conn.commit()
+
+    vendor_client = module.app.test_client()
+    vendor_login = vendor_client.post(
+        "/vendor/login",
+        data={"username": "vendor_active", "password": "vendor-pass"},
+        follow_redirects=False,
+    )
+    if vendor_login.status_code != 302:
+        raise AssertionError("vendor submit pipeline regression smoke vendor login should redirect successfully")
+
+    selected_entry_page = vendor_client.get("/vendor/work-entry", follow_redirects=False)
+    if selected_entry_page.status_code != 200:
+        raise AssertionError("vendor submit pipeline regression smoke selected-entry page should return 200")
+    selected_entry_html = selected_entry_page.get_data(as_text=True)
+    for fragment in (
+        'data-testid="vendor-work-entry-draft-submit"',
+        f'data-testid="vendor-work-entry-draft-hidden-entry-id"',
+        f'value="{first_entry_id}"',
+        'data-testid="vendor-work-entry-draft-write-mode">update<',
+        'data-testid="vendor-work-entry-draft-planned-at"',
+        'value="2000-01-01 09:00"',
+        'data-testid="vendor-work-entry-draft-work-content"',
+        'Vendor A Work 1',
+    ):
+        if fragment not in selected_entry_html:
+            raise AssertionError(f"vendor submit pipeline regression smoke selected-entry page missing fragment: {fragment}")
+
+    new_entry_page = vendor_client.get("/vendor/work-entry?new_entry=1", follow_redirects=False)
+    if new_entry_page.status_code != 200:
+        raise AssertionError("vendor submit pipeline regression smoke create-mode page should return 200")
+    new_entry_html = new_entry_page.get_data(as_text=True)
+    for fragment in (
+        'data-testid="vendor-work-entry-create-mode"',
+        'data-testid="vendor-work-entry-draft-hidden-entry-id"',
+        'value=""',
+        'data-testid="vendor-work-entry-draft-write-mode">create<',
+        'data-testid="vendor-work-entry-draft-entry-order"',
+        'value="1"',
+    ):
+        if fragment not in new_entry_html:
+            raise AssertionError(f"vendor submit pipeline regression smoke create-mode page missing fragment: {fragment}")
+
+    internal_client = module.app.test_client()
+    internal_login = internal_client.post(
+        "/login",
+        data={"username": "admin", "display_name": "Admin", "password": "admin"},
+        follow_redirects=False,
+    )
+    if internal_login.status_code != 302:
+        raise AssertionError("vendor submit pipeline regression smoke internal login should redirect successfully")
+
+    create_payload = {
+        "sheet_id": 1,
+        "vendor_name": "Vendor A",
+        "business_date": business_date,
+        "planned_at": "2000-01-01 10:00",
+        "planned_headcount": 2,
+        "actual_headcount": 0,
+        "work_content": "Vendor A Work Create",
+        "work_headcount": 0,
+        "entry_order": 1,
+    }
+    create_response = internal_client.post("/api/vendor-work-entry", json=create_payload, follow_redirects=False)
+    if create_response.status_code != 200:
+        raise AssertionError("vendor submit pipeline regression smoke create path should return 200")
+    create_response_payload = create_response.get_json()
+    create_entry = create_response_payload.get("entry") if isinstance(create_response_payload, dict) else None
+    if create_response_payload.get("ok") is not True or not isinstance(create_entry, dict):
+        raise AssertionError("vendor submit pipeline regression smoke create path should preserve ok/entry response contract")
+    if create_entry.get("id") is None or create_entry.get("vendor_name") != "Vendor A" or create_entry.get("entry_order") != 1:
+        raise AssertionError("vendor submit pipeline regression smoke create path should preserve trusted create payload fields")
+
+    update_payload = {
+        "id": int(first_entry_id),
+        "sheet_id": 1,
+        "vendor_name": "Vendor A",
+        "business_date": business_date,
+        "planned_at": "2000-01-01 09:15",
+        "planned_headcount": 4,
+        "actual_headcount": 2,
+        "work_content": "Vendor A Work Updated",
+        "work_headcount": 2,
+        "entry_order": 0,
+    }
+    update_response = internal_client.post("/api/vendor-work-entry", json=update_payload, follow_redirects=False)
+    if update_response.status_code != 200:
+        raise AssertionError("vendor submit pipeline regression smoke update path should return 200")
+    update_response_payload = update_response.get_json()
+    update_entry = update_response_payload.get("entry") if isinstance(update_response_payload, dict) else None
+    if update_response_payload.get("ok") is not True or not isinstance(update_entry, dict):
+        raise AssertionError("vendor submit pipeline regression smoke update path should preserve ok/entry response contract")
+    if (
+        int(update_entry.get("id") or 0) != int(first_entry_id)
+        or update_entry.get("work_content") != "Vendor A Work Updated"
+        or update_entry.get("entry_order") != 0
+    ):
+        raise AssertionError("vendor submit pipeline regression smoke update path should preserve target id and updated fields")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "sample.db"
