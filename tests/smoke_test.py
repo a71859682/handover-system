@@ -2190,6 +2190,7 @@ for required in (
     "async function loadCrewForms",
     "async function confirmCrewWorkEntryRequirement",
     "function buildCrewRequirementMeta",
+    "function buildCrewReadinessMeta",
     "function renderCrewForms",
     "function renderCrewFormError",
     "function formatCrewDate",
@@ -2198,8 +2199,12 @@ for required in (
     "/api/crew-work-entry-requirement-confirm",
     'setAttribute("data-testid", "crew-work-entry-pre-entry-requirement")',
     'setAttribute("data-testid", "crew-work-entry-requirement-status")',
+    'setAttribute("data-testid", "crew-work-entry-readiness-indicator")',
     'data-testid="crew-work-entry-requirement-confirm-action"',
     'const actionMarkup = isConfirmed',
+    "尚未具備進場條件",
+    "需求已確認",
+    "無進場前需求",
     "await loadCrewForms(sheetId);",
 ):
     if required not in js_text:

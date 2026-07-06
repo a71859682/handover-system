@@ -85,6 +85,26 @@ function buildCrewRequirementMeta(entry) {
   };
 }
 
+function buildCrewReadinessMeta(entry) {
+  const readinessState = String(entry?.readiness_state || "").trim();
+  const readinessReason = String(entry?.readiness_reason || "").trim();
+  let readinessLabel = "進場條件狀態未定義";
+
+  if (readinessState === "not_ready" && readinessReason === "requirement_pending") {
+    readinessLabel = "尚未具備進場條件";
+  } else if (readinessState === "ready" && readinessReason === "requirement_confirmed") {
+    readinessLabel = "需求已確認";
+  } else if (readinessState === "ready" && readinessReason === "no_requirement") {
+    readinessLabel = "無進場前需求";
+  }
+
+  return {
+    readinessState,
+    readinessReason,
+    readinessLabel,
+  };
+}
+
 function renderCrewForms(data) {
   if (!crewFormShell || !crewVendorList) return;
   if (crewFormError) {
@@ -147,6 +167,7 @@ function renderCrewForms(data) {
       const row = entryRows[entryIndex];
       if (!row) return;
       const requirementMeta = buildCrewRequirementMeta(entry);
+      const readinessMeta = buildCrewReadinessMeta(entry);
 
       const requirementNode = document.createElement("div");
       requirementNode.setAttribute("data-testid", "crew-work-entry-pre-entry-requirement");
@@ -157,6 +178,13 @@ function renderCrewForms(data) {
       statusNode.setAttribute("data-testid", "crew-work-entry-requirement-status");
       statusNode.innerHTML = `<span class="crew-label">需求確認狀態</span><strong>${escapeHtml(requirementMeta.requirementStatus)}</strong>`;
       row.appendChild(statusNode);
+
+      const readinessNode = document.createElement("div");
+      readinessNode.setAttribute("data-testid", "crew-work-entry-readiness-indicator");
+      readinessNode.setAttribute("data-readiness-state", readinessMeta.readinessState);
+      readinessNode.setAttribute("data-readiness-reason", readinessMeta.readinessReason);
+      readinessNode.innerHTML = `<span class="crew-label">進場條件</span><strong>${escapeHtml(readinessMeta.readinessLabel)}</strong>`;
+      row.appendChild(readinessNode);
 
       if (requirementMeta.confirmedMeta) {
         const confirmedMetaNode = document.createElement("div");
