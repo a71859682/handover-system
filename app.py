@@ -2216,7 +2216,9 @@ def fetch_vendor_work_entries(
     rows = conn.execute(
         """
         SELECT id, sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-               actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+               actual_headcount, work_content, pre_entry_requirement, requirement_status,
+               requirement_confirmed_by, requirement_confirmed_at, work_headcount,
+               entry_order, created_at, updated_at
         FROM vendor_work_entries
         WHERE sheet_id = ? AND business_date = ?
         ORDER BY vendor_name, entry_order, id

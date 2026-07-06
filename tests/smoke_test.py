@@ -886,19 +886,21 @@ with module.db() as conn:
         '''
         INSERT INTO vendor_work_entries (
             sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-            actual_headcount, work_content, work_headcount, entry_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            actual_headcount, work_content, pre_entry_requirement, requirement_status,
+            requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''',
-        (sheet_id, "VendorA", business_date, "2000-01-01 09:00", 3, 0, "Missing Crew", 0, 0),
+        (sheet_id, "VendorA", business_date, "2000-01-01 09:00", 3, 0, "Missing Crew", "Need power off", "pending", None, None, 0, 0),
     )
     conn.execute(
         '''
         INSERT INTO vendor_work_entries (
             sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-            actual_headcount, work_content, work_headcount, entry_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            actual_headcount, work_content, pre_entry_requirement, requirement_status,
+            requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''',
-        (sheet_id, "VendorA", business_date, "2000-01-01 10:00", 2, 2, "Summary Crew", 2, 1),
+        (sheet_id, "VendorA", business_date, "2000-01-01 10:00", 2, 2, "Summary Crew", "Need lift access", "confirmed", "confirm_member", "2026-07-06 09:30:00", 2, 1),
     )
 
 with module.app.test_client() as client:
@@ -940,6 +942,42 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-forms contacts should include created_at and updated_at")
     if len(active_vendors["VendorA"]["work_entries"]) != 2:
         raise SystemExit("/api/crew-forms should include current business_date work entries")
+    first_work_entry = active_vendors["VendorA"]["work_entries"][0]
+    second_work_entry = active_vendors["VendorA"]["work_entries"][1]
+    expected_requirement_keys = {
+        "id",
+        "sheet_id",
+        "vendor_name",
+        "business_date",
+        "planned_at",
+        "planned_headcount",
+        "actual_headcount",
+        "work_content",
+        "pre_entry_requirement",
+        "requirement_status",
+        "requirement_confirmed_by",
+        "requirement_confirmed_at",
+        "work_headcount",
+        "entry_order",
+        "created_at",
+        "updated_at",
+    }
+    if not expected_requirement_keys.issubset(first_work_entry.keys()):
+        raise SystemExit("/api/crew-forms work_entries should include requirement confirmation fields")
+    if first_work_entry["pre_entry_requirement"] != "Need power off":
+        raise SystemExit("/api/crew-forms should expose pending pre_entry_requirement text")
+    if first_work_entry["requirement_status"] != "pending":
+        raise SystemExit("/api/crew-forms should expose pending requirement_status")
+    if first_work_entry["requirement_confirmed_by"] is not None or first_work_entry["requirement_confirmed_at"] is not None:
+        raise SystemExit("/api/crew-forms pending requirement should keep confirmation fields empty")
+    if second_work_entry["pre_entry_requirement"] != "Need lift access":
+        raise SystemExit("/api/crew-forms should expose confirmed pre_entry_requirement text")
+    if second_work_entry["requirement_status"] != "confirmed":
+        raise SystemExit("/api/crew-forms should expose confirmed requirement_status")
+    if second_work_entry["requirement_confirmed_by"] != "confirm_member":
+        raise SystemExit("/api/crew-forms should expose requirement_confirmed_by for confirmed entries")
+    if second_work_entry["requirement_confirmed_at"] != "2026-07-06 09:30:00":
+        raise SystemExit("/api/crew-forms should expose requirement_confirmed_at for confirmed entries")
     vendor_c = active_vendors["VendorC"]
     if vendor_c["contact"]["id"] is not None:
         raise SystemExit("active vendor without contacts should use empty compatibility contact")
@@ -2127,11 +2165,19 @@ if "/api/vendor-contact" in template_text or "/api/vendor-work-entry" in templat
 
 for required in (
     "async function loadCrewForms",
+    "async function confirmCrewWorkEntryRequirement",
+    "function buildCrewRequirementMeta",
     "function renderCrewForms",
     "function renderCrewFormError",
     "function formatCrewDate",
     "function formatCrewDateTime",
     "/api/crew-forms?sheet_id=",
+    "/api/crew-work-entry-requirement-confirm",
+    'setAttribute("data-testid", "crew-work-entry-pre-entry-requirement")',
+    'setAttribute("data-testid", "crew-work-entry-requirement-status")',
+    'data-testid="crew-work-entry-requirement-confirm-action"',
+    'const actionMarkup = isConfirmed',
+    "await loadCrewForms(sheetId);",
 ):
     if required not in js_text:
         raise SystemExit(f"app.js missing readonly crew helper: {required}")

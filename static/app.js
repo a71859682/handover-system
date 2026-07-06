@@ -63,6 +63,28 @@ function renderCrewFormError(error) {
   }
 }
 
+function buildCrewRequirementMeta(entry) {
+  const requirementText = String(entry?.pre_entry_requirement || "").trim();
+  const requirementStatus = String(entry?.requirement_status || "pending").trim() || "pending";
+  const confirmedBy = String(entry?.requirement_confirmed_by || "").trim();
+  const confirmedAt = String(entry?.requirement_confirmed_at || "").trim();
+  const isConfirmed = requirementStatus === "confirmed";
+  const requirementDisplay = requirementText || "未填寫";
+  const confirmedMeta =
+    isConfirmed && (confirmedBy || confirmedAt)
+      ? `<div data-testid="crew-work-entry-requirement-confirmed-meta"><span class="crew-label">確認資訊</span><strong data-testid="crew-work-entry-requirement-confirmed-by">${escapeHtml(confirmedBy || "已確認")}</strong>${confirmedAt ? `<span data-testid="crew-work-entry-requirement-confirmed-at">${escapeHtml(formatCrewDateTime(confirmedAt))}</span>` : ""}</div>`
+      : "";
+  const actionMarkup = isConfirmed
+    ? ""
+    : `<button type="button" class="crew-confirm-btn" data-testid="crew-work-entry-requirement-confirm-action" data-entry-id="${escapeHtml(entry?.id ?? "")}" data-sheet-id="${escapeHtml(entry?.sheet_id ?? "")}">確認進場前需求</button>`;
+  return {
+    requirementDisplay,
+    requirementStatus,
+    confirmedMeta,
+    actionMarkup,
+  };
+}
+
 function renderCrewForms(data) {
   if (!crewFormShell || !crewVendorList) return;
   if (crewFormError) {
@@ -86,8 +108,9 @@ function renderCrewForms(data) {
       const entryMarkup =
         entries.length > 0
           ? entries
-              .map(
-                (entry) => `
+              .map((entry) => {
+                const requirementMeta = buildCrewRequirementMeta(entry);
+                return `
           <div class="crew-entry-row">
             <div><span class="crew-label">預計進場</span><strong>${escapeHtml(formatCrewDateTime(entry.planned_at || "")) || "—"}</strong></div>
             <div><span class="crew-label">預計進場人數</span><strong>${escapeHtml(entry.planned_headcount ?? 0)}</strong></div>
@@ -95,8 +118,8 @@ function renderCrewForms(data) {
             <div><span class="crew-label">施作內容</span><strong>${escapeHtml(entry.work_content || "—")}</strong></div>
             <div><span class="crew-label">各項目施作人數</span><strong>${escapeHtml(entry.work_headcount ?? 0)}</strong></div>
           </div>
-        `,
-              )
+        `;
+              })
               .join("")
           : '<div class="crew-empty-state">尚無今日工班資料</div>';
 
@@ -115,6 +138,38 @@ function renderCrewForms(data) {
       `;
     })
     .join("");
+
+  const vendorCards = crewVendorList.querySelectorAll(".crew-vendor-card");
+  vendors.forEach((vendor, vendorIndex) => {
+    const entryRows = vendorCards[vendorIndex]?.querySelectorAll(".crew-entry-row") || [];
+    const entries = Array.isArray(vendor.work_entries) ? vendor.work_entries : [];
+    entries.forEach((entry, entryIndex) => {
+      const row = entryRows[entryIndex];
+      if (!row) return;
+      const requirementMeta = buildCrewRequirementMeta(entry);
+
+      const requirementNode = document.createElement("div");
+      requirementNode.setAttribute("data-testid", "crew-work-entry-pre-entry-requirement");
+      requirementNode.innerHTML = `<span class="crew-label">進場前需求</span><strong>${escapeHtml(requirementMeta.requirementDisplay)}</strong>`;
+      row.appendChild(requirementNode);
+
+      const statusNode = document.createElement("div");
+      statusNode.setAttribute("data-testid", "crew-work-entry-requirement-status");
+      statusNode.innerHTML = `<span class="crew-label">需求確認狀態</span><strong>${escapeHtml(requirementMeta.requirementStatus)}</strong>`;
+      row.appendChild(statusNode);
+
+      if (requirementMeta.confirmedMeta) {
+        const confirmedMetaNode = document.createElement("div");
+        confirmedMetaNode.innerHTML = requirementMeta.confirmedMeta;
+        row.appendChild(confirmedMetaNode.firstElementChild);
+      }
+
+      const actionSlot = document.createElement("div");
+      actionSlot.setAttribute("data-testid", "crew-work-entry-requirement-action-slot");
+      actionSlot.innerHTML = requirementMeta.actionMarkup;
+      row.appendChild(actionSlot);
+    });
+  });
 }
 
 async function loadCrewForms(sheetId) {
@@ -128,6 +183,40 @@ async function loadCrewForms(sheetId) {
     renderCrewForms(data);
   } catch (error) {
     renderCrewFormError(error?.message || "crew forms request failed");
+  }
+}
+
+async function confirmCrewWorkEntryRequirement(button) {
+  const entryId = Number.parseInt(button?.dataset.entryId || "", 10);
+  const sheetId = Number.parseInt(button?.dataset.sheetId || crewFormShell?.dataset.sheetId || "", 10);
+  if (!entryId || !sheetId) {
+    renderCrewFormError("缺少 requirement confirm context。");
+    return;
+  }
+
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "確認中...";
+  try {
+    const response = await fetch("/api/crew-work-entry-requirement-confirm", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        entry_id: entryId,
+        sheet_id: sheetId,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      throw new Error(data?.error?.message || "crew requirement confirmation failed");
+    }
+    await loadCrewForms(sheetId);
+  } catch (error) {
+    button.disabled = false;
+    button.textContent = originalText;
+    renderCrewFormError(error?.message || "crew requirement confirmation failed");
   }
 }
 
@@ -428,6 +517,9 @@ function updatePrintDate() {
 document.addEventListener("click", (event) => {
   const toggle = event.target.closest(".toggle");
   if (toggle) return toggleFloor(toggle.dataset.floorId);
+
+  const crewRequirementConfirm = event.target.closest("[data-testid='crew-work-entry-requirement-confirm-action']");
+  if (crewRequirementConfirm) return confirmCrewWorkEntryRequirement(crewRequirementConfirm);
 
   const head = event.target.closest(".selectable-head[data-task-id], .selectable-head[data-vendor-task]");
   if (head) {
