@@ -902,6 +902,16 @@ with module.db() as conn:
         ''',
         (sheet_id, "VendorA", business_date, "2000-01-01 10:00", 2, 2, "Summary Crew", "Need lift access", "confirmed", "confirm_member", "2026-07-06 09:30:00", 2, 1),
     )
+    conn.execute(
+        '''
+        INSERT INTO vendor_work_entries (
+            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+            actual_headcount, work_content, pre_entry_requirement, requirement_status,
+            requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (sheet_id, "VendorC", business_date, "", 1, 0, "No Requirement Crew", "", "pending", None, None, 0, 0),
+    )
 
 with module.app.test_client() as client:
     with client.session_transaction() as session:
@@ -957,6 +967,8 @@ with module.app.test_client() as client:
         "requirement_status",
         "requirement_confirmed_by",
         "requirement_confirmed_at",
+        "readiness_state",
+        "readiness_reason",
         "work_headcount",
         "entry_order",
         "created_at",
@@ -970,6 +982,8 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-forms should expose pending requirement_status")
     if first_work_entry["requirement_confirmed_by"] is not None or first_work_entry["requirement_confirmed_at"] is not None:
         raise SystemExit("/api/crew-forms pending requirement should keep confirmation fields empty")
+    if first_work_entry["readiness_state"] != "not_ready" or first_work_entry["readiness_reason"] != "requirement_pending":
+        raise SystemExit("/api/crew-forms pending requirement entry should be not_ready with requirement_pending reason")
     if second_work_entry["pre_entry_requirement"] != "Need lift access":
         raise SystemExit("/api/crew-forms should expose confirmed pre_entry_requirement text")
     if second_work_entry["requirement_status"] != "confirmed":
@@ -978,7 +992,16 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-forms should expose requirement_confirmed_by for confirmed entries")
     if second_work_entry["requirement_confirmed_at"] != "2026-07-06 09:30:00":
         raise SystemExit("/api/crew-forms should expose requirement_confirmed_at for confirmed entries")
+    if second_work_entry["readiness_state"] != "ready" or second_work_entry["readiness_reason"] != "requirement_confirmed":
+        raise SystemExit("/api/crew-forms confirmed requirement entry should be ready with requirement_confirmed reason")
     vendor_c = active_vendors["VendorC"]
+    if len(vendor_c["work_entries"]) != 1:
+        raise SystemExit("/api/crew-forms should include no-requirement work entry for active vendor")
+    vendor_c_entry = vendor_c["work_entries"][0]
+    if vendor_c_entry["pre_entry_requirement"] != "":
+        raise SystemExit("/api/crew-forms no-requirement entry should preserve empty requirement text")
+    if vendor_c_entry["readiness_state"] != "ready" or vendor_c_entry["readiness_reason"] != "no_requirement":
+        raise SystemExit("/api/crew-forms no-requirement entry should be ready with no_requirement reason")
     if vendor_c["contact"]["id"] is not None:
         raise SystemExit("active vendor without contacts should use empty compatibility contact")
     if vendor_c["contact"]["display_name"] != "":

@@ -2227,7 +2227,19 @@ def fetch_vendor_work_entries(
     ).fetchall()
     entries_by_vendor: dict[str, list[dict[str, object]]] = {}
     for row in rows:
-        entries_by_vendor.setdefault(row["vendor_name"], []).append(dict(row))
+        entry = dict(row)
+        requirement_text = str(entry.get("pre_entry_requirement") or "").strip()
+        requirement_status = str(entry.get("requirement_status") or "").strip()
+        if not requirement_text:
+            entry["readiness_state"] = "ready"
+            entry["readiness_reason"] = "no_requirement"
+        elif requirement_status == "confirmed":
+            entry["readiness_state"] = "ready"
+            entry["readiness_reason"] = "requirement_confirmed"
+        else:
+            entry["readiness_state"] = "not_ready"
+            entry["readiness_reason"] = "requirement_pending"
+        entries_by_vendor.setdefault(row["vendor_name"], []).append(entry)
     return entries_by_vendor
 
 
