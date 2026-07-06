@@ -1891,6 +1891,91 @@ def _handle_vendor_work_entry_lookup_error(exc: LookupError):
     raise exc
 
 
+def resolve_vendor_work_entry_requirement_confirmation_context(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    entry_id: int,
+) -> dict[str, object]:
+    sheet_row = conn.execute("SELECT id, site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+    if sheet_row is None:
+        raise LookupError("sheet_not_found")
+
+    existing_entry = conn.execute(
+        """
+        SELECT id, sheet_id, vendor_name, pre_entry_requirement, requirement_status,
+               requirement_confirmed_by, requirement_confirmed_at
+        FROM vendor_work_entries
+        WHERE id = ?
+        """,
+        (entry_id,),
+    ).fetchone()
+    if existing_entry is None:
+        raise LookupError("entry_not_found")
+    if int(existing_entry["sheet_id"] or 0) != int(sheet_id):
+        raise LookupError("sheet_mismatch")
+
+    return {
+        "sheet_id": int(sheet_row["id"]),
+        "site_id": int(sheet_row["site_id"]),
+        "entry_id": int(existing_entry["id"]),
+        "vendor_name": str(existing_entry["vendor_name"] or ""),
+        "pre_entry_requirement": str(existing_entry["pre_entry_requirement"] or ""),
+        "requirement_status": str(existing_entry["requirement_status"] or "pending"),
+        "requirement_confirmed_by": str(existing_entry["requirement_confirmed_by"] or ""),
+        "requirement_confirmed_at": str(existing_entry["requirement_confirmed_at"] or ""),
+    }
+
+
+def authorize_vendor_work_entry_requirement_confirmation(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    entry_id: int,
+) -> dict[str, object]:
+    context = resolve_vendor_work_entry_requirement_confirmation_context(
+        conn,
+        sheet_id=sheet_id,
+        entry_id=entry_id,
+    )
+    user = _current_internal_user()
+    if user is None:
+        if current_vendor_account() is not None:
+            raise LookupError("vendor_auth_forbidden")
+        raise LookupError("auth_required")
+    if is_global_admin(user):
+        current_site_context = authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+        context["current_site_id"] = int(current_site_context["current_site_id"])
+        return context
+
+    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    if int(context["site_id"]) != int(current_site_id):
+        raise LookupError("write_target_not_in_current_site")
+    context["current_site_id"] = int(current_site_id)
+    return context
+
+
+def _handle_vendor_work_entry_requirement_confirmation_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "sheet_not_found":
+        return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+    if code == "entry_not_found":
+        return crew_api_error("entry_not_found", "vendor work entry id was not found.", status=404)
+    if code == "sheet_mismatch":
+        return crew_api_error("sheet_mismatch", "vendor work entry belongs to a different sheet_id.", status=409)
+    if code == "site_context_invalid":
+        return crew_api_error("site_context_invalid", "current_site_id is missing or invalid.", status=403)
+    if code == "site_permission_missing":
+        return crew_api_error("site_permission_missing", "current user no longer has permission for the current site.", status=403)
+    if code == "write_target_not_in_current_site":
+        return crew_api_error("write_target_not_in_current_site", "write target does not belong to the current site.", status=403)
+    if code == "vendor_auth_forbidden":
+        return crew_api_error("vendor_auth_forbidden", "vendor authentication cannot confirm requirements.", status=403)
+    if code == "auth_required":
+        return crew_api_error("auth_required", "authentication is required.", status=403)
+    raise exc
+
+
 def _handle_vendor_write_preflight_error(exc: LookupError):
     code = str(exc)
     if code == "vendor_auth_required":
@@ -2131,7 +2216,9 @@ def fetch_vendor_work_entries(
     rows = conn.execute(
         """
         SELECT id, sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-               actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+               actual_headcount, work_content, pre_entry_requirement, requirement_status,
+               requirement_confirmed_by, requirement_confirmed_at, work_headcount,
+               entry_order, created_at, updated_at
         FROM vendor_work_entries
         WHERE sheet_id = ? AND business_date = ?
         ORDER BY vendor_name, entry_order, id
@@ -2140,7 +2227,19 @@ def fetch_vendor_work_entries(
     ).fetchall()
     entries_by_vendor: dict[str, list[dict[str, object]]] = {}
     for row in rows:
-        entries_by_vendor.setdefault(row["vendor_name"], []).append(dict(row))
+        entry = dict(row)
+        requirement_text = str(entry.get("pre_entry_requirement") or "").strip()
+        requirement_status = str(entry.get("requirement_status") or "").strip()
+        if not requirement_text:
+            entry["readiness_state"] = "ready"
+            entry["readiness_reason"] = "no_requirement"
+        elif requirement_status == "confirmed":
+            entry["readiness_state"] = "ready"
+            entry["readiness_reason"] = "requirement_confirmed"
+        else:
+            entry["readiness_state"] = "not_ready"
+            entry["readiness_reason"] = "requirement_pending"
+        entries_by_vendor.setdefault(row["vendor_name"], []).append(entry)
     return entries_by_vendor
 
 
@@ -2367,7 +2466,7 @@ def fetch_vendor_business_read_preview(
     return conn.execute(
         """
         SELECT id, vendor_name, business_date, planned_at, planned_headcount,
-               actual_headcount, work_content, work_headcount, entry_order
+               actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order
         FROM vendor_work_entries
         WHERE vendor_name = ?
         ORDER BY business_date DESC, entry_order ASC, rowid ASC
@@ -2404,6 +2503,7 @@ def serialize_vendor_business_read_entry(row: sqlite3.Row) -> dict[str, object]:
         "planned_headcount": int(row["planned_headcount"] or 0),
         "actual_headcount": int(row["actual_headcount"] or 0),
         "work_content": str(row["work_content"] or ""),
+        "pre_entry_requirement": str(row["pre_entry_requirement"] or ""),
         "work_headcount": int(row["work_headcount"] or 0),
         "entry_order": int(row["entry_order"] or 0),
     }
@@ -2478,6 +2578,7 @@ def build_vendor_work_entry_draft_entry_defaults(
         "planned_headcount": 0,
         "actual_headcount": 0,
         "work_content": "",
+        "pre_entry_requirement": "",
         "work_headcount": 0,
         "entry_order": len(today_entries),
     }
@@ -2511,6 +2612,7 @@ def build_vendor_work_entry_draft_submit_preparation(
         "planned_headcount": int(draft_entry_source.get("planned_headcount", 0) or 0),
         "actual_headcount": int(draft_entry_source.get("actual_headcount", 0) or 0),
         "work_content": str(draft_entry_source.get("work_content", "")),
+        "pre_entry_requirement": str(draft_entry_source.get("pre_entry_requirement", "")),
         "work_headcount": int(draft_entry_source.get("work_headcount", 0) or 0),
         "entry_order": int(draft_entry_source.get("entry_order", 0) or 0),
     }
@@ -2531,6 +2633,7 @@ def normalize_vendor_work_entry_submit_payload(data) -> dict[str, object]:
     planned_headcount = parse_non_negative_int(data.get("planned_headcount", 0), field_name="planned_headcount")
     actual_headcount = parse_non_negative_int(data.get("actual_headcount", 0), field_name="actual_headcount")
     work_content = str(data.get("work_content", "")).strip()
+    pre_entry_requirement = str(data.get("pre_entry_requirement", "")).strip()
     work_headcount = parse_non_negative_int(data.get("work_headcount", 0), field_name="work_headcount")
     entry_order = parse_non_negative_int(data.get("entry_order", 0), field_name="entry_order")
     return {
@@ -2542,6 +2645,7 @@ def normalize_vendor_work_entry_submit_payload(data) -> dict[str, object]:
         "planned_headcount": planned_headcount,
         "actual_headcount": actual_headcount,
         "work_content": work_content,
+        "pre_entry_requirement": pre_entry_requirement,
         "work_headcount": work_headcount,
         "entry_order": entry_order,
     }
@@ -2818,6 +2922,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
             work_content TEXT NOT NULL DEFAULT '',
             work_headcount INTEGER NOT NULL DEFAULT 0,
             entry_order INTEGER NOT NULL DEFAULT 0,
+            pre_entry_requirement TEXT,
+            requirement_status TEXT DEFAULT 'pending',
+            requirement_confirmed_by TEXT,
+            requirement_confirmed_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
@@ -2839,6 +2947,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         ON vendor_work_entries (business_date);
         """
     )
+    ensure_vendor_work_entries_schema(conn)
     ensure_vendor_contacts_schema(conn)
 
 
@@ -2854,6 +2963,68 @@ def seed_admin(conn: sqlite3.Connection) -> None:
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+
+
+def ensure_vendor_work_entries_schema(conn: sqlite3.Connection) -> None:
+    existing_tables = {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "vendor_work_entries" not in existing_tables:
+        conn.executescript(
+            """
+            CREATE TABLE vendor_work_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet_id INTEGER NOT NULL,
+                vendor_name TEXT NOT NULL,
+                business_date TEXT NOT NULL,
+                planned_at TEXT NOT NULL DEFAULT '',
+                planned_headcount INTEGER NOT NULL DEFAULT 0,
+                actual_headcount INTEGER NOT NULL DEFAULT 0,
+                work_content TEXT NOT NULL DEFAULT '',
+                work_headcount INTEGER NOT NULL DEFAULT 0,
+                entry_order INTEGER NOT NULL DEFAULT 0,
+                pre_entry_requirement TEXT,
+                requirement_status TEXT DEFAULT 'pending',
+                requirement_confirmed_by TEXT,
+                requirement_confirmed_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
+            ON vendor_work_entries (sheet_id, business_date);
+
+            CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_vendor_date
+            ON vendor_work_entries (sheet_id, vendor_name, business_date);
+
+            CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_business_date
+            ON vendor_work_entries (business_date);
+            """
+        )
+        return
+
+    vendor_work_entry_columns = _table_columns(conn, "vendor_work_entries")
+    if "pre_entry_requirement" not in vendor_work_entry_columns:
+        conn.execute("ALTER TABLE vendor_work_entries ADD COLUMN pre_entry_requirement TEXT")
+    if "requirement_status" not in vendor_work_entry_columns:
+        conn.execute("ALTER TABLE vendor_work_entries ADD COLUMN requirement_status TEXT DEFAULT 'pending'")
+    if "requirement_confirmed_by" not in vendor_work_entry_columns:
+        conn.execute("ALTER TABLE vendor_work_entries ADD COLUMN requirement_confirmed_by TEXT")
+    if "requirement_confirmed_at" not in vendor_work_entry_columns:
+        conn.execute("ALTER TABLE vendor_work_entries ADD COLUMN requirement_confirmed_at TEXT")
+    conn.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
+        ON vendor_work_entries (sheet_id, business_date);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_vendor_date
+        ON vendor_work_entries (sheet_id, vendor_name, business_date);
+
+        CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_business_date
+        ON vendor_work_entries (business_date);
+        """
+    )
 
 
 def seed_default_site(conn: sqlite3.Connection) -> int:
@@ -3644,6 +3815,10 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
             work_content TEXT NOT NULL DEFAULT '',
             work_headcount INTEGER NOT NULL DEFAULT 0,
             entry_order INTEGER NOT NULL DEFAULT 0,
+            pre_entry_requirement TEXT,
+            requirement_status TEXT DEFAULT 'pending',
+            requirement_confirmed_by TEXT,
+            requirement_confirmed_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
@@ -3659,6 +3834,7 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         ON vendor_work_entries (business_date);
         """
     )
+    ensure_vendor_work_entries_schema(conn)
     ensure_site_foundation_schema(conn)
     ensure_vendor_contacts_schema(conn)
 
@@ -4486,11 +4662,17 @@ def api_vendor_work_entry():
     planned_headcount = int(payload["planned_headcount"])
     actual_headcount = int(payload["actual_headcount"])
     work_content = str(payload["work_content"])
+    pre_entry_requirement = str(payload["pre_entry_requirement"])
     work_headcount = int(payload["work_headcount"])
     entry_order = int(payload["entry_order"])
 
     if len(work_content) > 500:
         return crew_api_error("invalid_work_content", "work_content must be 500 characters or fewer.")
+    if len(pre_entry_requirement) > 500:
+        return crew_api_error(
+            "invalid_pre_entry_requirement",
+            "pre_entry_requirement must be 500 characters or fewer.",
+        )
 
     with db() as conn:
         try:
@@ -4508,10 +4690,10 @@ def api_vendor_work_entry():
                 """
                 INSERT INTO vendor_work_entries (
                     sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-                    actual_headcount, work_content, work_headcount, entry_order,
+                    actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                 (
                     int(vendor_work_entry_context["sheet_id"]),
@@ -4521,6 +4703,7 @@ def api_vendor_work_entry():
                     planned_headcount,
                     actual_headcount,
                     work_content,
+                    pre_entry_requirement,
                     work_headcount,
                     entry_order,
                 ),
@@ -4536,6 +4719,7 @@ def api_vendor_work_entry():
                     planned_headcount = ?,
                     actual_headcount = ?,
                     work_content = ?,
+                    pre_entry_requirement = ?,
                     work_headcount = ?,
                     entry_order = ?,
                     updated_at = CURRENT_TIMESTAMP
@@ -4548,6 +4732,7 @@ def api_vendor_work_entry():
                     planned_headcount,
                     actual_headcount,
                     work_content,
+                    pre_entry_requirement,
                     work_headcount,
                     entry_order,
                     entry_id,
@@ -4559,7 +4744,7 @@ def api_vendor_work_entry():
         row = conn.execute(
             """
             SELECT id, sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-                   actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+                   actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order, created_at, updated_at
             FROM vendor_work_entries
             WHERE id = ?
             """,
@@ -4567,6 +4752,68 @@ def api_vendor_work_entry():
         ).fetchone()
 
     return jsonify({"ok": True, "entry": dict(row) if row else None})
+
+
+@app.route("/api/crew-work-entry-requirement-confirm", methods=["POST"])
+def api_crew_work_entry_requirement_confirm():
+    data = request.get_json(silent=True) or {}
+    try:
+        entry_id = parse_non_negative_int(data.get("entry_id"), field_name="entry_id")
+        sheet_id = parse_non_negative_int(data.get("sheet_id"), field_name="sheet_id")
+        if entry_id <= 0:
+            raise ValueError("entry_id must be a positive integer.")
+        if sheet_id <= 0:
+            raise ValueError("sheet_id must be a positive integer.")
+    except ValueError as exc:
+        return crew_api_error("invalid_request", str(exc))
+
+    with db() as conn:
+        try:
+            confirmation_context = authorize_vendor_work_entry_requirement_confirmation(
+                conn,
+                sheet_id=sheet_id,
+                entry_id=entry_id,
+            )
+        except LookupError as exc:
+            return _handle_vendor_work_entry_requirement_confirmation_lookup_error(exc)
+
+        row = conn.execute(
+            """
+            SELECT username
+            FROM users
+            WHERE id = ?
+            """,
+            (int(_current_internal_user()["id"]),),
+        ).fetchone()
+        confirmed_by = str(row["username"] if row is not None else "")
+
+        if confirmation_context["requirement_status"] != "confirmed":
+            conn.execute(
+                """
+                UPDATE vendor_work_entries
+                SET requirement_status = 'confirmed',
+                    requirement_confirmed_by = ?,
+                    requirement_confirmed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND sheet_id = ?
+                """,
+                (
+                    confirmed_by,
+                    int(confirmation_context["entry_id"]),
+                    int(confirmation_context["sheet_id"]),
+                ),
+            )
+
+        confirmed_entry = conn.execute(
+            """
+            SELECT id, requirement_status, requirement_confirmed_by, requirement_confirmed_at
+            FROM vendor_work_entries
+            WHERE id = ?
+            """,
+            (int(confirmation_context["entry_id"]),),
+        ).fetchone()
+
+    return jsonify({"ok": True, "entry": dict(confirmed_entry) if confirmed_entry else None})
 
 
 @app.route("/api/vendor/work-entry/preflight", methods=["POST"])

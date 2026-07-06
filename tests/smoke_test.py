@@ -144,6 +144,10 @@ def create_sample_sqlite(path: Path) -> None:
             planned_headcount INTEGER NOT NULL,
             actual_headcount INTEGER NOT NULL,
             work_content TEXT NOT NULL,
+            pre_entry_requirement TEXT,
+            requirement_status TEXT DEFAULT 'pending',
+            requirement_confirmed_by TEXT,
+            requirement_confirmed_at TEXT,
             work_headcount INTEGER NOT NULL,
             entry_order INTEGER NOT NULL,
             created_at TEXT NOT NULL,
@@ -706,6 +710,10 @@ with module.db() as conn:
         "work_content",
         "work_headcount",
         "entry_order",
+        "pre_entry_requirement",
+        "requirement_status",
+        "requirement_confirmed_by",
+        "requirement_confirmed_at",
         "created_at",
         "updated_at",
     ):
@@ -878,19 +886,31 @@ with module.db() as conn:
         '''
         INSERT INTO vendor_work_entries (
             sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-            actual_headcount, work_content, work_headcount, entry_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            actual_headcount, work_content, pre_entry_requirement, requirement_status,
+            requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''',
-        (sheet_id, "VendorA", business_date, "2000-01-01 09:00", 3, 0, "Missing Crew", 0, 0),
+        (sheet_id, "VendorA", business_date, "2000-01-01 09:00", 3, 0, "Missing Crew", "Need power off", "pending", None, None, 0, 0),
     )
     conn.execute(
         '''
         INSERT INTO vendor_work_entries (
             sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-            actual_headcount, work_content, work_headcount, entry_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            actual_headcount, work_content, pre_entry_requirement, requirement_status,
+            requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''',
-        (sheet_id, "VendorA", business_date, "2000-01-01 10:00", 2, 2, "Summary Crew", 2, 1),
+        (sheet_id, "VendorA", business_date, "2000-01-01 10:00", 2, 2, "Summary Crew", "Need lift access", "confirmed", "confirm_member", "2026-07-06 09:30:00", 2, 1),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_work_entries (
+            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+            actual_headcount, work_content, pre_entry_requirement, requirement_status,
+            requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (sheet_id, "VendorC", business_date, "", 1, 0, "No Requirement Crew", "", "pending", None, None, 0, 0),
     )
 
 with module.app.test_client() as client:
@@ -932,7 +952,56 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-forms contacts should include created_at and updated_at")
     if len(active_vendors["VendorA"]["work_entries"]) != 2:
         raise SystemExit("/api/crew-forms should include current business_date work entries")
+    first_work_entry = active_vendors["VendorA"]["work_entries"][0]
+    second_work_entry = active_vendors["VendorA"]["work_entries"][1]
+    expected_requirement_keys = {
+        "id",
+        "sheet_id",
+        "vendor_name",
+        "business_date",
+        "planned_at",
+        "planned_headcount",
+        "actual_headcount",
+        "work_content",
+        "pre_entry_requirement",
+        "requirement_status",
+        "requirement_confirmed_by",
+        "requirement_confirmed_at",
+        "readiness_state",
+        "readiness_reason",
+        "work_headcount",
+        "entry_order",
+        "created_at",
+        "updated_at",
+    }
+    if not expected_requirement_keys.issubset(first_work_entry.keys()):
+        raise SystemExit("/api/crew-forms work_entries should include requirement confirmation fields")
+    if first_work_entry["pre_entry_requirement"] != "Need power off":
+        raise SystemExit("/api/crew-forms should expose pending pre_entry_requirement text")
+    if first_work_entry["requirement_status"] != "pending":
+        raise SystemExit("/api/crew-forms should expose pending requirement_status")
+    if first_work_entry["requirement_confirmed_by"] is not None or first_work_entry["requirement_confirmed_at"] is not None:
+        raise SystemExit("/api/crew-forms pending requirement should keep confirmation fields empty")
+    if first_work_entry["readiness_state"] != "not_ready" or first_work_entry["readiness_reason"] != "requirement_pending":
+        raise SystemExit("/api/crew-forms pending requirement entry should be not_ready with requirement_pending reason")
+    if second_work_entry["pre_entry_requirement"] != "Need lift access":
+        raise SystemExit("/api/crew-forms should expose confirmed pre_entry_requirement text")
+    if second_work_entry["requirement_status"] != "confirmed":
+        raise SystemExit("/api/crew-forms should expose confirmed requirement_status")
+    if second_work_entry["requirement_confirmed_by"] != "confirm_member":
+        raise SystemExit("/api/crew-forms should expose requirement_confirmed_by for confirmed entries")
+    if second_work_entry["requirement_confirmed_at"] != "2026-07-06 09:30:00":
+        raise SystemExit("/api/crew-forms should expose requirement_confirmed_at for confirmed entries")
+    if second_work_entry["readiness_state"] != "ready" or second_work_entry["readiness_reason"] != "requirement_confirmed":
+        raise SystemExit("/api/crew-forms confirmed requirement entry should be ready with requirement_confirmed reason")
     vendor_c = active_vendors["VendorC"]
+    if len(vendor_c["work_entries"]) != 1:
+        raise SystemExit("/api/crew-forms should include no-requirement work entry for active vendor")
+    vendor_c_entry = vendor_c["work_entries"][0]
+    if vendor_c_entry["pre_entry_requirement"] != "":
+        raise SystemExit("/api/crew-forms no-requirement entry should preserve empty requirement text")
+    if vendor_c_entry["readiness_state"] != "ready" or vendor_c_entry["readiness_reason"] != "no_requirement":
+        raise SystemExit("/api/crew-forms no-requirement entry should be ready with no_requirement reason")
     if vendor_c["contact"]["id"] is not None:
         raise SystemExit("active vendor without contacts should use empty compatibility contact")
     if vendor_c["contact"]["display_name"] != "":
@@ -1170,6 +1239,7 @@ with module.app.test_client() as client:
             "planned_headcount": 4,
             "actual_headcount": 0,
             "work_content": "Insert Crew",
+            "pre_entry_requirement": "Insert Requirement",
             "work_headcount": 0,
             "entry_order": 2,
         },
@@ -1179,8 +1249,99 @@ with module.app.test_client() as client:
     inserted_entry = entry_insert.get_json()["entry"]
     if inserted_entry["business_date"] != business_date:
         raise SystemExit("/api/vendor-work-entry insert should default business_date from helper")
+    for unexpected in ("requirement_status", "requirement_confirmed_by", "requirement_confirmed_at"):
+        if unexpected in inserted_entry:
+            raise SystemExit(f"/api/vendor-work-entry insert should not expose {unexpected} in response payload")
+    if inserted_entry.get("pre_entry_requirement") != "Insert Requirement":
+        raise SystemExit("/api/vendor-work-entry insert should return persisted pre_entry_requirement")
+    inserted_row = conn.execute(
+        "SELECT pre_entry_requirement FROM vendor_work_entries WHERE id = ?",
+        (inserted_entry["id"],),
+    ).fetchone()
+    if inserted_row is None or inserted_row["pre_entry_requirement"] != "Insert Requirement":
+        raise SystemExit("/api/vendor-work-entry insert should persist pre_entry_requirement in DB")
 
     entry_update = client.post(
+        "/api/vendor-work-entry",
+        json={
+            "id": inserted_entry["id"],
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorA",
+            "business_date": business_date,
+            "planned_at": "2000-01-01 11:00",
+            "planned_headcount": 4,
+            "actual_headcount": 1,
+            "work_content": "Insert Crew Updated",
+            "pre_entry_requirement": "Insert Requirement Updated",
+            "work_headcount": 1,
+            "entry_order": 2,
+        },
+    )
+    if entry_update.status_code != 200 or not entry_update.get_json().get("ok"):
+        raise SystemExit("/api/vendor-work-entry update should succeed")
+    updated_entry = entry_update.get_json()["entry"]
+    if updated_entry["actual_headcount"] != 1 or updated_entry["work_content"] != "Insert Crew Updated":
+        raise SystemExit("/api/vendor-work-entry update returned unexpected payload")
+    for unexpected in ("requirement_status", "requirement_confirmed_by", "requirement_confirmed_at"):
+        if unexpected in updated_entry:
+            raise SystemExit(f"/api/vendor-work-entry update should not expose {unexpected} in response payload")
+    if updated_entry.get("pre_entry_requirement") != "Insert Requirement Updated":
+        raise SystemExit("/api/vendor-work-entry update should return updated pre_entry_requirement")
+    updated_row = conn.execute(
+        "SELECT pre_entry_requirement FROM vendor_work_entries WHERE id = ?",
+        (inserted_entry["id"],),
+    ).fetchone()
+    if updated_row is None or updated_row["pre_entry_requirement"] != "Insert Requirement Updated":
+        raise SystemExit("/api/vendor-work-entry update should persist pre_entry_requirement in DB")
+
+    missing_requirement_create = client.post(
+        "/api/vendor-work-entry",
+        json={
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorA",
+            "planned_at": "",
+            "planned_headcount": 1,
+            "actual_headcount": 0,
+            "work_content": "Missing Requirement Create",
+            "work_headcount": 0,
+            "entry_order": 3,
+        },
+    )
+    if missing_requirement_create.status_code != 200 or not missing_requirement_create.get_json().get("ok"):
+        raise SystemExit("/api/vendor-work-entry create without pre_entry_requirement should succeed")
+    missing_requirement_create_entry = missing_requirement_create.get_json()["entry"]
+    if missing_requirement_create_entry.get("pre_entry_requirement") != "":
+        raise SystemExit("/api/vendor-work-entry create without pre_entry_requirement should normalize to empty string")
+    missing_create_row = conn.execute(
+        "SELECT pre_entry_requirement FROM vendor_work_entries WHERE id = ?",
+        (missing_requirement_create_entry["id"],),
+    ).fetchone()
+    if missing_create_row is None or missing_create_row["pre_entry_requirement"] != "":
+        raise SystemExit("/api/vendor-work-entry create without pre_entry_requirement should persist empty string")
+
+    whitespace_requirement_update = client.post(
+        "/api/vendor-work-entry",
+        json={
+            "id": inserted_entry["id"],
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorA",
+            "business_date": business_date,
+            "planned_at": "2000-01-01 11:00",
+            "planned_headcount": 4,
+            "actual_headcount": 1,
+            "work_content": "Insert Crew Updated",
+            "pre_entry_requirement": "   Trim Me   ",
+            "work_headcount": 1,
+            "entry_order": 2,
+        },
+    )
+    if whitespace_requirement_update.status_code != 200 or not whitespace_requirement_update.get_json().get("ok"):
+        raise SystemExit("/api/vendor-work-entry update with whitespace pre_entry_requirement should succeed")
+    whitespace_requirement_entry = whitespace_requirement_update.get_json()["entry"]
+    if whitespace_requirement_entry.get("pre_entry_requirement") != "Trim Me":
+        raise SystemExit("/api/vendor-work-entry update should trim pre_entry_requirement")
+
+    missing_requirement_update = client.post(
         "/api/vendor-work-entry",
         json={
             "id": inserted_entry["id"],
@@ -1195,11 +1356,52 @@ with module.app.test_client() as client:
             "entry_order": 2,
         },
     )
-    if entry_update.status_code != 200 or not entry_update.get_json().get("ok"):
-        raise SystemExit("/api/vendor-work-entry update should succeed")
-    updated_entry = entry_update.get_json()["entry"]
-    if updated_entry["actual_headcount"] != 1 or updated_entry["work_content"] != "Insert Crew Updated":
-        raise SystemExit("/api/vendor-work-entry update returned unexpected payload")
+    if missing_requirement_update.status_code != 200 or not missing_requirement_update.get_json().get("ok"):
+        raise SystemExit("/api/vendor-work-entry update without pre_entry_requirement should succeed")
+    missing_requirement_update_entry = missing_requirement_update.get_json()["entry"]
+    if missing_requirement_update_entry.get("pre_entry_requirement") != "":
+        raise SystemExit("/api/vendor-work-entry update without pre_entry_requirement should normalize to empty string")
+    missing_update_row = conn.execute(
+        "SELECT pre_entry_requirement FROM vendor_work_entries WHERE id = ?",
+        (inserted_entry["id"],),
+    ).fetchone()
+    if missing_update_row is None or missing_update_row["pre_entry_requirement"] != "":
+        raise SystemExit("/api/vendor-work-entry update without pre_entry_requirement should persist empty string")
+
+    over_limit_requirement = "R" * 501
+    unchanged_before_invalid_requirement = conn.execute(
+        "SELECT pre_entry_requirement, updated_at FROM vendor_work_entries WHERE id = ?",
+        (inserted_entry["id"],),
+    ).fetchone()
+    invalid_requirement_entry = client.post(
+        "/api/vendor-work-entry",
+        json={
+            "id": inserted_entry["id"],
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorA",
+            "business_date": business_date,
+            "planned_at": "2000-01-01 11:00",
+            "planned_headcount": 4,
+            "actual_headcount": 1,
+            "work_content": "Insert Crew Updated",
+            "pre_entry_requirement": over_limit_requirement,
+            "work_headcount": 1,
+            "entry_order": 2,
+        },
+    )
+    if invalid_requirement_entry.status_code != 400:
+        raise SystemExit("over-limit pre_entry_requirement should return HTTP 400")
+    invalid_requirement_payload = invalid_requirement_entry.get_json()
+    if invalid_requirement_payload.get("error", {}).get("code") != "invalid_pre_entry_requirement":
+        raise SystemExit("over-limit pre_entry_requirement should use invalid_pre_entry_requirement error code")
+    if invalid_requirement_payload.get("error", {}).get("message") != "pre_entry_requirement must be 500 characters or fewer.":
+        raise SystemExit("over-limit pre_entry_requirement should return the expected error message")
+    unchanged_after_invalid_requirement = conn.execute(
+        "SELECT pre_entry_requirement, updated_at FROM vendor_work_entries WHERE id = ?",
+        (inserted_entry["id"],),
+    ).fetchone()
+    if tuple(unchanged_before_invalid_requirement) != tuple(unchanged_after_invalid_requirement):
+        raise SystemExit("over-limit pre_entry_requirement should not modify DB state")
 
     invalid_entry = client.post(
         "/api/vendor-work-entry",
@@ -1731,6 +1933,7 @@ def create_legacy_vendor_contacts_sqlite(path: Path) -> None:
             planned_headcount INTEGER NOT NULL,
             actual_headcount INTEGER NOT NULL,
             work_content TEXT NOT NULL,
+            pre_entry_requirement TEXT,
             work_headcount INTEGER NOT NULL,
             entry_order INTEGER NOT NULL,
             created_at TEXT NOT NULL,
@@ -1809,7 +2012,8 @@ with module.db() as conn:
     for required in (
         "id", "sheet_id", "vendor_name", "business_date", "planned_at",
         "planned_headcount", "actual_headcount", "work_content", "work_headcount",
-        "entry_order", "created_at", "updated_at",
+        "entry_order", "pre_entry_requirement", "requirement_status",
+        "requirement_confirmed_by", "requirement_confirmed_at", "created_at", "updated_at",
     ):
         if required not in vendor_work_entries_columns:
             raise SystemExit(f"vendor_work_entries missing required column: {required}")
@@ -1909,7 +2113,16 @@ with module.db() as conn:
                 raise SystemExit("legacy unique(sheet_id, vendor_name) should be removed after migration")
 
     work_columns = [col["name"] for col in conn.execute("PRAGMA table_info(vendor_work_entries)").fetchall()]
-    for required in ("sheet_id", "vendor_name", "business_date", "entry_order"):
+    for required in (
+        "sheet_id",
+        "vendor_name",
+        "business_date",
+        "entry_order",
+        "pre_entry_requirement",
+        "requirement_status",
+        "requirement_confirmed_by",
+        "requirement_confirmed_at",
+    ):
         if required not in work_columns:
             raise SystemExit("vendor_work_entries should remain intact after vendor_contacts migration")
 
@@ -1975,14 +2188,37 @@ if "/api/vendor-contact" in template_text or "/api/vendor-work-entry" in templat
 
 for required in (
     "async function loadCrewForms",
+    "async function confirmCrewWorkEntryRequirement",
+    "function buildCrewRequirementMeta",
+    "function buildCrewReadinessMeta",
     "function renderCrewForms",
     "function renderCrewFormError",
     "function formatCrewDate",
     "function formatCrewDateTime",
     "/api/crew-forms?sheet_id=",
+    "/api/crew-work-entry-requirement-confirm",
+    'setAttribute("data-testid", "crew-work-entry-pre-entry-requirement")',
+    'setAttribute("data-testid", "crew-work-entry-requirement-status")',
+    'setAttribute("data-testid", "crew-work-entry-readiness-indicator")',
+    'data-testid="crew-work-entry-requirement-confirm-action"',
+    'const actionMarkup = isConfirmed',
+    "尚未具備進場條件",
+    "需求已確認",
+    "無進場前需求",
+    "await loadCrewForms(sheetId);",
 ):
     if required not in js_text:
         raise SystemExit(f"app.js missing readonly crew helper: {required}")
+
+for readiness_required in (
+    'setAttribute("data-readiness-state", readinessMeta.readinessState)',
+    'setAttribute("data-readiness-reason", readinessMeta.readinessReason)',
+    "尚未具備進場條件",
+    "需求已確認",
+    "無進場前需求",
+):
+    if readiness_required not in js_text:
+        raise SystemExit(f"app.js missing readiness indicator guardrail: {readiness_required}")
 
 for forbidden in (
     'fetch("/api/vendor-contact"',
@@ -6213,6 +6449,248 @@ print("vendor-work-entry write isolation smoke PASS")
         raise AssertionError("vendor-work-entry write isolation smoke subprocess did not report PASS.")
 
 
+def run_vendor_work_entry_requirement_confirmation_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+business_date = module.resolve_crew_business_date()
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site_row = conn.execute("SELECT id, site_name FROM sites ORDER BY id LIMIT 1").fetchone()
+    if default_site_row is None:
+        raise SystemExit("expected a default site for requirement confirmation smoke")
+    default_site_id = int(default_site_row["id"])
+    default_site_name = str(default_site_row["site_name"])
+    sheet_row = conn.execute("SELECT id FROM sheets WHERE site_id = ? ORDER BY id LIMIT 1", (default_site_id,)).fetchone()
+    if sheet_row is None:
+        raise SystemExit("expected a default sheet for requirement confirmation smoke")
+    sheet_id = int(sheet_row["id"])
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+            ("__requirement_confirm_site_b__", "requirement-confirm-site-b"),
+        ).fetchone()["id"]
+    )
+    secondary_sheet_id = int(
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+            ("Requirement Confirm Sheet B", 999, secondary_site_id),
+        ).fetchone()["id"]
+    )
+    member_password_hash = module.generate_password_hash("member-pass")
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("confirm_member", "confirm_member", member_password_hash, "member"),
+    )
+    member_id = int(conn.execute("SELECT id FROM users WHERE username = ?", ("confirm_member",)).fetchone()["id"])
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, default_site_id, "member"),
+    )
+    admin_password_hash = module.generate_password_hash("admin-pass")
+    conn.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (admin_password_hash,))
+    conn.execute(
+        '''
+        INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
+        VALUES (?, ?, ?, ?)
+        ''',
+        ("vendor_confirm_only", module.generate_password_hash("vendor-pass"), "Vendor Confirm", 1),
+    )
+    vendor_account_id = int(
+        conn.execute("SELECT id FROM vendor_accounts WHERE username = ?", ("vendor_confirm_only",)).fetchone()["id"]
+    )
+    target_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Confirm", business_date, "2000-01-01 09:00", 3, 0, "Confirm Work", "Need power off", 0, 0),
+        ).fetchone()["id"]
+    )
+    secondary_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (secondary_sheet_id, "Vendor Confirm", business_date, "2000-01-01 10:00", 2, 0, "Cross Site Confirm Work", "Need fence open", 0, 0),
+        ).fetchone()["id"]
+    )
+    conn.commit()
+
+def fetch_confirmation_snapshot(entry_id):
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            '''
+            SELECT pre_entry_requirement, requirement_status, requirement_confirmed_by, requirement_confirmed_at
+            FROM vendor_work_entries
+            WHERE id = ?
+            ''',
+            (entry_id,),
+        ).fetchone()
+        return dict(row)
+
+client = module.app.test_client()
+
+def set_member_session(*, with_current_site=True):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = int(member_id)
+        session["username"] = "confirm_member"
+        session["display_name"] = "confirm_member"
+        session["role"] = "member"
+        if with_current_site:
+            session["current_site_id"] = int(default_site_id)
+            session["current_site_name"] = str(default_site_name)
+            session["site_selection_required"] = False
+
+set_member_session()
+before_confirm = fetch_confirmation_snapshot(target_entry_id)
+confirm_response = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": target_entry_id, "sheet_id": sheet_id},
+)
+if confirm_response.status_code != 200 or not confirm_response.get_json().get("ok"):
+    raise SystemExit("requirement confirmation success path should return ok=true")
+confirm_entry = confirm_response.get_json()["entry"]
+if set(confirm_entry.keys()) != {"id", "requirement_status", "requirement_confirmed_by", "requirement_confirmed_at"}:
+    raise SystemExit("requirement confirmation response contract should remain minimal")
+if int(confirm_entry["id"]) != int(target_entry_id):
+    raise SystemExit("requirement confirmation should return the confirmed entry id")
+if confirm_entry["requirement_status"] != "confirmed":
+    raise SystemExit("requirement confirmation should set requirement_status=confirmed")
+if confirm_entry["requirement_confirmed_by"] != "confirm_member":
+    raise SystemExit("requirement confirmation should stamp current internal username")
+if not str(confirm_entry["requirement_confirmed_at"] or ""):
+    raise SystemExit("requirement confirmation should stamp requirement_confirmed_at")
+after_confirm = fetch_confirmation_snapshot(target_entry_id)
+if after_confirm["pre_entry_requirement"] != before_confirm["pre_entry_requirement"]:
+    raise SystemExit("requirement confirmation must not modify pre_entry_requirement text")
+if after_confirm["requirement_status"] != "confirmed":
+    raise SystemExit("requirement confirmation should persist confirmed status")
+if after_confirm["requirement_confirmed_by"] != "confirm_member":
+    raise SystemExit("requirement confirmation should persist requirement_confirmed_by")
+if not str(after_confirm["requirement_confirmed_at"] or ""):
+    raise SystemExit("requirement confirmation should persist requirement_confirmed_at")
+
+set_member_session()
+repeat_response = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": target_entry_id, "sheet_id": sheet_id},
+)
+if repeat_response.status_code != 200 or not repeat_response.get_json().get("ok"):
+    raise SystemExit("repeated requirement confirmation should remain idempotently successful")
+repeat_entry = repeat_response.get_json()["entry"]
+if repeat_entry["requirement_status"] != "confirmed":
+    raise SystemExit("repeated requirement confirmation should preserve confirmed status")
+repeat_snapshot = fetch_confirmation_snapshot(target_entry_id)
+if repeat_snapshot != after_confirm:
+    raise SystemExit("repeated requirement confirmation should not change persisted confirmation state")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["identity_type"] = "vendor"
+    session["vendor_account_id"] = int(vendor_account_id)
+    session["vendor_username"] = "vendor_confirm_only"
+    session["vendor_name"] = "Vendor Confirm"
+vendor_forbidden = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": target_entry_id, "sheet_id": sheet_id},
+)
+if vendor_forbidden.status_code != 403:
+    raise SystemExit("vendor session should not confirm requirement")
+vendor_forbidden_payload = vendor_forbidden.get_json()
+if vendor_forbidden_payload["error"]["code"] != "vendor_auth_forbidden":
+    raise SystemExit("vendor session rejection should preserve vendor_auth_forbidden error code")
+if fetch_confirmation_snapshot(target_entry_id) != repeat_snapshot:
+    raise SystemExit("vendor session rejection must not modify confirmation state")
+
+set_member_session(with_current_site=False)
+missing_site = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": target_entry_id, "sheet_id": sheet_id},
+)
+if missing_site.status_code != 403:
+    raise SystemExit("missing current site should reject requirement confirmation with 403")
+missing_site_payload = missing_site.get_json()
+if missing_site_payload["error"]["code"] != "site_context_invalid":
+    raise SystemExit("missing current site should preserve site_context_invalid error code")
+if fetch_confirmation_snapshot(target_entry_id) != repeat_snapshot:
+    raise SystemExit("missing current site rejection must not modify confirmation state")
+
+set_member_session()
+before_cross_site = fetch_confirmation_snapshot(secondary_entry_id)
+cross_site = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": secondary_entry_id, "sheet_id": secondary_sheet_id},
+)
+if cross_site.status_code != 403:
+    raise SystemExit("cross-site requirement confirmation should be rejected with 403")
+cross_site_payload = cross_site.get_json()
+if cross_site_payload["error"]["code"] != "write_target_not_in_current_site":
+    raise SystemExit("cross-site requirement confirmation should preserve write_target_not_in_current_site")
+after_cross_site = fetch_confirmation_snapshot(secondary_entry_id)
+if after_cross_site != before_cross_site:
+    raise SystemExit("cross-site requirement confirmation must not modify stored row")
+
+set_member_session()
+before_sheet_mismatch = fetch_confirmation_snapshot(target_entry_id)
+sheet_mismatch = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": target_entry_id, "sheet_id": secondary_sheet_id},
+)
+if sheet_mismatch.status_code != 409:
+    raise SystemExit("sheet mismatch requirement confirmation should be rejected with 409")
+sheet_mismatch_payload = sheet_mismatch.get_json()
+if sheet_mismatch_payload["error"]["code"] != "sheet_mismatch":
+    raise SystemExit("sheet mismatch requirement confirmation should preserve sheet_mismatch error code")
+after_sheet_mismatch = fetch_confirmation_snapshot(target_entry_id)
+if after_sheet_mismatch != before_sheet_mismatch:
+    raise SystemExit("sheet mismatch requirement confirmation must not modify stored row")
+
+print("vendor-work-entry requirement confirmation smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "vendor-work-entry requirement confirmation smoke PASS" not in result.stdout:
+        raise AssertionError("vendor-work-entry requirement confirmation smoke subprocess did not report PASS.")
+
+
 def run_site_write_isolation_readiness_smoke() -> None:
     script_path = TOOLS_DIR / "check_site_write_isolation_readiness.py"
     if not script_path.exists():
@@ -6348,19 +6826,19 @@ with module.db() as conn:
         '''
         INSERT INTO vendor_work_entries (
             sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-            actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ''',
-        (1, "Vendor A", business_date, "2000-01-01 09:00", 3, 1, "Vendor A Work 1", 1, 0),
+        (1, "Vendor A", business_date, "2000-01-01 09:00", 3, 1, "Vendor A Work 1", "Vendor A Requirement 1", 1, 0),
     )
     conn.execute(
         '''
         INSERT INTO vendor_work_entries (
             sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-            actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ''',
-        (1, "Vendor A", business_date, "2000-01-01 10:00", 2, 0, "Vendor A Work 2", 0, 1),
+        (1, "Vendor A", business_date, "2000-01-01 10:00", 2, 0, "Vendor A Work 2", "Vendor A Requirement 2", 0, 1),
     )
     conn.execute(
         '''
@@ -6771,6 +7249,7 @@ for fragment in (
     'data-testid="vendor-work-entry-draft-submit-button"',
     'data-testid="vendor-work-entry-draft-context-group"',
     'data-testid="vendor-work-entry-draft-work-group"',
+    'data-testid="vendor-work-entry-draft-pre-entry-requirement"',
     'data-testid="vendor-work-entry-draft-validation-summary"',
     'data-testid="vendor-work-entry-draft-validation-error-planned-at"',
     'data-testid="vendor-work-entry-draft-validation-error-planned-headcount"',
@@ -6798,6 +7277,8 @@ if f'data-testid="vendor-work-entry-draft-write-mode">update<' not in vendor_wor
     raise SystemExit("vendor work entry draft write mode should align with active entry preflight")
 if f'data-testid="vendor-work-entry-draft-hidden-entry-id"' not in vendor_work_entry_page_html or f'value="{vendor_a_entry_id}"' not in vendor_work_entry_page_html:
     raise SystemExit("vendor work entry draft hidden entry id should align with active entry preflight")
+if "Vendor A Requirement 1" not in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry selected-entry mode should display existing pre-entry requirement")
 
 def extract_input_value_by_testid(html: str, testid: str) -> str:
     marker = f'data-testid="{testid}"'
@@ -6822,6 +7303,24 @@ def extract_input_value_by_testid(html: str, testid: str) -> str:
     return input_tag[value_start:value_end]
 
 
+def extract_textarea_value_by_testid(html: str, testid: str) -> str:
+    marker = f'data-testid="{testid}"'
+    marker_index = html.find(marker)
+    if marker_index == -1:
+        raise SystemExit(f"vendor work entry page should expose textarea marker: {testid}")
+    tag_start = html.rfind("<textarea", 0, marker_index)
+    if tag_start == -1:
+        raise SystemExit(f"vendor work entry page textarea marker should belong to a textarea tag: {testid}")
+    content_start = html.find(">", marker_index)
+    if content_start == -1:
+        raise SystemExit(f"vendor work entry page textarea tag should terminate: {testid}")
+    content_start += 1
+    content_end = html.find("</textarea>", content_start)
+    if content_end == -1:
+        raise SystemExit(f"vendor work entry page textarea content should terminate: {testid}")
+    return html[content_start:content_end]
+
+
 def extract_hidden_vendor_work_entry_id(html: str) -> str:
     return extract_input_value_by_testid(html, "vendor-work-entry-draft-hidden-entry-id")
 
@@ -6837,6 +7336,7 @@ def fetch_vendor_work_entry_snapshot(entry_id: int) -> dict[str, object]:
             planned_headcount,
             actual_headcount,
             work_content,
+            pre_entry_requirement,
             work_headcount,
             entry_order
         FROM vendor_work_entries
@@ -6889,6 +7389,7 @@ for fragment in (
     'data-testid="vendor-work-entry-draft-entry-id"',
     'data-testid="vendor-work-entry-draft-hidden-entry-id"',
     'data-testid="vendor-work-entry-draft-write-mode"',
+    'data-testid="vendor-work-entry-draft-pre-entry-requirement"',
     'data-testid="vendor-work-entry-history"',
     'data-testid="vendor-work-entry-pending-items"',
     "2000-01-01 10:00",
@@ -6912,6 +7413,8 @@ if "You are viewing an existing entry that is ready for update." not in vendor_w
     raise SystemExit("vendor work entry switched readiness summary should explain selected-entry update status")
 if "You are viewing an existing planned entry for today. Switching entries aligns the draft form with that entry's update context." not in vendor_work_entry_page_second_today_entry_html:
     raise SystemExit("vendor work entry switched page should explain selected-entry navigation status")
+if "Vendor A Requirement 2" not in vendor_work_entry_page_second_today_entry_html:
+    raise SystemExit("vendor work entry switched selected-entry mode should display the second entry pre-entry requirement")
 
 vendor_work_entry_page_new_entry_mode = client.get(
     "/vendor/work-entry?new_entry=1",
@@ -6942,6 +7445,8 @@ if "You are preparing a new entry for today." not in vendor_work_entry_page_new_
     raise SystemExit("vendor work entry create mode readiness summary should explain create status")
 if "You are preparing a new planned entry for today, not editing an existing one." not in vendor_work_entry_page_new_entry_mode_html:
     raise SystemExit("vendor work entry create mode should explain create-mode navigation status")
+if extract_textarea_value_by_testid(vendor_work_entry_page_new_entry_mode_html, "vendor-work-entry-draft-pre-entry-requirement") != "":
+    raise SystemExit("vendor work entry create mode should keep pre-entry requirement empty by default")
 vendor_work_entry_count_before_new_entry_submit = conn.execute(
     "SELECT COUNT(*) FROM vendor_work_entries"
 ).fetchone()[0]
@@ -6976,6 +7481,7 @@ create_mode_submit = create_mode_submit_client.post(
         "planned_headcount": 4,
         "actual_headcount": 0,
         "work_content": "Create mode third entry verification",
+        "pre_entry_requirement": "Create mode requirement verification",
         "work_headcount": 0,
         "entry_order": int(create_mode_entry_order),
     },
@@ -6989,6 +7495,8 @@ if not isinstance(create_mode_submit_payload, dict) or create_mode_submit_payloa
 created_entry_payload = create_mode_submit_payload.get("entry")
 if not isinstance(created_entry_payload, dict):
     raise SystemExit("vendor work entry create-mode submit should return created entry payload")
+if created_entry_payload.get("pre_entry_requirement") != "Create mode requirement verification":
+    raise SystemExit("vendor work entry create-mode submit should return persisted pre_entry_requirement in response payload")
 created_entry_id = int(created_entry_payload.get("id"))
 if created_entry_id in {int(vendor_a_entry_id), int(vendor_a_second_entry_id)}:
     raise SystemExit("vendor work entry create-mode submit should create a new row instead of reusing existing today entry ids")
@@ -7012,6 +7520,8 @@ if int(created_entry_snapshot["entry_order"]) != 2:
     raise SystemExit("vendor work entry create-mode submit should use the default today-entry-count entry_order for the new row")
 if str(created_entry_snapshot["work_content"]) != "Create mode third entry verification":
     raise SystemExit("vendor work entry create-mode submit should persist the submitted work_content for the new row")
+if str(created_entry_snapshot["pre_entry_requirement"]) != "Create mode requirement verification":
+    raise SystemExit("vendor work entry create-mode submit should persist the submitted pre_entry_requirement for the new row")
 vendor_work_entry_page_after_new_entry_submit = client.get(
     "/vendor/work-entry",
     follow_redirects=False,
@@ -7051,6 +7561,7 @@ selected_first_entry_submit = selected_first_entry_submit_client.post(
         "planned_headcount": int(first_entry_before_first_selected_submit["planned_headcount"]),
         "actual_headcount": int(first_entry_before_first_selected_submit["actual_headcount"]),
         "work_content": "Selected first entry target verification",
+        "pre_entry_requirement": "Selected first requirement verification",
         "work_headcount": int(first_entry_before_first_selected_submit["work_headcount"]),
         "entry_order": int(first_entry_before_first_selected_submit["entry_order"]),
     },
@@ -7061,8 +7572,13 @@ if selected_first_entry_submit.status_code != 200:
 selected_first_entry_submit_payload = selected_first_entry_submit.get_json()
 if not isinstance(selected_first_entry_submit_payload, dict) or selected_first_entry_submit_payload.get("ok") is not True:
     raise SystemExit("selected first today entry submit should return ok=true payload")
-if int(selected_first_entry_submit_payload.get("id")) != int(vendor_a_entry_id):
+selected_first_entry_response = selected_first_entry_submit_payload.get("entry")
+if not isinstance(selected_first_entry_response, dict):
+    raise SystemExit("selected first today entry submit should return entry payload")
+if int(selected_first_entry_response.get("id") or 0) != int(vendor_a_entry_id):
     raise SystemExit("selected first today entry submit should preserve first entry id")
+if selected_first_entry_response.get("pre_entry_requirement") != "Selected first requirement verification":
+    raise SystemExit("selected first today entry submit should return updated pre_entry_requirement")
 vendor_work_entry_count_after_first_selected_submit = conn.execute(
     "SELECT COUNT(*) FROM vendor_work_entries"
 ).fetchone()[0]
@@ -7072,6 +7588,8 @@ first_entry_after_first_selected_submit = fetch_vendor_work_entry_snapshot(vendo
 second_entry_after_first_selected_submit = fetch_vendor_work_entry_snapshot(vendor_a_second_entry_id)
 if first_entry_after_first_selected_submit["work_content"] != "Selected first entry target verification":
     raise SystemExit("selected first today entry submit should update the first entry only")
+if first_entry_after_first_selected_submit["pre_entry_requirement"] != "Selected first requirement verification":
+    raise SystemExit("selected first today entry submit should update pre_entry_requirement for the first entry only")
 if second_entry_after_first_selected_submit != second_entry_before_first_selected_submit:
     raise SystemExit("selected first today entry submit must not mutate the second entry")
 
@@ -7095,6 +7613,7 @@ selected_second_entry_submit = selected_second_entry_submit_client.post(
         "planned_headcount": int(second_entry_before_second_selected_submit["planned_headcount"]),
         "actual_headcount": int(second_entry_before_second_selected_submit["actual_headcount"]),
         "work_content": "Selected second entry target verification",
+        "pre_entry_requirement": "Selected second requirement verification",
         "work_headcount": int(second_entry_before_second_selected_submit["work_headcount"]),
         "entry_order": int(second_entry_before_second_selected_submit["entry_order"]),
     },
@@ -7105,8 +7624,13 @@ if selected_second_entry_submit.status_code != 200:
 selected_second_entry_submit_payload = selected_second_entry_submit.get_json()
 if not isinstance(selected_second_entry_submit_payload, dict) or selected_second_entry_submit_payload.get("ok") is not True:
     raise SystemExit("selected second today entry submit should return ok=true payload")
-if int(selected_second_entry_submit_payload.get("id")) != int(vendor_a_second_entry_id):
+selected_second_entry_response = selected_second_entry_submit_payload.get("entry")
+if not isinstance(selected_second_entry_response, dict):
+    raise SystemExit("selected second today entry submit should return entry payload")
+if int(selected_second_entry_response.get("id") or 0) != int(vendor_a_second_entry_id):
     raise SystemExit("selected second today entry submit should preserve second entry id")
+if selected_second_entry_response.get("pre_entry_requirement") != "Selected second requirement verification":
+    raise SystemExit("selected second today entry submit should return updated pre_entry_requirement")
 vendor_work_entry_count_after_second_selected_submit = conn.execute(
     "SELECT COUNT(*) FROM vendor_work_entries"
 ).fetchone()[0]
@@ -7118,6 +7642,8 @@ if first_entry_after_second_selected_submit != first_entry_before_second_selecte
     raise SystemExit("selected second today entry submit must not mutate the first entry")
 if second_entry_after_second_selected_submit["work_content"] != "Selected second entry target verification":
     raise SystemExit("selected second today entry submit should update the second entry only")
+if second_entry_after_second_selected_submit["pre_entry_requirement"] != "Selected second requirement verification":
+    raise SystemExit("selected second today entry submit should update pre_entry_requirement for the second entry only")
 
 vendor_work_entry_submit_result_page = client.get(
     "/vendor/work-entry?submit_status=success&submit_mode=create",
@@ -7568,12 +8094,13 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
             ''',
             ("vendor_active", module.generate_password_hash("vendor-pass"), "Vendor A", 1),
         )
+        next_task_col_index = conn.execute("SELECT COALESCE(MAX(col_index), 0) + 1 FROM tasks").fetchone()[0]
         conn.execute(
             '''
             INSERT INTO tasks (sheet_id, col_index, vendor, location, name)
             VALUES (?, ?, ?, ?, ?)
             ''',
-            (1, 5, "Vendor A", "Vendor Zone", "Vendor A Task"),
+            (1, next_task_col_index, "Vendor A", "Vendor Zone", "Vendor A Task"),
         )
         business_date = module.resolve_crew_business_date()
         conn.execute(
@@ -7655,6 +8182,7 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
         "planned_headcount": 2,
         "actual_headcount": 0,
         "work_content": "Vendor A Work Create",
+        "pre_entry_requirement": "Vendor A Requirement Create",
         "work_headcount": 0,
         "entry_order": 1,
     }
@@ -7665,6 +8193,8 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
     create_entry = create_response_payload.get("entry") if isinstance(create_response_payload, dict) else None
     if create_response_payload.get("ok") is not True or not isinstance(create_entry, dict):
         raise AssertionError("vendor submit pipeline regression smoke create path should preserve ok/entry response contract")
+    if create_entry.get("pre_entry_requirement") != "Vendor A Requirement Create":
+        raise AssertionError("vendor submit pipeline regression smoke create path should return persisted pre_entry_requirement")
     if create_entry.get("id") is None or create_entry.get("vendor_name") != "Vendor A" or create_entry.get("entry_order") != 1:
         raise AssertionError("vendor submit pipeline regression smoke create path should preserve trusted create payload fields")
 
@@ -7677,6 +8207,7 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
         "planned_headcount": 4,
         "actual_headcount": 2,
         "work_content": "Vendor A Work Updated",
+        "pre_entry_requirement": "Vendor A Requirement Updated",
         "work_headcount": 2,
         "entry_order": 0,
     }
@@ -7687,6 +8218,8 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
     update_entry = update_response_payload.get("entry") if isinstance(update_response_payload, dict) else None
     if update_response_payload.get("ok") is not True or not isinstance(update_entry, dict):
         raise AssertionError("vendor submit pipeline regression smoke update path should preserve ok/entry response contract")
+    if update_entry.get("pre_entry_requirement") != "Vendor A Requirement Updated":
+        raise AssertionError("vendor submit pipeline regression smoke update path should return persisted pre_entry_requirement")
     if (
         int(update_entry.get("id") or 0) != int(first_entry_id)
         or update_entry.get("work_content") != "Vendor A Work Updated"
@@ -7726,12 +8259,13 @@ def run_vendor_work_entry_submit_result_flow_completion_smoke(db_path: Path) -> 
             ''',
             ("vendor_active", module.generate_password_hash("vendor-pass"), "Vendor A", 1),
         )
+        next_task_col_index = conn.execute("SELECT COALESCE(MAX(col_index), 0) + 1 FROM tasks").fetchone()[0]
         conn.execute(
             '''
             INSERT INTO tasks (sheet_id, col_index, vendor, location, name)
             VALUES (?, ?, ?, ?, ?)
             ''',
-            (1, 5, "Vendor A", "Vendor Zone", "Vendor A Task"),
+            (1, next_task_col_index, "Vendor A", "Vendor Zone", "Vendor A Task"),
         )
         business_date = module.resolve_crew_business_date()
         conn.execute(
@@ -7894,6 +8428,7 @@ def main() -> int:
         run_unit_extra_write_isolation_smoke(db_path)
         run_vendor_contact_write_isolation_smoke(db_path)
         run_vendor_work_entry_write_isolation_smoke(db_path)
+        run_vendor_work_entry_requirement_confirmation_smoke(db_path)
         vendor_auth_db = Path(tmpdir) / "vendor-auth-foundation.db"
         create_sample_sqlite(vendor_auth_db)
         run_vendor_auth_foundation_smoke(vendor_auth_db)
