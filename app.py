@@ -2387,6 +2387,164 @@ def serialize_vendor_business_read_entry(row: sqlite3.Row) -> dict[str, object]:
     }
 
 
+def resolve_vendor_today_entry_selection(
+    preview_entries: list[dict[str, object]],
+    business_date: str,
+    today_entry_index_raw: object,
+) -> dict[str, object]:
+    today_entries = [
+        entry
+        for entry in preview_entries
+        if str(entry.get("business_date", "")) == str(business_date)
+    ]
+    try:
+        active_index = int(today_entry_index_raw)
+    except (TypeError, ValueError):
+        active_index = 0
+    if active_index < 0 or active_index >= len(today_entries):
+        active_index = 0
+    active_today_entry = today_entries[active_index] if today_entries else None
+    active_entry_id = (
+        int(active_today_entry["entry_id"])
+        if active_today_entry is not None and active_today_entry.get("entry_id") is not None
+        else None
+    )
+    return {
+        "today_entries": today_entries,
+        "active_index": active_index,
+        "active_today_entry": active_today_entry,
+        "active_entry_id": active_entry_id,
+    }
+
+
+def build_vendor_work_entry_page_context(
+    conn: sqlite3.Connection,
+    vendor_account,
+    business_identity: dict[str, object],
+    scope: dict[str, object],
+    business_date: str,
+    today_entry_index_raw: object,
+    new_entry_raw: object,
+    submit_status_raw: object,
+    submit_mode_raw: object,
+) -> dict[str, object]:
+    profile_payload = {
+        "ok": True,
+        "vendor_account_id": int(vendor_account["id"]),
+        "vendor_username": str(vendor_account["username"]),
+        "vendor_name": str(vendor_account["vendor_name"]),
+    }
+    scope_payload = {"ok": True, "scope": scope}
+
+    rows = fetch_vendor_business_read_preview(
+        conn,
+        vendor_name=str(business_identity["vendor_name"]),
+    )
+    preview_payload = serialize_vendor_business_read_preview(
+        business_identity=business_identity,
+        rows=rows,
+    )
+    preflight_sheet_id = find_vendor_work_entry_preflight_sheet_id(
+        conn,
+        vendor_name=str(business_identity["vendor_name"]),
+    )
+    preview_entries = list(preview_payload.get("entries", []))
+    selection = resolve_vendor_today_entry_selection(
+        preview_entries,
+        business_date,
+        today_entry_index_raw,
+    )
+    today_entries = list(selection["today_entries"])
+    active_today_entry = selection["active_today_entry"]
+    active_entry_id = selection["active_entry_id"]
+    is_new_entry_mode = str(new_entry_raw).strip() == "1"
+
+    preflight_payload = None
+    if preflight_sheet_id is not None:
+        preflight_kwargs = {
+            "sheet_id": preflight_sheet_id,
+            "business_date": business_date,
+        }
+        if active_entry_id is not None and not is_new_entry_mode:
+            preflight_kwargs["entry_id"] = active_entry_id
+        preflight_payload = {
+            "ok": True,
+            "preflight": vendor_write_preflight(
+                conn,
+                **preflight_kwargs,
+            ),
+        }
+
+    pending_items = get_pending_items_by_vendor(preflight_sheet_id) if preflight_sheet_id is not None else {}
+    vendor_pending_items = list(pending_items.get(str(business_identity["vendor_name"]), []))
+    preflight_context = preflight_payload.get("preflight") if isinstance(preflight_payload, dict) else {}
+    has_work_content = bool(str((active_today_entry or {}).get("work_content", "")).strip())
+    today_entries_summary = {
+        "entry_count": len(today_entries),
+        "active_index": int(selection["active_index"]),
+        "entries": today_entries,
+    }
+    draft_mode = "create" if is_new_entry_mode else "selected_entry"
+    draft_entry_defaults = {
+        "planned_at": "",
+        "planned_headcount": 0,
+        "actual_headcount": 0,
+        "work_content": "",
+        "work_headcount": 0,
+        "entry_order": len(today_entries),
+    }
+    draft_entry_source = draft_entry_defaults if is_new_entry_mode else (active_today_entry or {})
+    readiness_summary = {
+        "vendor_name": str(profile_payload["vendor_name"]),
+        "vendor_username": str(profile_payload["vendor_username"]),
+        "business_date": business_date,
+        "preflight_available": preflight_payload is not None,
+        "active_entry_id": (active_today_entry or {}).get("entry_id"),
+        "sheet_id": preflight_context.get("sheet_id"),
+        "write_mode": preflight_context.get("write_mode"),
+        "entry_id": preflight_context.get("entry_id"),
+        "has_today_entry": active_today_entry is not None,
+        "planned_at": str((active_today_entry or {}).get("planned_at", "")),
+        "planned_headcount": int((active_today_entry or {}).get("planned_headcount", 0) or 0),
+        "actual_headcount": int((active_today_entry or {}).get("actual_headcount", 0) or 0),
+        "has_work_content": has_work_content,
+        "work_headcount": int((active_today_entry or {}).get("work_headcount", 0) or 0),
+        "pending_items": vendor_pending_items,
+        "pending_item_count": len(vendor_pending_items),
+    }
+    draft_submit_preparation = {
+        "sheet_id": preflight_context.get("sheet_id"),
+        "business_date": business_date,
+        "vendor_name": str(profile_payload["vendor_name"]),
+        "entry_id": preflight_context.get("entry_id"),
+        "write_mode": preflight_context.get("write_mode"),
+        "planned_at": str(draft_entry_source.get("planned_at", "")),
+        "planned_headcount": int(draft_entry_source.get("planned_headcount", 0) or 0),
+        "actual_headcount": int(draft_entry_source.get("actual_headcount", 0) or 0),
+        "work_content": str(draft_entry_source.get("work_content", "")),
+        "work_headcount": int(draft_entry_source.get("work_headcount", 0) or 0),
+        "entry_order": int(draft_entry_source.get("entry_order", 0) or 0),
+    }
+    submit_result = {
+        "status": str(submit_status_raw or ""),
+        "mode": str(submit_mode_raw or ""),
+    }
+    return {
+        "profile_payload": profile_payload,
+        "scope_payload": scope_payload,
+        "preview_payload": preview_payload,
+        "preflight_payload": preflight_payload,
+        "preflight_sheet_id": preflight_sheet_id,
+        "today_entries_summary": today_entries_summary,
+        "readiness_summary": readiness_summary,
+        "draft_submit_preparation": draft_submit_preparation,
+        "submit_result": submit_result,
+        "draft_mode": draft_mode,
+        "is_new_entry_mode": is_new_entry_mode,
+        "preflight_business_date": business_date,
+    }
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -3776,132 +3934,23 @@ def vendor_work_entry_page():
         return redirect(url_for("vendor_login"))
 
     business_date = resolve_crew_business_date()
-    profile_payload = {
-        "ok": True,
-        "vendor_account_id": int(vendor_account["id"]),
-        "vendor_username": str(vendor_account["username"]),
-        "vendor_name": str(vendor_account["vendor_name"]),
-    }
-    scope_payload = {"ok": True, "scope": scope}
-
     with db() as conn:
-        rows = fetch_vendor_business_read_preview(
+        page_context = build_vendor_work_entry_page_context(
             conn,
-            vendor_name=str(business_identity["vendor_name"]),
-        )
-        preview_payload = serialize_vendor_business_read_preview(
+            vendor_account,
             business_identity=business_identity,
-            rows=rows,
+            scope=scope,
+            business_date=business_date,
+            today_entry_index_raw=request.args.get("today_entry_index", ""),
+            new_entry_raw=request.args.get("new_entry", ""),
+            submit_status_raw=request.args.get("submit_status", ""),
+            submit_mode_raw=request.args.get("submit_mode", ""),
         )
-        preflight_sheet_id = find_vendor_work_entry_preflight_sheet_id(
-            conn,
-            vendor_name=str(business_identity["vendor_name"]),
-        )
-        preview_entries = list(preview_payload.get("entries", []))
-        today_entries = [
-            entry
-            for entry in preview_entries
-            if str(entry.get("business_date", "")) == business_date
-        ]
-        requested_active_today_entry_index = request.args.get("today_entry_index", "")
-        try:
-            active_today_entry_index = int(requested_active_today_entry_index)
-        except (TypeError, ValueError):
-            active_today_entry_index = 0
-        if active_today_entry_index < 0 or active_today_entry_index >= len(today_entries):
-            active_today_entry_index = 0
-        is_new_entry_mode = str(request.args.get("new_entry", "")).strip() == "1"
-        active_today_entry = today_entries[active_today_entry_index] if today_entries else None
-        active_entry_id = (
-            int(active_today_entry["entry_id"])
-            if active_today_entry is not None and active_today_entry.get("entry_id") is not None
-            else None
-        )
-        preflight_payload = None
-        if preflight_sheet_id is not None:
-            preflight_kwargs = {
-                "sheet_id": preflight_sheet_id,
-                "business_date": business_date,
-            }
-            if active_entry_id is not None and not is_new_entry_mode:
-                preflight_kwargs["entry_id"] = active_entry_id
-            preflight_payload = {
-                "ok": True,
-                "preflight": vendor_write_preflight(
-                    conn,
-                    **preflight_kwargs,
-                ),
-            }
-    pending_items = get_pending_items_by_vendor(preflight_sheet_id) if preflight_sheet_id is not None else {}
-    vendor_pending_items = list(pending_items.get(str(business_identity["vendor_name"]), []))
-    preflight_context = preflight_payload.get("preflight") if isinstance(preflight_payload, dict) else {}
-    has_work_content = bool(str((active_today_entry or {}).get("work_content", "")).strip())
-    today_entries_summary = {
-        "entry_count": len(today_entries),
-        "active_index": active_today_entry_index,
-        "entries": today_entries,
-    }
-    draft_mode = "create" if is_new_entry_mode else "selected_entry"
-    draft_entry_defaults = {
-        "planned_at": "",
-        "planned_headcount": 0,
-        "actual_headcount": 0,
-        "work_content": "",
-        "work_headcount": 0,
-        "entry_order": len(today_entries),
-    }
-    draft_entry_source = draft_entry_defaults if is_new_entry_mode else (active_today_entry or {})
-    readiness_summary = {
-        "vendor_name": str(profile_payload["vendor_name"]),
-        "vendor_username": str(profile_payload["vendor_username"]),
-        "business_date": business_date,
-        "preflight_available": preflight_payload is not None,
-        "active_entry_id": (active_today_entry or {}).get("entry_id"),
-        "sheet_id": preflight_context.get("sheet_id"),
-        "write_mode": preflight_context.get("write_mode"),
-        "entry_id": preflight_context.get("entry_id"),
-        "has_today_entry": active_today_entry is not None,
-        "planned_at": str((active_today_entry or {}).get("planned_at", "")),
-        "planned_headcount": int((active_today_entry or {}).get("planned_headcount", 0) or 0),
-        "actual_headcount": int((active_today_entry or {}).get("actual_headcount", 0) or 0),
-        "has_work_content": has_work_content,
-        "work_headcount": int((active_today_entry or {}).get("work_headcount", 0) or 0),
-        "pending_items": vendor_pending_items,
-        "pending_item_count": len(vendor_pending_items),
-    }
-    draft_submit_preparation = {
-        "sheet_id": preflight_context.get("sheet_id"),
-        "business_date": business_date,
-        "vendor_name": str(profile_payload["vendor_name"]),
-        "entry_id": preflight_context.get("entry_id"),
-        "write_mode": preflight_context.get("write_mode"),
-        "planned_at": str(draft_entry_source.get("planned_at", "")),
-        "planned_headcount": int(draft_entry_source.get("planned_headcount", 0) or 0),
-        "actual_headcount": int(draft_entry_source.get("actual_headcount", 0) or 0),
-        "work_content": str(draft_entry_source.get("work_content", "")),
-        "work_headcount": int(draft_entry_source.get("work_headcount", 0) or 0),
-        "entry_order": int(draft_entry_source.get("entry_order", 0) or 0),
-    }
-    submit_result = {
-        "status": str(request.args.get("submit_status", "") or ""),
-        "mode": str(request.args.get("submit_mode", "") or ""),
-    }
 
     return render_template(
         "vendor_work_entry.html",
         settings=query_settings(),
-        profile_payload=profile_payload,
-        draft_submit_preparation=draft_submit_preparation,
-        draft_mode=draft_mode,
-        is_new_entry_mode=is_new_entry_mode,
-        readiness_summary=readiness_summary,
-        today_entries_summary=today_entries_summary,
-        submit_result=submit_result,
-        scope_payload=scope_payload,
-        preview_payload=preview_payload,
-        preflight_payload=preflight_payload,
-        preflight_sheet_id=preflight_sheet_id,
-        preflight_business_date=business_date,
+        **page_context,
     )
 
 
