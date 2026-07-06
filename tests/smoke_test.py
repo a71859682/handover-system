@@ -145,6 +145,9 @@ def create_sample_sqlite(path: Path) -> None:
             actual_headcount INTEGER NOT NULL,
             work_content TEXT NOT NULL,
             pre_entry_requirement TEXT,
+            requirement_status TEXT DEFAULT 'pending',
+            requirement_confirmed_by TEXT,
+            requirement_confirmed_at TEXT,
             work_headcount INTEGER NOT NULL,
             entry_order INTEGER NOT NULL,
             created_at TEXT NOT NULL,
@@ -708,6 +711,9 @@ with module.db() as conn:
         "work_headcount",
         "entry_order",
         "pre_entry_requirement",
+        "requirement_status",
+        "requirement_confirmed_by",
+        "requirement_confirmed_at",
         "created_at",
         "updated_at",
     ):
@@ -1182,6 +1188,9 @@ with module.app.test_client() as client:
     inserted_entry = entry_insert.get_json()["entry"]
     if inserted_entry["business_date"] != business_date:
         raise SystemExit("/api/vendor-work-entry insert should default business_date from helper")
+    for unexpected in ("requirement_status", "requirement_confirmed_by", "requirement_confirmed_at"):
+        if unexpected in inserted_entry:
+            raise SystemExit(f"/api/vendor-work-entry insert should not expose {unexpected} in response payload")
     if inserted_entry.get("pre_entry_requirement") != "Insert Requirement":
         raise SystemExit("/api/vendor-work-entry insert should return persisted pre_entry_requirement")
     inserted_row = conn.execute(
@@ -1212,6 +1221,9 @@ with module.app.test_client() as client:
     updated_entry = entry_update.get_json()["entry"]
     if updated_entry["actual_headcount"] != 1 or updated_entry["work_content"] != "Insert Crew Updated":
         raise SystemExit("/api/vendor-work-entry update returned unexpected payload")
+    for unexpected in ("requirement_status", "requirement_confirmed_by", "requirement_confirmed_at"):
+        if unexpected in updated_entry:
+            raise SystemExit(f"/api/vendor-work-entry update should not expose {unexpected} in response payload")
     if updated_entry.get("pre_entry_requirement") != "Insert Requirement Updated":
         raise SystemExit("/api/vendor-work-entry update should return updated pre_entry_requirement")
     updated_row = conn.execute(
@@ -1319,9 +1331,9 @@ with module.app.test_client() as client:
     if invalid_requirement_entry.status_code != 400:
         raise SystemExit("over-limit pre_entry_requirement should return HTTP 400")
     invalid_requirement_payload = invalid_requirement_entry.get_json()
-    if invalid_requirement_payload.get("error") != "invalid_pre_entry_requirement":
+    if invalid_requirement_payload.get("error", {}).get("code") != "invalid_pre_entry_requirement":
         raise SystemExit("over-limit pre_entry_requirement should use invalid_pre_entry_requirement error code")
-    if invalid_requirement_payload.get("message") != "pre_entry_requirement must be 500 characters or fewer.":
+    if invalid_requirement_payload.get("error", {}).get("message") != "pre_entry_requirement must be 500 characters or fewer.":
         raise SystemExit("over-limit pre_entry_requirement should return the expected error message")
     unchanged_after_invalid_requirement = conn.execute(
         "SELECT pre_entry_requirement, updated_at FROM vendor_work_entries WHERE id = ?",
@@ -1939,7 +1951,8 @@ with module.db() as conn:
     for required in (
         "id", "sheet_id", "vendor_name", "business_date", "planned_at",
         "planned_headcount", "actual_headcount", "work_content", "work_headcount",
-        "entry_order", "pre_entry_requirement", "created_at", "updated_at",
+        "entry_order", "pre_entry_requirement", "requirement_status",
+        "requirement_confirmed_by", "requirement_confirmed_at", "created_at", "updated_at",
     ):
         if required not in vendor_work_entries_columns:
             raise SystemExit(f"vendor_work_entries missing required column: {required}")
@@ -2039,7 +2052,16 @@ with module.db() as conn:
                 raise SystemExit("legacy unique(sheet_id, vendor_name) should be removed after migration")
 
     work_columns = [col["name"] for col in conn.execute("PRAGMA table_info(vendor_work_entries)").fetchall()]
-    for required in ("sheet_id", "vendor_name", "business_date", "entry_order", "pre_entry_requirement"):
+    for required in (
+        "sheet_id",
+        "vendor_name",
+        "business_date",
+        "entry_order",
+        "pre_entry_requirement",
+        "requirement_status",
+        "requirement_confirmed_by",
+        "requirement_confirmed_at",
+    ):
         if required not in work_columns:
             raise SystemExit("vendor_work_entries should remain intact after vendor_contacts migration")
 

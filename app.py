@@ -2824,6 +2824,9 @@ def init_schema(conn: sqlite3.Connection) -> None:
             work_headcount INTEGER NOT NULL DEFAULT 0,
             entry_order INTEGER NOT NULL DEFAULT 0,
             pre_entry_requirement TEXT,
+            requirement_status TEXT DEFAULT 'pending',
+            requirement_confirmed_by TEXT,
+            requirement_confirmed_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
@@ -2882,6 +2885,9 @@ def ensure_vendor_work_entries_schema(conn: sqlite3.Connection) -> None:
                 work_headcount INTEGER NOT NULL DEFAULT 0,
                 entry_order INTEGER NOT NULL DEFAULT 0,
                 pre_entry_requirement TEXT,
+                requirement_status TEXT DEFAULT 'pending',
+                requirement_confirmed_by TEXT,
+                requirement_confirmed_at TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (sheet_id) REFERENCES sheets(id)
@@ -2902,6 +2908,12 @@ def ensure_vendor_work_entries_schema(conn: sqlite3.Connection) -> None:
     vendor_work_entry_columns = _table_columns(conn, "vendor_work_entries")
     if "pre_entry_requirement" not in vendor_work_entry_columns:
         conn.execute("ALTER TABLE vendor_work_entries ADD COLUMN pre_entry_requirement TEXT")
+    if "requirement_status" not in vendor_work_entry_columns:
+        conn.execute("ALTER TABLE vendor_work_entries ADD COLUMN requirement_status TEXT DEFAULT 'pending'")
+    if "requirement_confirmed_by" not in vendor_work_entry_columns:
+        conn.execute("ALTER TABLE vendor_work_entries ADD COLUMN requirement_confirmed_by TEXT")
+    if "requirement_confirmed_at" not in vendor_work_entry_columns:
+        conn.execute("ALTER TABLE vendor_work_entries ADD COLUMN requirement_confirmed_at TEXT")
     conn.executescript(
         """
         CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
@@ -3705,6 +3717,9 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
             work_headcount INTEGER NOT NULL DEFAULT 0,
             entry_order INTEGER NOT NULL DEFAULT 0,
             pre_entry_requirement TEXT,
+            requirement_status TEXT DEFAULT 'pending',
+            requirement_confirmed_by TEXT,
+            requirement_confirmed_at TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
