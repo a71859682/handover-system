@@ -29,6 +29,13 @@
 
 <section class="admin-section" data-testid="vendor-work-entry-today-entries">
   <h2>Today Planned Entries</h2>
+  <p data-testid="vendor-work-entry-today-entry-status-line">
+    {% if is_new_entry_mode %}
+    You are preparing a new planned entry for today, not editing an existing one.
+    {% else %}
+    You are viewing an existing planned entry for today. Switching entries aligns the draft form with that entry's update context.
+    {% endif %}
+  </p>
   <p data-testid="vendor-work-entry-today-entries-helper">
     You can switch the entry currently being viewed for today without changing submit target or write behavior.
   </p>
