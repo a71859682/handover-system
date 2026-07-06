@@ -2210,6 +2210,16 @@ for required in (
     if required not in js_text:
         raise SystemExit(f"app.js missing readonly crew helper: {required}")
 
+for readiness_required in (
+    'setAttribute("data-readiness-state", readinessMeta.readinessState)',
+    'setAttribute("data-readiness-reason", readinessMeta.readinessReason)',
+    "尚未具備進場條件",
+    "需求已確認",
+    "無進場前需求",
+):
+    if readiness_required not in js_text:
+        raise SystemExit(f"app.js missing readiness indicator guardrail: {readiness_required}")
+
 for forbidden in (
     'fetch("/api/vendor-contact"',
     "fetch('/api/vendor-contact'",
