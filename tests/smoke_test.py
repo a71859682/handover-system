@@ -6703,6 +6703,7 @@ for fragment in (
     'data-testid="vendor-work-entry-today-entry-list"',
     'data-testid="vendor-work-entry-today-entry-item"',
     'data-testid="vendor-work-entry-today-entry-switch"',
+    'data-testid="vendor-work-entry-new-entry-link"',
     'data-testid="vendor-work-entry-today-entry-id"',
     'data-testid="vendor-work-entry-today-entry-active"',
     'data-testid="vendor-work-entry-today-entry-active-id"',
@@ -6792,27 +6793,31 @@ if f'data-testid="vendor-work-entry-draft-write-mode">update<' not in vendor_wor
 if f'data-testid="vendor-work-entry-draft-hidden-entry-id"' not in vendor_work_entry_page_html or f'value="{vendor_a_entry_id}"' not in vendor_work_entry_page_html:
     raise SystemExit("vendor work entry draft hidden entry id should align with active entry preflight")
 
-def extract_hidden_vendor_work_entry_id(html: str) -> str:
-    marker = 'data-testid="vendor-work-entry-draft-hidden-entry-id"'
+def extract_input_value_by_testid(html: str, testid: str) -> str:
+    marker = f'data-testid="{testid}"'
     marker_index = html.find(marker)
     if marker_index == -1:
-        raise SystemExit("vendor work entry page should expose hidden entry id marker")
+        raise SystemExit(f"vendor work entry page should expose input marker: {testid}")
     tag_start = html.rfind("<input", 0, marker_index)
     if tag_start == -1:
-        raise SystemExit("vendor work entry page hidden entry id marker should belong to an input tag")
+        raise SystemExit(f"vendor work entry page input marker should belong to an input tag: {testid}")
     tag_end = html.find(">", marker_index)
     if tag_end == -1:
-        raise SystemExit("vendor work entry page hidden entry id input tag should terminate")
+        raise SystemExit(f"vendor work entry page input tag should terminate: {testid}")
     input_tag = html[tag_start:tag_end]
     value_marker = 'value="'
     value_index = input_tag.find(value_marker)
     if value_index == -1:
-        raise SystemExit("vendor work entry page hidden entry id marker should expose value")
+        raise SystemExit(f"vendor work entry page input marker should expose value: {testid}")
     value_start = value_index + len(value_marker)
     value_end = input_tag.find('"', value_start)
     if value_end == -1:
-        raise SystemExit("vendor work entry page hidden entry id value should terminate")
+        raise SystemExit(f"vendor work entry page input value should terminate: {testid}")
     return input_tag[value_start:value_end]
+
+
+def extract_hidden_vendor_work_entry_id(html: str) -> str:
+    return extract_input_value_by_testid(html, "vendor-work-entry-draft-hidden-entry-id")
 
 
 def fetch_vendor_work_entry_snapshot(entry_id: int) -> dict[str, object]:
@@ -6895,6 +6900,30 @@ if f'data-testid="vendor-work-entry-draft-hidden-entry-id"' not in vendor_work_e
     raise SystemExit("vendor work entry switched draft hidden entry id should align with selected active entry")
 if f'data-testid="vendor-work-entry-draft-write-mode">update<' not in vendor_work_entry_page_second_today_entry_html:
     raise SystemExit("vendor work entry switched draft write mode should align with selected active entry")
+
+vendor_work_entry_page_new_entry_mode = client.get(
+    "/vendor/work-entry?new_entry=1",
+    follow_redirects=False,
+)
+if vendor_work_entry_page_new_entry_mode.status_code != 200:
+    raise SystemExit("vendor work entry page should return 200 when switching to new entry mode")
+vendor_work_entry_page_new_entry_mode_html = vendor_work_entry_page_new_entry_mode.get_data(as_text=True)
+for fragment in (
+    'data-testid="vendor-work-entry-new-entry-link"',
+    'data-testid="vendor-work-entry-create-mode"',
+    'data-testid="vendor-work-entry-readiness-summary"',
+    'data-testid="vendor-work-entry-draft-submit"',
+    'data-testid="vendor-work-entry-history"',
+    'data-testid="vendor-work-entry-pending-items"',
+):
+    if fragment not in vendor_work_entry_page_new_entry_mode_html:
+        raise SystemExit(f"vendor work entry new entry mode missing fragment: {fragment}")
+if f'data-testid="vendor-work-entry-draft-write-mode">create<' not in vendor_work_entry_page_new_entry_mode_html:
+    raise SystemExit("vendor work entry new entry mode should expose create write mode")
+if extract_hidden_vendor_work_entry_id(vendor_work_entry_page_new_entry_mode_html) != "":
+    raise SystemExit("vendor work entry new entry mode should keep hidden entry id empty")
+if extract_input_value_by_testid(vendor_work_entry_page_new_entry_mode_html, "vendor-work-entry-draft-entry-order") != "2":
+    raise SystemExit("vendor work entry new entry mode should default entry_order to today's entry count")
 
 vendor_work_entry_page_first_today_entry_html = vendor_work_entry_page_first_today_entry.get_data(as_text=True)
 selected_first_entry_id = extract_hidden_vendor_work_entry_id(vendor_work_entry_page_first_today_entry_html)

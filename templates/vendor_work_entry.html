@@ -33,6 +33,14 @@
     You can switch the entry currently being viewed for today without changing submit target or write behavior.
   </p>
   <p>
+    <a
+      href="{{ url_for('vendor_work_entry_page', new_entry=1) }}"
+      data-testid="vendor-work-entry-new-entry-link"
+    >
+      新增一筆進場
+    </a>
+  </p>
+  <p>
     Today's entry count:
     <span data-testid="vendor-work-entry-today-entry-count">{{ today_entries_summary.entry_count }}</span>
   </p>
@@ -144,6 +152,9 @@
   <p data-testid="vendor-work-entry-draft-submit-helper">
     請先確認下方進場資訊與施工內容。本頁僅整理既有送出欄位，不新增任何額外流程或規則。
   </p>
+  {% if is_new_entry_mode %}
+  <p data-testid="vendor-work-entry-create-mode">新增一筆進場</p>
+  {% endif %}
   <div data-testid="vendor-work-entry-draft-submit-success" hidden></div>
   <div data-testid="vendor-work-entry-draft-submit-error" hidden></div>
   <div data-testid="vendor-work-entry-draft-context-group">

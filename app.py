@@ -3810,6 +3810,7 @@ def vendor_work_entry_page():
             active_today_entry_index = 0
         if active_today_entry_index < 0 or active_today_entry_index >= len(today_entries):
             active_today_entry_index = 0
+        is_new_entry_mode = str(request.args.get("new_entry", "")).strip() == "1"
         active_today_entry = today_entries[active_today_entry_index] if today_entries else None
         active_entry_id = (
             int(active_today_entry["entry_id"])
@@ -3822,7 +3823,7 @@ def vendor_work_entry_page():
                 "sheet_id": preflight_sheet_id,
                 "business_date": business_date,
             }
-            if active_entry_id is not None:
+            if active_entry_id is not None and not is_new_entry_mode:
                 preflight_kwargs["entry_id"] = active_entry_id
             preflight_payload = {
                 "ok": True,
@@ -3840,6 +3841,16 @@ def vendor_work_entry_page():
         "active_index": active_today_entry_index,
         "entries": today_entries,
     }
+    draft_mode = "create" if is_new_entry_mode else "selected_entry"
+    draft_entry_defaults = {
+        "planned_at": "",
+        "planned_headcount": 0,
+        "actual_headcount": 0,
+        "work_content": "",
+        "work_headcount": 0,
+        "entry_order": len(today_entries),
+    }
+    draft_entry_source = draft_entry_defaults if is_new_entry_mode else (active_today_entry or {})
     readiness_summary = {
         "vendor_name": str(profile_payload["vendor_name"]),
         "vendor_username": str(profile_payload["vendor_username"]),
@@ -3864,12 +3875,12 @@ def vendor_work_entry_page():
         "vendor_name": str(profile_payload["vendor_name"]),
         "entry_id": preflight_context.get("entry_id"),
         "write_mode": preflight_context.get("write_mode"),
-        "planned_at": str((active_today_entry or {}).get("planned_at", "")),
-        "planned_headcount": int((active_today_entry or {}).get("planned_headcount", 0) or 0),
-        "actual_headcount": int((active_today_entry or {}).get("actual_headcount", 0) or 0),
-        "work_content": str((active_today_entry or {}).get("work_content", "")),
-        "work_headcount": int((active_today_entry or {}).get("work_headcount", 0) or 0),
-        "entry_order": int((active_today_entry or {}).get("entry_order", 0) or 0),
+        "planned_at": str(draft_entry_source.get("planned_at", "")),
+        "planned_headcount": int(draft_entry_source.get("planned_headcount", 0) or 0),
+        "actual_headcount": int(draft_entry_source.get("actual_headcount", 0) or 0),
+        "work_content": str(draft_entry_source.get("work_content", "")),
+        "work_headcount": int(draft_entry_source.get("work_headcount", 0) or 0),
+        "entry_order": int(draft_entry_source.get("entry_order", 0) or 0),
     }
     submit_result = {
         "status": str(request.args.get("submit_status", "") or ""),
@@ -3881,6 +3892,8 @@ def vendor_work_entry_page():
         settings=query_settings(),
         profile_payload=profile_payload,
         draft_submit_preparation=draft_submit_preparation,
+        draft_mode=draft_mode,
+        is_new_entry_mode=is_new_entry_mode,
         readiness_summary=readiness_summary,
         today_entries_summary=today_entries_summary,
         submit_result=submit_result,
