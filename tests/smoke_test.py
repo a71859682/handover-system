@@ -6924,6 +6924,93 @@ if extract_hidden_vendor_work_entry_id(vendor_work_entry_page_new_entry_mode_htm
     raise SystemExit("vendor work entry new entry mode should keep hidden entry id empty")
 if extract_input_value_by_testid(vendor_work_entry_page_new_entry_mode_html, "vendor-work-entry-draft-entry-order") != "2":
     raise SystemExit("vendor work entry new entry mode should default entry_order to today's entry count")
+vendor_work_entry_count_before_new_entry_submit = conn.execute(
+    "SELECT COUNT(*) FROM vendor_work_entries"
+).fetchone()[0]
+if vendor_work_entry_count_before_new_entry_submit != 4:
+    raise SystemExit("vendor work entry baseline should start with four total seeded rows before create-mode submit verification")
+first_entry_before_new_entry_submit = fetch_vendor_work_entry_snapshot(vendor_a_entry_id)
+second_entry_before_new_entry_submit = fetch_vendor_work_entry_snapshot(vendor_a_second_entry_id)
+create_mode_sheet_id = extract_input_value_by_testid(
+    vendor_work_entry_page_new_entry_mode_html,
+    "vendor-work-entry-draft-hidden-sheet-id",
+)
+create_mode_business_date = extract_input_value_by_testid(
+    vendor_work_entry_page_new_entry_mode_html,
+    "vendor-work-entry-draft-hidden-business-date",
+)
+create_mode_vendor_name = extract_input_value_by_testid(
+    vendor_work_entry_page_new_entry_mode_html,
+    "vendor-work-entry-draft-hidden-vendor-name",
+)
+create_mode_entry_order = extract_input_value_by_testid(
+    vendor_work_entry_page_new_entry_mode_html,
+    "vendor-work-entry-draft-entry-order",
+)
+create_mode_submit_client = build_internal_vendor_work_entry_update_client()
+create_mode_submit = create_mode_submit_client.post(
+    "/api/vendor-work-entry",
+    json={
+        "sheet_id": int(create_mode_sheet_id),
+        "vendor_name": create_mode_vendor_name,
+        "business_date": create_mode_business_date,
+        "planned_at": "2000-01-01 11:00",
+        "planned_headcount": 4,
+        "actual_headcount": 0,
+        "work_content": "Create mode third entry verification",
+        "work_headcount": 0,
+        "entry_order": int(create_mode_entry_order),
+    },
+    follow_redirects=False,
+)
+if create_mode_submit.status_code != 200:
+    raise SystemExit("vendor work entry create-mode submit should return 200")
+create_mode_submit_payload = create_mode_submit.get_json()
+if not isinstance(create_mode_submit_payload, dict) or create_mode_submit_payload.get("ok") is not True:
+    raise SystemExit("vendor work entry create-mode submit should return ok=true payload")
+created_entry_payload = create_mode_submit_payload.get("entry")
+if not isinstance(created_entry_payload, dict):
+    raise SystemExit("vendor work entry create-mode submit should return created entry payload")
+created_entry_id = int(created_entry_payload.get("id"))
+if created_entry_id in {int(vendor_a_entry_id), int(vendor_a_second_entry_id)}:
+    raise SystemExit("vendor work entry create-mode submit should create a new row instead of reusing existing today entry ids")
+vendor_work_entry_count_after_new_entry_submit = conn.execute(
+    "SELECT COUNT(*) FROM vendor_work_entries"
+).fetchone()[0]
+if vendor_work_entry_count_after_new_entry_submit != vendor_work_entry_count_before_new_entry_submit + 1:
+    raise SystemExit("vendor work entry create-mode submit should add exactly one row")
+first_entry_after_new_entry_submit = fetch_vendor_work_entry_snapshot(vendor_a_entry_id)
+second_entry_after_new_entry_submit = fetch_vendor_work_entry_snapshot(vendor_a_second_entry_id)
+if first_entry_after_new_entry_submit != first_entry_before_new_entry_submit:
+    raise SystemExit("vendor work entry create-mode submit must not mutate the first existing today entry")
+if second_entry_after_new_entry_submit != second_entry_before_new_entry_submit:
+    raise SystemExit("vendor work entry create-mode submit must not mutate the second existing today entry")
+created_entry_snapshot = fetch_vendor_work_entry_snapshot(created_entry_id)
+if str(created_entry_snapshot["vendor_name"]) != "Vendor A":
+    raise SystemExit("vendor work entry create-mode submit should preserve vendor name for the new row")
+if str(created_entry_snapshot["business_date"]) != business_date:
+    raise SystemExit("vendor work entry create-mode submit should preserve business_date for the new row")
+if int(created_entry_snapshot["entry_order"]) != 2:
+    raise SystemExit("vendor work entry create-mode submit should use the default today-entry-count entry_order for the new row")
+if str(created_entry_snapshot["work_content"]) != "Create mode third entry verification":
+    raise SystemExit("vendor work entry create-mode submit should persist the submitted work_content for the new row")
+vendor_work_entry_page_after_new_entry_submit = client.get(
+    "/vendor/work-entry",
+    follow_redirects=False,
+)
+if vendor_work_entry_page_after_new_entry_submit.status_code != 200:
+    raise SystemExit("vendor work entry page should return 200 after create-mode submit")
+vendor_work_entry_page_after_new_entry_submit_html = vendor_work_entry_page_after_new_entry_submit.get_data(as_text=True)
+for fragment in (
+    'data-testid="vendor-work-entry-readiness-summary"',
+    'data-testid="vendor-work-entry-draft-submit"',
+    'data-testid="vendor-work-entry-history"',
+    'data-testid="vendor-work-entry-pending-items"',
+    'data-testid="vendor-work-entry-today-entry-count">3<',
+    "2000-01-01 11:00",
+):
+    if fragment not in vendor_work_entry_page_after_new_entry_submit_html:
+        raise SystemExit(f"vendor work entry page should reflect the newly created third entry: {fragment}")
 
 vendor_work_entry_page_first_today_entry_html = vendor_work_entry_page_first_today_entry.get_data(as_text=True)
 selected_first_entry_id = extract_hidden_vendor_work_entry_id(vendor_work_entry_page_first_today_entry_html)
