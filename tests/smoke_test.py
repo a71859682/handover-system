@@ -7410,6 +7410,115 @@ def run_vendor_work_entry_page_context_regression_smoke(db_path: Path) -> None:
             raise AssertionError(f"vendor work entry create-mode page missing fragment: {fragment}")
 
 
+def run_vendor_work_entry_preflight_context_regression_smoke(db_path: Path) -> None:
+    import importlib.util
+
+    os.environ["APP_DB_PATH"] = str(db_path)
+    module_name = "vendor_work_entry_preflight_context_under_test"
+    spec = importlib.util.spec_from_file_location(module_name, str(ROOT_DIR / "app.py"))
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "UPDATE users SET password_hash = ? WHERE username = 'admin'",
+            (module.generate_password_hash("admin"),),
+        )
+        conn.execute(
+            '''
+            INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
+            VALUES (?, ?, ?, ?)
+            ''',
+            ("vendor_active", module.generate_password_hash("vendor-pass"), "Vendor A", 1),
+        )
+        conn.execute(
+            '''
+            INSERT INTO tasks (sheet_id, col_index, vendor, location, name)
+            VALUES (?, ?, ?, ?, ?)
+            ''',
+            (1, 5, "Vendor A", "Vendor Zone", "Vendor A Task"),
+        )
+        business_date = module.resolve_crew_business_date()
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ''',
+            (1, "Vendor A", business_date, "2000-01-01 09:00", 3, 1, "Vendor A Work 1", 1, 0),
+        )
+        entry_id = conn.execute(
+            "SELECT id FROM vendor_work_entries WHERE vendor_name = ? AND business_date = ? AND entry_order = 0",
+            ("Vendor A", business_date),
+        ).fetchone()["id"]
+        conn.commit()
+
+    client = module.app.test_client()
+    login = client.post(
+        "/vendor/login",
+        data={"username": "vendor_active", "password": "vendor-pass"},
+        follow_redirects=False,
+    )
+    if login.status_code != 302:
+        raise AssertionError("vendor preflight context regression smoke login should redirect successfully")
+
+    create_preflight = client.post(
+        "/api/vendor/work-entry/preflight",
+        json={"sheet_id": 1, "business_date": business_date, "vendor_name": "Vendor A"},
+    )
+    if create_preflight.status_code != 200:
+        raise AssertionError("vendor preflight context regression smoke create path should return 200")
+    create_payload = create_preflight.get_json()
+    create_context = create_payload.get("preflight") if isinstance(create_payload, dict) else None
+    if not isinstance(create_context, dict):
+        raise AssertionError("vendor preflight context regression smoke create path should return preflight object")
+    if create_context.get("entry_id") is not None or create_context.get("write_mode") != "create":
+        raise AssertionError("vendor preflight context regression smoke create path should preserve create contract")
+
+    update_preflight = client.post(
+        "/api/vendor/work-entry/preflight",
+        json={"id": int(entry_id), "sheet_id": 1, "business_date": business_date, "vendor_name": "Vendor A"},
+    )
+    if update_preflight.status_code != 200:
+        raise AssertionError("vendor preflight context regression smoke update path should return 200")
+    update_payload = update_preflight.get_json()
+    update_context = update_payload.get("preflight") if isinstance(update_payload, dict) else None
+    if not isinstance(update_context, dict):
+        raise AssertionError("vendor preflight context regression smoke update path should return preflight object")
+    if update_context.get("entry_id") != int(entry_id) or update_context.get("write_mode") != "update":
+        raise AssertionError("vendor preflight context regression smoke update path should preserve update contract")
+
+    selected_entry_page = client.get("/vendor/work-entry", follow_redirects=False)
+    if selected_entry_page.status_code != 200:
+        raise AssertionError("vendor preflight context regression smoke selected-entry page should return 200")
+    selected_entry_html = selected_entry_page.get_data(as_text=True)
+    for fragment in (
+        'data-testid="vendor-work-entry-readiness-summary"',
+        'data-testid="vendor-work-entry-draft-submit"',
+        'data-testid="vendor-work-entry-draft-write-mode">update<',
+        f'data-testid="vendor-work-entry-draft-hidden-entry-id"',
+        f'value="{entry_id}"',
+    ):
+        if fragment not in selected_entry_html:
+            raise AssertionError(f"vendor preflight context regression smoke selected-entry page missing fragment: {fragment}")
+
+    new_entry_page = client.get("/vendor/work-entry?new_entry=1", follow_redirects=False)
+    if new_entry_page.status_code != 200:
+        raise AssertionError("vendor preflight context regression smoke create-mode page should return 200")
+    new_entry_html = new_entry_page.get_data(as_text=True)
+    for fragment in (
+        'data-testid="vendor-work-entry-create-mode"',
+        'data-testid="vendor-work-entry-draft-write-mode">create<',
+        'data-testid="vendor-work-entry-draft-hidden-entry-id"',
+        'value=""',
+    ):
+        if fragment not in new_entry_html:
+            raise AssertionError(f"vendor preflight context regression smoke create-mode page missing fragment: {fragment}")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "sample.db"
