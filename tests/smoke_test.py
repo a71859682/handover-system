@@ -6365,6 +6365,248 @@ print("vendor-work-entry write isolation smoke PASS")
         raise AssertionError("vendor-work-entry write isolation smoke subprocess did not report PASS.")
 
 
+def run_vendor_work_entry_requirement_confirmation_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+business_date = module.resolve_crew_business_date()
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site_row = conn.execute("SELECT id, site_name FROM sites ORDER BY id LIMIT 1").fetchone()
+    if default_site_row is None:
+        raise SystemExit("expected a default site for requirement confirmation smoke")
+    default_site_id = int(default_site_row["id"])
+    default_site_name = str(default_site_row["site_name"])
+    sheet_row = conn.execute("SELECT id FROM sheets WHERE site_id = ? ORDER BY id LIMIT 1", (default_site_id,)).fetchone()
+    if sheet_row is None:
+        raise SystemExit("expected a default sheet for requirement confirmation smoke")
+    sheet_id = int(sheet_row["id"])
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+            ("__requirement_confirm_site_b__", "requirement-confirm-site-b"),
+        ).fetchone()["id"]
+    )
+    secondary_sheet_id = int(
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+            ("Requirement Confirm Sheet B", 999, secondary_site_id),
+        ).fetchone()["id"]
+    )
+    member_password_hash = module.generate_password_hash("member-pass")
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("confirm_member", "confirm_member", member_password_hash, "member"),
+    )
+    member_id = int(conn.execute("SELECT id FROM users WHERE username = ?", ("confirm_member",)).fetchone()["id"])
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, default_site_id, "member"),
+    )
+    admin_password_hash = module.generate_password_hash("admin-pass")
+    conn.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'", (admin_password_hash,))
+    conn.execute(
+        '''
+        INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
+        VALUES (?, ?, ?, ?)
+        ''',
+        ("vendor_confirm_only", module.generate_password_hash("vendor-pass"), "Vendor Confirm", 1),
+    )
+    vendor_account_id = int(
+        conn.execute("SELECT id FROM vendor_accounts WHERE username = ?", ("vendor_confirm_only",)).fetchone()["id"]
+    )
+    target_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Confirm", business_date, "2000-01-01 09:00", 3, 0, "Confirm Work", "Need power off", 0, 0),
+        ).fetchone()["id"]
+    )
+    secondary_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (secondary_sheet_id, "Vendor Confirm", business_date, "2000-01-01 10:00", 2, 0, "Cross Site Confirm Work", "Need fence open", 0, 0),
+        ).fetchone()["id"]
+    )
+    conn.commit()
+
+def fetch_confirmation_snapshot(entry_id):
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            '''
+            SELECT pre_entry_requirement, requirement_status, requirement_confirmed_by, requirement_confirmed_at
+            FROM vendor_work_entries
+            WHERE id = ?
+            ''',
+            (entry_id,),
+        ).fetchone()
+        return dict(row)
+
+client = module.app.test_client()
+
+def set_member_session(*, with_current_site=True):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = int(member_id)
+        session["username"] = "confirm_member"
+        session["display_name"] = "confirm_member"
+        session["role"] = "member"
+        if with_current_site:
+            session["current_site_id"] = int(default_site_id)
+            session["current_site_name"] = str(default_site_name)
+            session["site_selection_required"] = False
+
+set_member_session()
+before_confirm = fetch_confirmation_snapshot(target_entry_id)
+confirm_response = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": target_entry_id, "sheet_id": sheet_id},
+)
+if confirm_response.status_code != 200 or not confirm_response.get_json().get("ok"):
+    raise SystemExit("requirement confirmation success path should return ok=true")
+confirm_entry = confirm_response.get_json()["entry"]
+if set(confirm_entry.keys()) != {"id", "requirement_status", "requirement_confirmed_by", "requirement_confirmed_at"}:
+    raise SystemExit("requirement confirmation response contract should remain minimal")
+if int(confirm_entry["id"]) != int(target_entry_id):
+    raise SystemExit("requirement confirmation should return the confirmed entry id")
+if confirm_entry["requirement_status"] != "confirmed":
+    raise SystemExit("requirement confirmation should set requirement_status=confirmed")
+if confirm_entry["requirement_confirmed_by"] != "confirm_member":
+    raise SystemExit("requirement confirmation should stamp current internal username")
+if not str(confirm_entry["requirement_confirmed_at"] or ""):
+    raise SystemExit("requirement confirmation should stamp requirement_confirmed_at")
+after_confirm = fetch_confirmation_snapshot(target_entry_id)
+if after_confirm["pre_entry_requirement"] != before_confirm["pre_entry_requirement"]:
+    raise SystemExit("requirement confirmation must not modify pre_entry_requirement text")
+if after_confirm["requirement_status"] != "confirmed":
+    raise SystemExit("requirement confirmation should persist confirmed status")
+if after_confirm["requirement_confirmed_by"] != "confirm_member":
+    raise SystemExit("requirement confirmation should persist requirement_confirmed_by")
+if not str(after_confirm["requirement_confirmed_at"] or ""):
+    raise SystemExit("requirement confirmation should persist requirement_confirmed_at")
+
+set_member_session()
+repeat_response = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": target_entry_id, "sheet_id": sheet_id},
+)
+if repeat_response.status_code != 200 or not repeat_response.get_json().get("ok"):
+    raise SystemExit("repeated requirement confirmation should remain idempotently successful")
+repeat_entry = repeat_response.get_json()["entry"]
+if repeat_entry["requirement_status"] != "confirmed":
+    raise SystemExit("repeated requirement confirmation should preserve confirmed status")
+repeat_snapshot = fetch_confirmation_snapshot(target_entry_id)
+if repeat_snapshot != after_confirm:
+    raise SystemExit("repeated requirement confirmation should not change persisted confirmation state")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["identity_type"] = "vendor"
+    session["vendor_account_id"] = int(vendor_account_id)
+    session["vendor_username"] = "vendor_confirm_only"
+    session["vendor_name"] = "Vendor Confirm"
+vendor_forbidden = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": target_entry_id, "sheet_id": sheet_id},
+)
+if vendor_forbidden.status_code != 403:
+    raise SystemExit("vendor session should not confirm requirement")
+vendor_forbidden_payload = vendor_forbidden.get_json()
+if vendor_forbidden_payload["error"]["code"] != "vendor_auth_forbidden":
+    raise SystemExit("vendor session rejection should preserve vendor_auth_forbidden error code")
+if fetch_confirmation_snapshot(target_entry_id) != repeat_snapshot:
+    raise SystemExit("vendor session rejection must not modify confirmation state")
+
+set_member_session(with_current_site=False)
+missing_site = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": target_entry_id, "sheet_id": sheet_id},
+)
+if missing_site.status_code != 403:
+    raise SystemExit("missing current site should reject requirement confirmation with 403")
+missing_site_payload = missing_site.get_json()
+if missing_site_payload["error"]["code"] != "site_context_invalid":
+    raise SystemExit("missing current site should preserve site_context_invalid error code")
+if fetch_confirmation_snapshot(target_entry_id) != repeat_snapshot:
+    raise SystemExit("missing current site rejection must not modify confirmation state")
+
+set_member_session()
+before_cross_site = fetch_confirmation_snapshot(secondary_entry_id)
+cross_site = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": secondary_entry_id, "sheet_id": secondary_sheet_id},
+)
+if cross_site.status_code != 403:
+    raise SystemExit("cross-site requirement confirmation should be rejected with 403")
+cross_site_payload = cross_site.get_json()
+if cross_site_payload["error"]["code"] != "write_target_not_in_current_site":
+    raise SystemExit("cross-site requirement confirmation should preserve write_target_not_in_current_site")
+after_cross_site = fetch_confirmation_snapshot(secondary_entry_id)
+if after_cross_site != before_cross_site:
+    raise SystemExit("cross-site requirement confirmation must not modify stored row")
+
+set_member_session()
+before_sheet_mismatch = fetch_confirmation_snapshot(target_entry_id)
+sheet_mismatch = client.post(
+    "/api/crew-work-entry-requirement-confirm",
+    json={"entry_id": target_entry_id, "sheet_id": secondary_sheet_id},
+)
+if sheet_mismatch.status_code != 409:
+    raise SystemExit("sheet mismatch requirement confirmation should be rejected with 409")
+sheet_mismatch_payload = sheet_mismatch.get_json()
+if sheet_mismatch_payload["error"]["code"] != "sheet_mismatch":
+    raise SystemExit("sheet mismatch requirement confirmation should preserve sheet_mismatch error code")
+after_sheet_mismatch = fetch_confirmation_snapshot(target_entry_id)
+if after_sheet_mismatch != before_sheet_mismatch:
+    raise SystemExit("sheet mismatch requirement confirmation must not modify stored row")
+
+print("vendor-work-entry requirement confirmation smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "vendor-work-entry requirement confirmation smoke PASS" not in result.stdout:
+        raise AssertionError("vendor-work-entry requirement confirmation smoke subprocess did not report PASS.")
+
+
 def run_site_write_isolation_readiness_smoke() -> None:
     script_path = TOOLS_DIR / "check_site_write_isolation_readiness.py"
     if not script_path.exists():
@@ -8102,6 +8344,7 @@ def main() -> int:
         run_unit_extra_write_isolation_smoke(db_path)
         run_vendor_contact_write_isolation_smoke(db_path)
         run_vendor_work_entry_write_isolation_smoke(db_path)
+        run_vendor_work_entry_requirement_confirmation_smoke(db_path)
         vendor_auth_db = Path(tmpdir) / "vendor-auth-foundation.db"
         create_sample_sqlite(vendor_auth_db)
         run_vendor_auth_foundation_smoke(vendor_auth_db)

@@ -1891,6 +1891,91 @@ def _handle_vendor_work_entry_lookup_error(exc: LookupError):
     raise exc
 
 
+def resolve_vendor_work_entry_requirement_confirmation_context(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    entry_id: int,
+) -> dict[str, object]:
+    sheet_row = conn.execute("SELECT id, site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+    if sheet_row is None:
+        raise LookupError("sheet_not_found")
+
+    existing_entry = conn.execute(
+        """
+        SELECT id, sheet_id, vendor_name, pre_entry_requirement, requirement_status,
+               requirement_confirmed_by, requirement_confirmed_at
+        FROM vendor_work_entries
+        WHERE id = ?
+        """,
+        (entry_id,),
+    ).fetchone()
+    if existing_entry is None:
+        raise LookupError("entry_not_found")
+    if int(existing_entry["sheet_id"] or 0) != int(sheet_id):
+        raise LookupError("sheet_mismatch")
+
+    return {
+        "sheet_id": int(sheet_row["id"]),
+        "site_id": int(sheet_row["site_id"]),
+        "entry_id": int(existing_entry["id"]),
+        "vendor_name": str(existing_entry["vendor_name"] or ""),
+        "pre_entry_requirement": str(existing_entry["pre_entry_requirement"] or ""),
+        "requirement_status": str(existing_entry["requirement_status"] or "pending"),
+        "requirement_confirmed_by": str(existing_entry["requirement_confirmed_by"] or ""),
+        "requirement_confirmed_at": str(existing_entry["requirement_confirmed_at"] or ""),
+    }
+
+
+def authorize_vendor_work_entry_requirement_confirmation(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    entry_id: int,
+) -> dict[str, object]:
+    context = resolve_vendor_work_entry_requirement_confirmation_context(
+        conn,
+        sheet_id=sheet_id,
+        entry_id=entry_id,
+    )
+    user = _current_internal_user()
+    if user is None:
+        if current_vendor_account() is not None:
+            raise LookupError("vendor_auth_forbidden")
+        raise LookupError("auth_required")
+    if is_global_admin(user):
+        current_site_context = authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+        context["current_site_id"] = int(current_site_context["current_site_id"])
+        return context
+
+    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    if int(context["site_id"]) != int(current_site_id):
+        raise LookupError("write_target_not_in_current_site")
+    context["current_site_id"] = int(current_site_id)
+    return context
+
+
+def _handle_vendor_work_entry_requirement_confirmation_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "sheet_not_found":
+        return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+    if code == "entry_not_found":
+        return crew_api_error("entry_not_found", "vendor work entry id was not found.", status=404)
+    if code == "sheet_mismatch":
+        return crew_api_error("sheet_mismatch", "vendor work entry belongs to a different sheet_id.", status=409)
+    if code == "site_context_invalid":
+        return crew_api_error("site_context_invalid", "current_site_id is missing or invalid.", status=403)
+    if code == "site_permission_missing":
+        return crew_api_error("site_permission_missing", "current user no longer has permission for the current site.", status=403)
+    if code == "write_target_not_in_current_site":
+        return crew_api_error("write_target_not_in_current_site", "write target does not belong to the current site.", status=403)
+    if code == "vendor_auth_forbidden":
+        return crew_api_error("vendor_auth_forbidden", "vendor authentication cannot confirm requirements.", status=403)
+    if code == "auth_required":
+        return crew_api_error("auth_required", "authentication is required.", status=403)
+    raise exc
+
+
 def _handle_vendor_write_preflight_error(exc: LookupError):
     code = str(exc)
     if code == "vendor_auth_required":
@@ -4653,6 +4738,68 @@ def api_vendor_work_entry():
         ).fetchone()
 
     return jsonify({"ok": True, "entry": dict(row) if row else None})
+
+
+@app.route("/api/crew-work-entry-requirement-confirm", methods=["POST"])
+def api_crew_work_entry_requirement_confirm():
+    data = request.get_json(silent=True) or {}
+    try:
+        entry_id = parse_non_negative_int(data.get("entry_id"), field_name="entry_id")
+        sheet_id = parse_non_negative_int(data.get("sheet_id"), field_name="sheet_id")
+        if entry_id <= 0:
+            raise ValueError("entry_id must be a positive integer.")
+        if sheet_id <= 0:
+            raise ValueError("sheet_id must be a positive integer.")
+    except ValueError as exc:
+        return crew_api_error("invalid_request", str(exc))
+
+    with db() as conn:
+        try:
+            confirmation_context = authorize_vendor_work_entry_requirement_confirmation(
+                conn,
+                sheet_id=sheet_id,
+                entry_id=entry_id,
+            )
+        except LookupError as exc:
+            return _handle_vendor_work_entry_requirement_confirmation_lookup_error(exc)
+
+        row = conn.execute(
+            """
+            SELECT username
+            FROM users
+            WHERE id = ?
+            """,
+            (int(_current_internal_user()["id"]),),
+        ).fetchone()
+        confirmed_by = str(row["username"] if row is not None else "")
+
+        if confirmation_context["requirement_status"] != "confirmed":
+            conn.execute(
+                """
+                UPDATE vendor_work_entries
+                SET requirement_status = 'confirmed',
+                    requirement_confirmed_by = ?,
+                    requirement_confirmed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND sheet_id = ?
+                """,
+                (
+                    confirmed_by,
+                    int(confirmation_context["entry_id"]),
+                    int(confirmation_context["sheet_id"]),
+                ),
+            )
+
+        confirmed_entry = conn.execute(
+            """
+            SELECT id, requirement_status, requirement_confirmed_by, requirement_confirmed_at
+            FROM vendor_work_entries
+            WHERE id = ?
+            """,
+            (int(confirmation_context["entry_id"]),),
+        ).fetchone()
+
+    return jsonify({"ok": True, "entry": dict(confirmed_entry) if confirmed_entry else None})
 
 
 @app.route("/api/vendor/work-entry/preflight", methods=["POST"])
