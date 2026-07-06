@@ -6699,6 +6699,7 @@ if vendor_work_entry_page.status_code != 200:
 vendor_work_entry_page_html = vendor_work_entry_page.get_data(as_text=True)
 for fragment in (
     'data-testid="vendor-work-entry-today-entries"',
+    'data-testid="vendor-work-entry-today-entry-status-line"',
     'data-testid="vendor-work-entry-today-entry-count"',
     'data-testid="vendor-work-entry-today-entry-list"',
     'data-testid="vendor-work-entry-today-entry-item"',
@@ -6724,6 +6725,8 @@ for fragment in (
         raise SystemExit(f"vendor work entry page missing fragment: {fragment}")
 if "2000-01-01 09:00" not in vendor_work_entry_page_html or "2000-01-01 10:00" not in vendor_work_entry_page_html:
     raise SystemExit("vendor work entry page should render today's multiple planned entries")
+if "You are viewing an existing planned entry for today. Switching entries aligns the draft form with that entry's update context." not in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry page should explain selected-entry navigation status")
 for fragment in (
     'data-testid="vendor-work-entry-summary-business-date"',
     'data-testid="vendor-work-entry-summary-vendor-name"',
@@ -6873,6 +6876,7 @@ if vendor_work_entry_page_second_today_entry.status_code != 200:
 vendor_work_entry_page_second_today_entry_html = vendor_work_entry_page_second_today_entry.get_data(as_text=True)
 for fragment in (
     'data-testid="vendor-work-entry-today-entries"',
+    'data-testid="vendor-work-entry-today-entry-status-line"',
     'data-testid="vendor-work-entry-today-entry-count"',
     'data-testid="vendor-work-entry-today-entry-id"',
     'data-testid="vendor-work-entry-today-entry-active"',
@@ -6906,6 +6910,8 @@ if f'data-testid="vendor-work-entry-draft-write-mode">update<' not in vendor_wor
     raise SystemExit("vendor work entry switched draft write mode should align with selected active entry")
 if "You are viewing an existing entry that is ready for update." not in vendor_work_entry_page_second_today_entry_html:
     raise SystemExit("vendor work entry switched readiness summary should explain selected-entry update status")
+if "You are viewing an existing planned entry for today. Switching entries aligns the draft form with that entry's update context." not in vendor_work_entry_page_second_today_entry_html:
+    raise SystemExit("vendor work entry switched page should explain selected-entry navigation status")
 
 vendor_work_entry_page_new_entry_mode = client.get(
     "/vendor/work-entry?new_entry=1",
@@ -6916,6 +6922,7 @@ if vendor_work_entry_page_new_entry_mode.status_code != 200:
 vendor_work_entry_page_new_entry_mode_html = vendor_work_entry_page_new_entry_mode.get_data(as_text=True)
 for fragment in (
     'data-testid="vendor-work-entry-new-entry-link"',
+    'data-testid="vendor-work-entry-today-entry-status-line"',
     'data-testid="vendor-work-entry-create-mode"',
     'data-testid="vendor-work-entry-readiness-summary"',
     'data-testid="vendor-work-entry-summary-status-line"',
@@ -6933,6 +6940,8 @@ if extract_input_value_by_testid(vendor_work_entry_page_new_entry_mode_html, "ve
     raise SystemExit("vendor work entry new entry mode should default entry_order to today's entry count")
 if "You are preparing a new entry for today." not in vendor_work_entry_page_new_entry_mode_html:
     raise SystemExit("vendor work entry create mode readiness summary should explain create status")
+if "You are preparing a new planned entry for today, not editing an existing one." not in vendor_work_entry_page_new_entry_mode_html:
+    raise SystemExit("vendor work entry create mode should explain create-mode navigation status")
 vendor_work_entry_count_before_new_entry_submit = conn.execute(
     "SELECT COUNT(*) FROM vendor_work_entries"
 ).fetchone()[0]
