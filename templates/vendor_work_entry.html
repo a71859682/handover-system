@@ -73,6 +73,15 @@
 
 <section class="admin-section" data-testid="vendor-work-entry-readiness-summary">
   <h2>Today Readiness Summary</h2>
+  <p data-testid="vendor-work-entry-summary-status-line">
+    {% if readiness_summary.write_mode == "update" and readiness_summary.active_entry_id is not none %}
+    You are viewing an existing entry that is ready for update.
+    {% elif readiness_summary.write_mode == "create" %}
+    You are preparing a new entry for today.
+    {% else %}
+    Review the current entry details before submitting changes.
+    {% endif %}
+  </p>
   <div class="settings-grid">
     <label>Vendor
       <span data-testid="vendor-work-entry-summary-vendor-name">{{ readiness_summary.vendor_name }}</span>

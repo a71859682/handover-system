@@ -6727,6 +6727,7 @@ if "2000-01-01 09:00" not in vendor_work_entry_page_html or "2000-01-01 10:00" n
 for fragment in (
     'data-testid="vendor-work-entry-summary-business-date"',
     'data-testid="vendor-work-entry-summary-vendor-name"',
+    'data-testid="vendor-work-entry-summary-status-line"',
     'data-testid="vendor-work-entry-summary-active-entry-id"',
     'data-testid="vendor-work-entry-summary-write-mode"',
     'data-testid="vendor-work-entry-summary-entry-id"',
@@ -6737,6 +6738,8 @@ for fragment in (
 ):
     if fragment not in vendor_work_entry_page_html:
         raise SystemExit(f"vendor work entry readiness summary missing fragment: {fragment}")
+if "You are viewing an existing entry that is ready for update." not in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry readiness summary should explain selected-entry update status")
 for fragment in (
     'data-testid="vendor-work-entry-pending-items-helper"',
     'data-testid="vendor-work-entry-pending-items-count"',
@@ -6875,6 +6878,7 @@ for fragment in (
     'data-testid="vendor-work-entry-today-entry-active"',
     'data-testid="vendor-work-entry-today-entry-active-id"',
     'data-testid="vendor-work-entry-readiness-summary"',
+    'data-testid="vendor-work-entry-summary-status-line"',
     'data-testid="vendor-work-entry-summary-active-entry-id"',
     'data-testid="vendor-work-entry-summary-entry-id"',
     'data-testid="vendor-work-entry-draft-submit"',
@@ -6900,6 +6904,8 @@ if f'data-testid="vendor-work-entry-draft-hidden-entry-id"' not in vendor_work_e
     raise SystemExit("vendor work entry switched draft hidden entry id should align with selected active entry")
 if f'data-testid="vendor-work-entry-draft-write-mode">update<' not in vendor_work_entry_page_second_today_entry_html:
     raise SystemExit("vendor work entry switched draft write mode should align with selected active entry")
+if "You are viewing an existing entry that is ready for update." not in vendor_work_entry_page_second_today_entry_html:
+    raise SystemExit("vendor work entry switched readiness summary should explain selected-entry update status")
 
 vendor_work_entry_page_new_entry_mode = client.get(
     "/vendor/work-entry?new_entry=1",
@@ -6912,6 +6918,7 @@ for fragment in (
     'data-testid="vendor-work-entry-new-entry-link"',
     'data-testid="vendor-work-entry-create-mode"',
     'data-testid="vendor-work-entry-readiness-summary"',
+    'data-testid="vendor-work-entry-summary-status-line"',
     'data-testid="vendor-work-entry-draft-submit"',
     'data-testid="vendor-work-entry-history"',
     'data-testid="vendor-work-entry-pending-items"',
@@ -6924,6 +6931,8 @@ if extract_hidden_vendor_work_entry_id(vendor_work_entry_page_new_entry_mode_htm
     raise SystemExit("vendor work entry new entry mode should keep hidden entry id empty")
 if extract_input_value_by_testid(vendor_work_entry_page_new_entry_mode_html, "vendor-work-entry-draft-entry-order") != "2":
     raise SystemExit("vendor work entry new entry mode should default entry_order to today's entry count")
+if "You are preparing a new entry for today." not in vendor_work_entry_page_new_entry_mode_html:
+    raise SystemExit("vendor work entry create mode readiness summary should explain create status")
 vendor_work_entry_count_before_new_entry_submit = conn.execute(
     "SELECT COUNT(*) FROM vendor_work_entries"
 ).fetchone()[0]
@@ -7379,6 +7388,7 @@ def run_vendor_work_entry_page_context_regression_smoke(db_path: Path) -> None:
     selected_entry_html = selected_entry_page.get_data(as_text=True)
     for fragment in (
         'data-testid="vendor-work-entry-readiness-summary"',
+        'data-testid="vendor-work-entry-summary-status-line"',
         'data-testid="vendor-work-entry-draft-submit"',
         'data-testid="vendor-work-entry-history"',
         'data-testid="vendor-work-entry-pending-items"',
@@ -7397,6 +7407,7 @@ def run_vendor_work_entry_page_context_regression_smoke(db_path: Path) -> None:
     new_entry_html = new_entry_page.get_data(as_text=True)
     for fragment in (
         'data-testid="vendor-work-entry-readiness-summary"',
+        'data-testid="vendor-work-entry-summary-status-line"',
         'data-testid="vendor-work-entry-draft-submit"',
         'data-testid="vendor-work-entry-history"',
         'data-testid="vendor-work-entry-pending-items"',
@@ -7498,12 +7509,15 @@ def run_vendor_work_entry_preflight_context_regression_smoke(db_path: Path) -> N
     for fragment in (
         'data-testid="vendor-work-entry-readiness-summary"',
         'data-testid="vendor-work-entry-draft-submit"',
+        'data-testid="vendor-work-entry-summary-status-line"',
         'data-testid="vendor-work-entry-draft-write-mode">update<',
         f'data-testid="vendor-work-entry-draft-hidden-entry-id"',
         f'value="{entry_id}"',
     ):
         if fragment not in selected_entry_html:
             raise AssertionError(f"vendor preflight context regression smoke selected-entry page missing fragment: {fragment}")
+    if "You are viewing an existing entry that is ready for update." not in selected_entry_html:
+        raise AssertionError("vendor preflight context regression smoke selected-entry page should explain update status")
 
     new_entry_page = client.get("/vendor/work-entry?new_entry=1", follow_redirects=False)
     if new_entry_page.status_code != 200:
@@ -7511,12 +7525,15 @@ def run_vendor_work_entry_preflight_context_regression_smoke(db_path: Path) -> N
     new_entry_html = new_entry_page.get_data(as_text=True)
     for fragment in (
         'data-testid="vendor-work-entry-create-mode"',
+        'data-testid="vendor-work-entry-summary-status-line"',
         'data-testid="vendor-work-entry-draft-write-mode">create<',
         'data-testid="vendor-work-entry-draft-hidden-entry-id"',
         'value=""',
     ):
         if fragment not in new_entry_html:
             raise AssertionError(f"vendor preflight context regression smoke create-mode page missing fragment: {fragment}")
+    if "You are preparing a new entry for today." not in new_entry_html:
+        raise AssertionError("vendor preflight context regression smoke create-mode page should explain create status")
 
 
 def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> None:
@@ -7580,6 +7597,7 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
     selected_entry_html = selected_entry_page.get_data(as_text=True)
     for fragment in (
         'data-testid="vendor-work-entry-draft-submit"',
+        'data-testid="vendor-work-entry-summary-status-line"',
         f'data-testid="vendor-work-entry-draft-hidden-entry-id"',
         f'value="{first_entry_id}"',
         'data-testid="vendor-work-entry-draft-write-mode">update<',
@@ -7590,6 +7608,8 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
     ):
         if fragment not in selected_entry_html:
             raise AssertionError(f"vendor submit pipeline regression smoke selected-entry page missing fragment: {fragment}")
+    if "You are viewing an existing entry that is ready for update." not in selected_entry_html:
+        raise AssertionError("vendor submit pipeline regression smoke selected-entry page should explain update status")
 
     new_entry_page = vendor_client.get("/vendor/work-entry?new_entry=1", follow_redirects=False)
     if new_entry_page.status_code != 200:
@@ -7597,6 +7617,7 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
     new_entry_html = new_entry_page.get_data(as_text=True)
     for fragment in (
         'data-testid="vendor-work-entry-create-mode"',
+        'data-testid="vendor-work-entry-summary-status-line"',
         'data-testid="vendor-work-entry-draft-hidden-entry-id"',
         'value=""',
         'data-testid="vendor-work-entry-draft-write-mode">create<',
@@ -7605,6 +7626,8 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
     ):
         if fragment not in new_entry_html:
             raise AssertionError(f"vendor submit pipeline regression smoke create-mode page missing fragment: {fragment}")
+    if "You are preparing a new entry for today." not in new_entry_html:
+        raise AssertionError("vendor submit pipeline regression smoke create-mode page should explain create status")
 
     internal_client = module.app.test_client()
     internal_login = internal_client.post(
@@ -7765,6 +7788,7 @@ def run_vendor_work_entry_submit_result_flow_completion_smoke(db_path: Path) -> 
     for fragment in (
         'data-testid="vendor-work-entry-submit-result"',
         'data-testid="vendor-work-entry-submit-result-mode">create<',
+        'data-testid="vendor-work-entry-summary-status-line"',
         f'data-testid="vendor-work-entry-summary-active-entry-id">{second_entry_id}<',
         f'data-testid="vendor-work-entry-draft-hidden-entry-id"',
         f'value="{second_entry_id}"',
@@ -7774,6 +7798,8 @@ def run_vendor_work_entry_submit_result_flow_completion_smoke(db_path: Path) -> 
             raise AssertionError(f"vendor submit result flow completion smoke create landing missing fragment: {fragment}")
     if 'data-testid="vendor-work-entry-create-mode"' in create_landing_html:
         raise AssertionError("vendor submit result flow completion smoke create landing should not remain in create-mode state")
+    if "You are viewing an existing entry that is ready for update." not in create_landing_html:
+        raise AssertionError("vendor submit result flow completion smoke create landing should explain selected-entry update status")
 
     update_landing_page = vendor_client.get(
         f"/vendor/work-entry?submit_status=success&submit_mode=update&selected_entry_id={first_entry_id}",
@@ -7785,6 +7811,7 @@ def run_vendor_work_entry_submit_result_flow_completion_smoke(db_path: Path) -> 
     for fragment in (
         'data-testid="vendor-work-entry-submit-result"',
         'data-testid="vendor-work-entry-submit-result-mode">update<',
+        'data-testid="vendor-work-entry-summary-status-line"',
         f'data-testid="vendor-work-entry-summary-active-entry-id">{first_entry_id}<',
         f'data-testid="vendor-work-entry-draft-hidden-entry-id"',
         f'value="{first_entry_id}"',
@@ -7792,6 +7819,8 @@ def run_vendor_work_entry_submit_result_flow_completion_smoke(db_path: Path) -> 
     ):
         if fragment not in update_landing_html:
             raise AssertionError(f"vendor submit result flow completion smoke update landing missing fragment: {fragment}")
+    if "You are viewing an existing entry that is ready for update." not in update_landing_html:
+        raise AssertionError("vendor submit result flow completion smoke update landing should explain selected-entry update status")
 
 
 def main() -> int:
