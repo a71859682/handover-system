@@ -2313,6 +2313,28 @@ def vendor_write_preflight(
     }
 
 
+def build_vendor_work_entry_preflight_payload(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    business_date: str,
+    entry_id: int | None = None,
+    payload_vendor_name: str | None = None,
+    payload_business_date_provided: bool = False,
+) -> dict[str, object]:
+    return {
+        "ok": True,
+        "preflight": vendor_write_preflight(
+            conn,
+            sheet_id=sheet_id,
+            business_date=business_date,
+            entry_id=entry_id,
+            payload_vendor_name=payload_vendor_name,
+            payload_business_date_provided=payload_business_date_provided,
+        ),
+    }
+
+
 def find_vendor_work_entry_preflight_sheet_id(
     conn: sqlite3.Connection,
     *,
@@ -2417,6 +2439,20 @@ def resolve_vendor_today_entry_selection(
     }
 
 
+def resolve_vendor_work_entry_preflight_target(
+    *,
+    preflight_sheet_id: int | None,
+    active_entry_id: int | None,
+    is_new_entry_mode: bool,
+) -> dict[str, object]:
+    entry_id = None if is_new_entry_mode else active_entry_id
+    return {
+        "sheet_id": preflight_sheet_id,
+        "entry_id": entry_id,
+        "preflight_available": preflight_sheet_id is not None,
+    }
+
+
 def build_vendor_work_entry_page_context(
     conn: sqlite3.Connection,
     vendor_account,
@@ -2456,24 +2492,21 @@ def build_vendor_work_entry_page_context(
     )
     today_entries = list(selection["today_entries"])
     active_today_entry = selection["active_today_entry"]
-    active_entry_id = selection["active_entry_id"]
     is_new_entry_mode = str(new_entry_raw).strip() == "1"
+    preflight_target = resolve_vendor_work_entry_preflight_target(
+        preflight_sheet_id=preflight_sheet_id,
+        active_entry_id=selection["active_entry_id"],
+        is_new_entry_mode=is_new_entry_mode,
+    )
 
     preflight_payload = None
-    if preflight_sheet_id is not None:
-        preflight_kwargs = {
-            "sheet_id": preflight_sheet_id,
-            "business_date": business_date,
-        }
-        if active_entry_id is not None and not is_new_entry_mode:
-            preflight_kwargs["entry_id"] = active_entry_id
-        preflight_payload = {
-            "ok": True,
-            "preflight": vendor_write_preflight(
-                conn,
-                **preflight_kwargs,
-            ),
-        }
+    if preflight_target["preflight_available"]:
+        preflight_payload = build_vendor_work_entry_preflight_payload(
+            conn,
+            sheet_id=int(preflight_target["sheet_id"]),
+            business_date=business_date,
+            entry_id=preflight_target["entry_id"],
+        )
 
     pending_items = get_pending_items_by_vendor(preflight_sheet_id) if preflight_sheet_id is not None else {}
     vendor_pending_items = list(pending_items.get(str(business_identity["vendor_name"]), []))
@@ -4475,7 +4508,7 @@ def api_vendor_work_entry_preflight():
 
     with db() as conn:
         try:
-            preflight = vendor_write_preflight(
+            preflight_payload = build_vendor_work_entry_preflight_payload(
                 conn,
                 sheet_id=sheet_id,
                 business_date=business_date,
@@ -4486,7 +4519,7 @@ def api_vendor_work_entry_preflight():
         except LookupError as exc:
             return _handle_vendor_write_preflight_error(exc)
 
-    return jsonify({"ok": True, "preflight": preflight})
+    return jsonify(preflight_payload)
 
 
 @app.route("/api/crew-followups")
