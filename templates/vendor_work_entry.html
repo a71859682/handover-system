@@ -418,6 +418,13 @@
         const reloadUrl = new URL(window.location.href);
         reloadUrl.searchParams.set("submit_status", "success");
         reloadUrl.searchParams.set("submit_mode", submitMode);
+        const resultEntryId = data && data.entry && data.entry.id ? String(data.entry.id) : "";
+        if (resultEntryId) {
+          reloadUrl.searchParams.set("selected_entry_id", resultEntryId);
+        }
+        if (submitMode === "create") {
+          reloadUrl.searchParams.delete("new_entry");
+        }
         window.setTimeout(() => window.location.assign(reloadUrl.toString()), 300);
       } catch (error) {
         if (errorMessage) {
