@@ -2413,12 +2413,29 @@ def resolve_vendor_today_entry_selection(
     preview_entries: list[dict[str, object]],
     business_date: str,
     today_entry_index_raw: object,
+    selected_entry_id_raw: object = None,
 ) -> dict[str, object]:
     today_entries = [
         entry
         for entry in preview_entries
         if str(entry.get("business_date", "")) == str(business_date)
     ]
+    selected_entry_id = None
+    try:
+        if str(selected_entry_id_raw or "").strip():
+            selected_entry_id = int(selected_entry_id_raw)
+    except (TypeError, ValueError):
+        selected_entry_id = None
+    if selected_entry_id is not None:
+        for index, entry in enumerate(today_entries):
+            if int(entry.get("entry_id") or 0) == selected_entry_id:
+                active_today_entry = entry
+                return {
+                    "today_entries": today_entries,
+                    "active_index": index,
+                    "active_today_entry": active_today_entry,
+                    "active_entry_id": selected_entry_id,
+                }
     try:
         active_index = int(today_entry_index_raw)
     except (TypeError, ValueError):
@@ -2537,6 +2554,7 @@ def build_vendor_work_entry_page_context(
     scope: dict[str, object],
     business_date: str,
     today_entry_index_raw: object,
+    selected_entry_id_raw: object,
     new_entry_raw: object,
     submit_status_raw: object,
     submit_mode_raw: object,
@@ -2566,6 +2584,7 @@ def build_vendor_work_entry_page_context(
         preview_entries,
         business_date,
         today_entry_index_raw,
+        selected_entry_id_raw,
     )
     today_entries = list(selection["today_entries"])
     active_today_entry = selection["active_today_entry"]
@@ -4041,6 +4060,7 @@ def vendor_work_entry_page():
             scope=scope,
             business_date=business_date,
             today_entry_index_raw=request.args.get("today_entry_index", ""),
+            selected_entry_id_raw=request.args.get("selected_entry_id", ""),
             new_entry_raw=request.args.get("new_entry", ""),
             submit_status_raw=request.args.get("submit_status", ""),
             submit_mode_raw=request.args.get("submit_mode", ""),
