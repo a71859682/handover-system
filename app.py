@@ -4554,6 +4554,11 @@ def api_vendor_work_entry():
 
     if len(work_content) > 500:
         return crew_api_error("invalid_work_content", "work_content must be 500 characters or fewer.")
+    if len(pre_entry_requirement) > 500:
+        return crew_api_error(
+            "invalid_pre_entry_requirement",
+            "pre_entry_requirement must be 500 characters or fewer.",
+        )
 
     with db() as conn:
         try:

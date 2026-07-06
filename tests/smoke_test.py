@@ -1184,6 +1184,12 @@ with module.app.test_client() as client:
         raise SystemExit("/api/vendor-work-entry insert should default business_date from helper")
     if inserted_entry.get("pre_entry_requirement") != "Insert Requirement":
         raise SystemExit("/api/vendor-work-entry insert should return persisted pre_entry_requirement")
+    inserted_row = conn.execute(
+        "SELECT pre_entry_requirement FROM vendor_work_entries WHERE id = ?",
+        (inserted_entry["id"],),
+    ).fetchone()
+    if inserted_row is None or inserted_row["pre_entry_requirement"] != "Insert Requirement":
+        raise SystemExit("/api/vendor-work-entry insert should persist pre_entry_requirement in DB")
 
     entry_update = client.post(
         "/api/vendor-work-entry",
@@ -1208,6 +1214,121 @@ with module.app.test_client() as client:
         raise SystemExit("/api/vendor-work-entry update returned unexpected payload")
     if updated_entry.get("pre_entry_requirement") != "Insert Requirement Updated":
         raise SystemExit("/api/vendor-work-entry update should return updated pre_entry_requirement")
+    updated_row = conn.execute(
+        "SELECT pre_entry_requirement FROM vendor_work_entries WHERE id = ?",
+        (inserted_entry["id"],),
+    ).fetchone()
+    if updated_row is None or updated_row["pre_entry_requirement"] != "Insert Requirement Updated":
+        raise SystemExit("/api/vendor-work-entry update should persist pre_entry_requirement in DB")
+
+    missing_requirement_create = client.post(
+        "/api/vendor-work-entry",
+        json={
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorA",
+            "planned_at": "",
+            "planned_headcount": 1,
+            "actual_headcount": 0,
+            "work_content": "Missing Requirement Create",
+            "work_headcount": 0,
+            "entry_order": 3,
+        },
+    )
+    if missing_requirement_create.status_code != 200 or not missing_requirement_create.get_json().get("ok"):
+        raise SystemExit("/api/vendor-work-entry create without pre_entry_requirement should succeed")
+    missing_requirement_create_entry = missing_requirement_create.get_json()["entry"]
+    if missing_requirement_create_entry.get("pre_entry_requirement") != "":
+        raise SystemExit("/api/vendor-work-entry create without pre_entry_requirement should normalize to empty string")
+    missing_create_row = conn.execute(
+        "SELECT pre_entry_requirement FROM vendor_work_entries WHERE id = ?",
+        (missing_requirement_create_entry["id"],),
+    ).fetchone()
+    if missing_create_row is None or missing_create_row["pre_entry_requirement"] != "":
+        raise SystemExit("/api/vendor-work-entry create without pre_entry_requirement should persist empty string")
+
+    whitespace_requirement_update = client.post(
+        "/api/vendor-work-entry",
+        json={
+            "id": inserted_entry["id"],
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorA",
+            "business_date": business_date,
+            "planned_at": "2000-01-01 11:00",
+            "planned_headcount": 4,
+            "actual_headcount": 1,
+            "work_content": "Insert Crew Updated",
+            "pre_entry_requirement": "   Trim Me   ",
+            "work_headcount": 1,
+            "entry_order": 2,
+        },
+    )
+    if whitespace_requirement_update.status_code != 200 or not whitespace_requirement_update.get_json().get("ok"):
+        raise SystemExit("/api/vendor-work-entry update with whitespace pre_entry_requirement should succeed")
+    whitespace_requirement_entry = whitespace_requirement_update.get_json()["entry"]
+    if whitespace_requirement_entry.get("pre_entry_requirement") != "Trim Me":
+        raise SystemExit("/api/vendor-work-entry update should trim pre_entry_requirement")
+
+    missing_requirement_update = client.post(
+        "/api/vendor-work-entry",
+        json={
+            "id": inserted_entry["id"],
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorA",
+            "business_date": business_date,
+            "planned_at": "2000-01-01 11:00",
+            "planned_headcount": 4,
+            "actual_headcount": 1,
+            "work_content": "Insert Crew Updated",
+            "work_headcount": 1,
+            "entry_order": 2,
+        },
+    )
+    if missing_requirement_update.status_code != 200 or not missing_requirement_update.get_json().get("ok"):
+        raise SystemExit("/api/vendor-work-entry update without pre_entry_requirement should succeed")
+    missing_requirement_update_entry = missing_requirement_update.get_json()["entry"]
+    if missing_requirement_update_entry.get("pre_entry_requirement") != "":
+        raise SystemExit("/api/vendor-work-entry update without pre_entry_requirement should normalize to empty string")
+    missing_update_row = conn.execute(
+        "SELECT pre_entry_requirement FROM vendor_work_entries WHERE id = ?",
+        (inserted_entry["id"],),
+    ).fetchone()
+    if missing_update_row is None or missing_update_row["pre_entry_requirement"] != "":
+        raise SystemExit("/api/vendor-work-entry update without pre_entry_requirement should persist empty string")
+
+    over_limit_requirement = "R" * 501
+    unchanged_before_invalid_requirement = conn.execute(
+        "SELECT pre_entry_requirement, updated_at FROM vendor_work_entries WHERE id = ?",
+        (inserted_entry["id"],),
+    ).fetchone()
+    invalid_requirement_entry = client.post(
+        "/api/vendor-work-entry",
+        json={
+            "id": inserted_entry["id"],
+            "sheet_id": sheet_id,
+            "vendor_name": "VendorA",
+            "business_date": business_date,
+            "planned_at": "2000-01-01 11:00",
+            "planned_headcount": 4,
+            "actual_headcount": 1,
+            "work_content": "Insert Crew Updated",
+            "pre_entry_requirement": over_limit_requirement,
+            "work_headcount": 1,
+            "entry_order": 2,
+        },
+    )
+    if invalid_requirement_entry.status_code != 400:
+        raise SystemExit("over-limit pre_entry_requirement should return HTTP 400")
+    invalid_requirement_payload = invalid_requirement_entry.get_json()
+    if invalid_requirement_payload.get("error") != "invalid_pre_entry_requirement":
+        raise SystemExit("over-limit pre_entry_requirement should use invalid_pre_entry_requirement error code")
+    if invalid_requirement_payload.get("message") != "pre_entry_requirement must be 500 characters or fewer.":
+        raise SystemExit("over-limit pre_entry_requirement should return the expected error message")
+    unchanged_after_invalid_requirement = conn.execute(
+        "SELECT pre_entry_requirement, updated_at FROM vendor_work_entries WHERE id = ?",
+        (inserted_entry["id"],),
+    ).fetchone()
+    if tuple(unchanged_before_invalid_requirement) != tuple(unchanged_after_invalid_requirement):
+        raise SystemExit("over-limit pre_entry_requirement should not modify DB state")
 
     invalid_entry = client.post(
         "/api/vendor-work-entry",
@@ -7625,12 +7746,13 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
             ''',
             ("vendor_active", module.generate_password_hash("vendor-pass"), "Vendor A", 1),
         )
+        next_task_col_index = conn.execute("SELECT COALESCE(MAX(col_index), 0) + 1 FROM tasks").fetchone()[0]
         conn.execute(
             '''
             INSERT INTO tasks (sheet_id, col_index, vendor, location, name)
             VALUES (?, ?, ?, ?, ?)
             ''',
-            (1, 5, "Vendor A", "Vendor Zone", "Vendor A Task"),
+            (1, next_task_col_index, "Vendor A", "Vendor Zone", "Vendor A Task"),
         )
         business_date = module.resolve_crew_business_date()
         conn.execute(
@@ -7789,12 +7911,13 @@ def run_vendor_work_entry_submit_result_flow_completion_smoke(db_path: Path) -> 
             ''',
             ("vendor_active", module.generate_password_hash("vendor-pass"), "Vendor A", 1),
         )
+        next_task_col_index = conn.execute("SELECT COALESCE(MAX(col_index), 0) + 1 FROM tasks").fetchone()[0]
         conn.execute(
             '''
             INSERT INTO tasks (sheet_id, col_index, vendor, location, name)
             VALUES (?, ?, ?, ?, ?)
             ''',
-            (1, 5, "Vendor A", "Vendor Zone", "Vendor A Task"),
+            (1, next_task_col_index, "Vendor A", "Vendor Zone", "Vendor A Task"),
         )
         business_date = module.resolve_crew_business_date()
         conn.execute(
