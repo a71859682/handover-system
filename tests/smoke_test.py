@@ -144,6 +144,7 @@ def create_sample_sqlite(path: Path) -> None:
             planned_headcount INTEGER NOT NULL,
             actual_headcount INTEGER NOT NULL,
             work_content TEXT NOT NULL,
+            pre_entry_requirement TEXT,
             work_headcount INTEGER NOT NULL,
             entry_order INTEGER NOT NULL,
             created_at TEXT NOT NULL,
@@ -1171,6 +1172,7 @@ with module.app.test_client() as client:
             "planned_headcount": 4,
             "actual_headcount": 0,
             "work_content": "Insert Crew",
+            "pre_entry_requirement": "Insert Requirement",
             "work_headcount": 0,
             "entry_order": 2,
         },
@@ -1180,8 +1182,8 @@ with module.app.test_client() as client:
     inserted_entry = entry_insert.get_json()["entry"]
     if inserted_entry["business_date"] != business_date:
         raise SystemExit("/api/vendor-work-entry insert should default business_date from helper")
-    if "pre_entry_requirement" in inserted_entry:
-        raise SystemExit("/api/vendor-work-entry insert should preserve response contract without pre_entry_requirement")
+    if inserted_entry.get("pre_entry_requirement") != "Insert Requirement":
+        raise SystemExit("/api/vendor-work-entry insert should return persisted pre_entry_requirement")
 
     entry_update = client.post(
         "/api/vendor-work-entry",
@@ -1194,6 +1196,7 @@ with module.app.test_client() as client:
             "planned_headcount": 4,
             "actual_headcount": 1,
             "work_content": "Insert Crew Updated",
+            "pre_entry_requirement": "Insert Requirement Updated",
             "work_headcount": 1,
             "entry_order": 2,
         },
@@ -1203,8 +1206,8 @@ with module.app.test_client() as client:
     updated_entry = entry_update.get_json()["entry"]
     if updated_entry["actual_headcount"] != 1 or updated_entry["work_content"] != "Insert Crew Updated":
         raise SystemExit("/api/vendor-work-entry update returned unexpected payload")
-    if "pre_entry_requirement" in updated_entry:
-        raise SystemExit("/api/vendor-work-entry update should preserve response contract without pre_entry_requirement")
+    if updated_entry.get("pre_entry_requirement") != "Insert Requirement Updated":
+        raise SystemExit("/api/vendor-work-entry update should return updated pre_entry_requirement")
 
     invalid_entry = client.post(
         "/api/vendor-work-entry",
@@ -1736,6 +1739,7 @@ def create_legacy_vendor_contacts_sqlite(path: Path) -> None:
             planned_headcount INTEGER NOT NULL,
             actual_headcount INTEGER NOT NULL,
             work_content TEXT NOT NULL,
+            pre_entry_requirement TEXT,
             work_headcount INTEGER NOT NULL,
             entry_order INTEGER NOT NULL,
             created_at TEXT NOT NULL,
@@ -6353,19 +6357,19 @@ with module.db() as conn:
         '''
         INSERT INTO vendor_work_entries (
             sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-            actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ''',
-        (1, "Vendor A", business_date, "2000-01-01 09:00", 3, 1, "Vendor A Work 1", 1, 0),
+        (1, "Vendor A", business_date, "2000-01-01 09:00", 3, 1, "Vendor A Work 1", "Vendor A Requirement 1", 1, 0),
     )
     conn.execute(
         '''
         INSERT INTO vendor_work_entries (
             sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-            actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ''',
-        (1, "Vendor A", business_date, "2000-01-01 10:00", 2, 0, "Vendor A Work 2", 0, 1),
+        (1, "Vendor A", business_date, "2000-01-01 10:00", 2, 0, "Vendor A Work 2", "Vendor A Requirement 2", 0, 1),
     )
     conn.execute(
         '''
@@ -6776,6 +6780,7 @@ for fragment in (
     'data-testid="vendor-work-entry-draft-submit-button"',
     'data-testid="vendor-work-entry-draft-context-group"',
     'data-testid="vendor-work-entry-draft-work-group"',
+    'data-testid="vendor-work-entry-draft-pre-entry-requirement"',
     'data-testid="vendor-work-entry-draft-validation-summary"',
     'data-testid="vendor-work-entry-draft-validation-error-planned-at"',
     'data-testid="vendor-work-entry-draft-validation-error-planned-headcount"',
@@ -6803,6 +6808,8 @@ if f'data-testid="vendor-work-entry-draft-write-mode">update<' not in vendor_wor
     raise SystemExit("vendor work entry draft write mode should align with active entry preflight")
 if f'data-testid="vendor-work-entry-draft-hidden-entry-id"' not in vendor_work_entry_page_html or f'value="{vendor_a_entry_id}"' not in vendor_work_entry_page_html:
     raise SystemExit("vendor work entry draft hidden entry id should align with active entry preflight")
+if "Vendor A Requirement 1" not in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry selected-entry mode should display existing pre-entry requirement")
 
 def extract_input_value_by_testid(html: str, testid: str) -> str:
     marker = f'data-testid="{testid}"'
@@ -6827,6 +6834,24 @@ def extract_input_value_by_testid(html: str, testid: str) -> str:
     return input_tag[value_start:value_end]
 
 
+def extract_textarea_value_by_testid(html: str, testid: str) -> str:
+    marker = f'data-testid="{testid}"'
+    marker_index = html.find(marker)
+    if marker_index == -1:
+        raise SystemExit(f"vendor work entry page should expose textarea marker: {testid}")
+    tag_start = html.rfind("<textarea", 0, marker_index)
+    if tag_start == -1:
+        raise SystemExit(f"vendor work entry page textarea marker should belong to a textarea tag: {testid}")
+    content_start = html.find(">", marker_index)
+    if content_start == -1:
+        raise SystemExit(f"vendor work entry page textarea tag should terminate: {testid}")
+    content_start += 1
+    content_end = html.find("</textarea>", content_start)
+    if content_end == -1:
+        raise SystemExit(f"vendor work entry page textarea content should terminate: {testid}")
+    return html[content_start:content_end]
+
+
 def extract_hidden_vendor_work_entry_id(html: str) -> str:
     return extract_input_value_by_testid(html, "vendor-work-entry-draft-hidden-entry-id")
 
@@ -6842,6 +6867,7 @@ def fetch_vendor_work_entry_snapshot(entry_id: int) -> dict[str, object]:
             planned_headcount,
             actual_headcount,
             work_content,
+            pre_entry_requirement,
             work_headcount,
             entry_order
         FROM vendor_work_entries
@@ -6894,6 +6920,7 @@ for fragment in (
     'data-testid="vendor-work-entry-draft-entry-id"',
     'data-testid="vendor-work-entry-draft-hidden-entry-id"',
     'data-testid="vendor-work-entry-draft-write-mode"',
+    'data-testid="vendor-work-entry-draft-pre-entry-requirement"',
     'data-testid="vendor-work-entry-history"',
     'data-testid="vendor-work-entry-pending-items"',
     "2000-01-01 10:00",
@@ -6917,6 +6944,8 @@ if "You are viewing an existing entry that is ready for update." not in vendor_w
     raise SystemExit("vendor work entry switched readiness summary should explain selected-entry update status")
 if "You are viewing an existing planned entry for today. Switching entries aligns the draft form with that entry's update context." not in vendor_work_entry_page_second_today_entry_html:
     raise SystemExit("vendor work entry switched page should explain selected-entry navigation status")
+if "Vendor A Requirement 2" not in vendor_work_entry_page_second_today_entry_html:
+    raise SystemExit("vendor work entry switched selected-entry mode should display the second entry pre-entry requirement")
 
 vendor_work_entry_page_new_entry_mode = client.get(
     "/vendor/work-entry?new_entry=1",
@@ -6947,6 +6976,8 @@ if "You are preparing a new entry for today." not in vendor_work_entry_page_new_
     raise SystemExit("vendor work entry create mode readiness summary should explain create status")
 if "You are preparing a new planned entry for today, not editing an existing one." not in vendor_work_entry_page_new_entry_mode_html:
     raise SystemExit("vendor work entry create mode should explain create-mode navigation status")
+if extract_textarea_value_by_testid(vendor_work_entry_page_new_entry_mode_html, "vendor-work-entry-draft-pre-entry-requirement") != "":
+    raise SystemExit("vendor work entry create mode should keep pre-entry requirement empty by default")
 vendor_work_entry_count_before_new_entry_submit = conn.execute(
     "SELECT COUNT(*) FROM vendor_work_entries"
 ).fetchone()[0]
@@ -6981,6 +7012,7 @@ create_mode_submit = create_mode_submit_client.post(
         "planned_headcount": 4,
         "actual_headcount": 0,
         "work_content": "Create mode third entry verification",
+        "pre_entry_requirement": "Create mode requirement verification",
         "work_headcount": 0,
         "entry_order": int(create_mode_entry_order),
     },
@@ -6994,6 +7026,8 @@ if not isinstance(create_mode_submit_payload, dict) or create_mode_submit_payloa
 created_entry_payload = create_mode_submit_payload.get("entry")
 if not isinstance(created_entry_payload, dict):
     raise SystemExit("vendor work entry create-mode submit should return created entry payload")
+if created_entry_payload.get("pre_entry_requirement") != "Create mode requirement verification":
+    raise SystemExit("vendor work entry create-mode submit should return persisted pre_entry_requirement in response payload")
 created_entry_id = int(created_entry_payload.get("id"))
 if created_entry_id in {int(vendor_a_entry_id), int(vendor_a_second_entry_id)}:
     raise SystemExit("vendor work entry create-mode submit should create a new row instead of reusing existing today entry ids")
@@ -7017,6 +7051,8 @@ if int(created_entry_snapshot["entry_order"]) != 2:
     raise SystemExit("vendor work entry create-mode submit should use the default today-entry-count entry_order for the new row")
 if str(created_entry_snapshot["work_content"]) != "Create mode third entry verification":
     raise SystemExit("vendor work entry create-mode submit should persist the submitted work_content for the new row")
+if str(created_entry_snapshot["pre_entry_requirement"]) != "Create mode requirement verification":
+    raise SystemExit("vendor work entry create-mode submit should persist the submitted pre_entry_requirement for the new row")
 vendor_work_entry_page_after_new_entry_submit = client.get(
     "/vendor/work-entry",
     follow_redirects=False,
@@ -7056,6 +7092,7 @@ selected_first_entry_submit = selected_first_entry_submit_client.post(
         "planned_headcount": int(first_entry_before_first_selected_submit["planned_headcount"]),
         "actual_headcount": int(first_entry_before_first_selected_submit["actual_headcount"]),
         "work_content": "Selected first entry target verification",
+        "pre_entry_requirement": "Selected first requirement verification",
         "work_headcount": int(first_entry_before_first_selected_submit["work_headcount"]),
         "entry_order": int(first_entry_before_first_selected_submit["entry_order"]),
     },
@@ -7066,8 +7103,13 @@ if selected_first_entry_submit.status_code != 200:
 selected_first_entry_submit_payload = selected_first_entry_submit.get_json()
 if not isinstance(selected_first_entry_submit_payload, dict) or selected_first_entry_submit_payload.get("ok") is not True:
     raise SystemExit("selected first today entry submit should return ok=true payload")
-if int(selected_first_entry_submit_payload.get("id")) != int(vendor_a_entry_id):
+selected_first_entry_response = selected_first_entry_submit_payload.get("entry")
+if not isinstance(selected_first_entry_response, dict):
+    raise SystemExit("selected first today entry submit should return entry payload")
+if int(selected_first_entry_response.get("id") or 0) != int(vendor_a_entry_id):
     raise SystemExit("selected first today entry submit should preserve first entry id")
+if selected_first_entry_response.get("pre_entry_requirement") != "Selected first requirement verification":
+    raise SystemExit("selected first today entry submit should return updated pre_entry_requirement")
 vendor_work_entry_count_after_first_selected_submit = conn.execute(
     "SELECT COUNT(*) FROM vendor_work_entries"
 ).fetchone()[0]
@@ -7077,6 +7119,8 @@ first_entry_after_first_selected_submit = fetch_vendor_work_entry_snapshot(vendo
 second_entry_after_first_selected_submit = fetch_vendor_work_entry_snapshot(vendor_a_second_entry_id)
 if first_entry_after_first_selected_submit["work_content"] != "Selected first entry target verification":
     raise SystemExit("selected first today entry submit should update the first entry only")
+if first_entry_after_first_selected_submit["pre_entry_requirement"] != "Selected first requirement verification":
+    raise SystemExit("selected first today entry submit should update pre_entry_requirement for the first entry only")
 if second_entry_after_first_selected_submit != second_entry_before_first_selected_submit:
     raise SystemExit("selected first today entry submit must not mutate the second entry")
 
@@ -7100,6 +7144,7 @@ selected_second_entry_submit = selected_second_entry_submit_client.post(
         "planned_headcount": int(second_entry_before_second_selected_submit["planned_headcount"]),
         "actual_headcount": int(second_entry_before_second_selected_submit["actual_headcount"]),
         "work_content": "Selected second entry target verification",
+        "pre_entry_requirement": "Selected second requirement verification",
         "work_headcount": int(second_entry_before_second_selected_submit["work_headcount"]),
         "entry_order": int(second_entry_before_second_selected_submit["entry_order"]),
     },
@@ -7110,8 +7155,13 @@ if selected_second_entry_submit.status_code != 200:
 selected_second_entry_submit_payload = selected_second_entry_submit.get_json()
 if not isinstance(selected_second_entry_submit_payload, dict) or selected_second_entry_submit_payload.get("ok") is not True:
     raise SystemExit("selected second today entry submit should return ok=true payload")
-if int(selected_second_entry_submit_payload.get("id")) != int(vendor_a_second_entry_id):
+selected_second_entry_response = selected_second_entry_submit_payload.get("entry")
+if not isinstance(selected_second_entry_response, dict):
+    raise SystemExit("selected second today entry submit should return entry payload")
+if int(selected_second_entry_response.get("id") or 0) != int(vendor_a_second_entry_id):
     raise SystemExit("selected second today entry submit should preserve second entry id")
+if selected_second_entry_response.get("pre_entry_requirement") != "Selected second requirement verification":
+    raise SystemExit("selected second today entry submit should return updated pre_entry_requirement")
 vendor_work_entry_count_after_second_selected_submit = conn.execute(
     "SELECT COUNT(*) FROM vendor_work_entries"
 ).fetchone()[0]
@@ -7123,6 +7173,8 @@ if first_entry_after_second_selected_submit != first_entry_before_second_selecte
     raise SystemExit("selected second today entry submit must not mutate the first entry")
 if second_entry_after_second_selected_submit["work_content"] != "Selected second entry target verification":
     raise SystemExit("selected second today entry submit should update the second entry only")
+if second_entry_after_second_selected_submit["pre_entry_requirement"] != "Selected second requirement verification":
+    raise SystemExit("selected second today entry submit should update pre_entry_requirement for the second entry only")
 
 vendor_work_entry_submit_result_page = client.get(
     "/vendor/work-entry?submit_status=success&submit_mode=create",
@@ -7660,6 +7712,7 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
         "planned_headcount": 2,
         "actual_headcount": 0,
         "work_content": "Vendor A Work Create",
+        "pre_entry_requirement": "Vendor A Requirement Create",
         "work_headcount": 0,
         "entry_order": 1,
     }
@@ -7670,8 +7723,8 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
     create_entry = create_response_payload.get("entry") if isinstance(create_response_payload, dict) else None
     if create_response_payload.get("ok") is not True or not isinstance(create_entry, dict):
         raise AssertionError("vendor submit pipeline regression smoke create path should preserve ok/entry response contract")
-    if "pre_entry_requirement" in create_entry:
-        raise AssertionError("vendor submit pipeline regression smoke create path should preserve response contract without pre_entry_requirement")
+    if create_entry.get("pre_entry_requirement") != "Vendor A Requirement Create":
+        raise AssertionError("vendor submit pipeline regression smoke create path should return persisted pre_entry_requirement")
     if create_entry.get("id") is None or create_entry.get("vendor_name") != "Vendor A" or create_entry.get("entry_order") != 1:
         raise AssertionError("vendor submit pipeline regression smoke create path should preserve trusted create payload fields")
 
@@ -7684,6 +7737,7 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
         "planned_headcount": 4,
         "actual_headcount": 2,
         "work_content": "Vendor A Work Updated",
+        "pre_entry_requirement": "Vendor A Requirement Updated",
         "work_headcount": 2,
         "entry_order": 0,
     }
@@ -7694,8 +7748,8 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
     update_entry = update_response_payload.get("entry") if isinstance(update_response_payload, dict) else None
     if update_response_payload.get("ok") is not True or not isinstance(update_entry, dict):
         raise AssertionError("vendor submit pipeline regression smoke update path should preserve ok/entry response contract")
-    if "pre_entry_requirement" in update_entry:
-        raise AssertionError("vendor submit pipeline regression smoke update path should preserve response contract without pre_entry_requirement")
+    if update_entry.get("pre_entry_requirement") != "Vendor A Requirement Updated":
+        raise AssertionError("vendor submit pipeline regression smoke update path should return persisted pre_entry_requirement")
     if (
         int(update_entry.get("id") or 0) != int(first_entry_id)
         or update_entry.get("work_content") != "Vendor A Work Updated"

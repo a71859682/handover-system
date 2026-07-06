@@ -256,7 +256,7 @@
         </label>
       </div>
     </div>
-    <div data-testid="vendor-work-entry-draft-work-group">
+<div data-testid="vendor-work-entry-draft-work-group">
       <h3>施工內容</h3>
       <div class="settings-grid">
         <label>工作內容
@@ -264,6 +264,12 @@
             data-testid="vendor-work-entry-draft-work-content"
             name="work_content"
           >{{ draft_submit_preparation.work_content }}</textarea>
+        </label>
+        <label>進場前需求
+          <textarea
+            data-testid="vendor-work-entry-draft-pre-entry-requirement"
+            name="pre_entry_requirement"
+          >{{ draft_submit_preparation.pre_entry_requirement }}</textarea>
         </label>
         <label>工作人數
           <input

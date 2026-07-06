@@ -2367,7 +2367,7 @@ def fetch_vendor_business_read_preview(
     return conn.execute(
         """
         SELECT id, vendor_name, business_date, planned_at, planned_headcount,
-               actual_headcount, work_content, work_headcount, entry_order
+               actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order
         FROM vendor_work_entries
         WHERE vendor_name = ?
         ORDER BY business_date DESC, entry_order ASC, rowid ASC
@@ -2404,6 +2404,7 @@ def serialize_vendor_business_read_entry(row: sqlite3.Row) -> dict[str, object]:
         "planned_headcount": int(row["planned_headcount"] or 0),
         "actual_headcount": int(row["actual_headcount"] or 0),
         "work_content": str(row["work_content"] or ""),
+        "pre_entry_requirement": str(row["pre_entry_requirement"] or ""),
         "work_headcount": int(row["work_headcount"] or 0),
         "entry_order": int(row["entry_order"] or 0),
     }
@@ -2478,6 +2479,7 @@ def build_vendor_work_entry_draft_entry_defaults(
         "planned_headcount": 0,
         "actual_headcount": 0,
         "work_content": "",
+        "pre_entry_requirement": "",
         "work_headcount": 0,
         "entry_order": len(today_entries),
     }
@@ -2511,6 +2513,7 @@ def build_vendor_work_entry_draft_submit_preparation(
         "planned_headcount": int(draft_entry_source.get("planned_headcount", 0) or 0),
         "actual_headcount": int(draft_entry_source.get("actual_headcount", 0) or 0),
         "work_content": str(draft_entry_source.get("work_content", "")),
+        "pre_entry_requirement": str(draft_entry_source.get("pre_entry_requirement", "")),
         "work_headcount": int(draft_entry_source.get("work_headcount", 0) or 0),
         "entry_order": int(draft_entry_source.get("entry_order", 0) or 0),
     }
@@ -2531,6 +2534,7 @@ def normalize_vendor_work_entry_submit_payload(data) -> dict[str, object]:
     planned_headcount = parse_non_negative_int(data.get("planned_headcount", 0), field_name="planned_headcount")
     actual_headcount = parse_non_negative_int(data.get("actual_headcount", 0), field_name="actual_headcount")
     work_content = str(data.get("work_content", "")).strip()
+    pre_entry_requirement = str(data.get("pre_entry_requirement", "")).strip()
     work_headcount = parse_non_negative_int(data.get("work_headcount", 0), field_name="work_headcount")
     entry_order = parse_non_negative_int(data.get("entry_order", 0), field_name="entry_order")
     return {
@@ -2542,6 +2546,7 @@ def normalize_vendor_work_entry_submit_payload(data) -> dict[str, object]:
         "planned_headcount": planned_headcount,
         "actual_headcount": actual_headcount,
         "work_content": work_content,
+        "pre_entry_requirement": pre_entry_requirement,
         "work_headcount": work_headcount,
         "entry_order": entry_order,
     }
@@ -4543,6 +4548,7 @@ def api_vendor_work_entry():
     planned_headcount = int(payload["planned_headcount"])
     actual_headcount = int(payload["actual_headcount"])
     work_content = str(payload["work_content"])
+    pre_entry_requirement = str(payload["pre_entry_requirement"])
     work_headcount = int(payload["work_headcount"])
     entry_order = int(payload["entry_order"])
 
@@ -4565,10 +4571,10 @@ def api_vendor_work_entry():
                 """
                 INSERT INTO vendor_work_entries (
                     sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-                    actual_headcount, work_content, work_headcount, entry_order,
+                    actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
                     created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
                 (
                     int(vendor_work_entry_context["sheet_id"]),
@@ -4578,6 +4584,7 @@ def api_vendor_work_entry():
                     planned_headcount,
                     actual_headcount,
                     work_content,
+                    pre_entry_requirement,
                     work_headcount,
                     entry_order,
                 ),
@@ -4593,6 +4600,7 @@ def api_vendor_work_entry():
                     planned_headcount = ?,
                     actual_headcount = ?,
                     work_content = ?,
+                    pre_entry_requirement = ?,
                     work_headcount = ?,
                     entry_order = ?,
                     updated_at = CURRENT_TIMESTAMP
@@ -4605,6 +4613,7 @@ def api_vendor_work_entry():
                     planned_headcount,
                     actual_headcount,
                     work_content,
+                    pre_entry_requirement,
                     work_headcount,
                     entry_order,
                     entry_id,
@@ -4616,7 +4625,7 @@ def api_vendor_work_entry():
         row = conn.execute(
             """
             SELECT id, sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-                   actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+                   actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order, created_at, updated_at
             FROM vendor_work_entries
             WHERE id = ?
             """,
