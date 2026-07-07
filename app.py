@@ -1997,6 +1997,111 @@ def _handle_vendor_write_preflight_error(exc: LookupError):
     raise exc
 
 
+def apply_vendor_work_entry_gate_state(entry: dict[str, object]) -> dict[str, object]:
+    requirement_text = str(entry.get("pre_entry_requirement") or "").strip()
+    requirement_status = str(entry.get("requirement_status") or "").strip()
+    if not requirement_text:
+        entry["readiness_state"] = "ready"
+        entry["readiness_reason"] = "no_requirement"
+    elif requirement_status == "confirmed":
+        entry["readiness_state"] = "ready"
+        entry["readiness_reason"] = "requirement_confirmed"
+    else:
+        entry["readiness_state"] = "not_ready"
+        entry["readiness_reason"] = "requirement_pending"
+    if entry["readiness_state"] == "ready":
+        entry["scheduling_gate_state"] = "allowed"
+    else:
+        entry["scheduling_gate_state"] = "warning"
+    entry["scheduling_gate_reason"] = entry["readiness_reason"]
+    return entry
+
+
+def resolve_vendor_work_entry_formal_approve_context(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    entry_id: int,
+) -> dict[str, object]:
+    sheet_row = conn.execute("SELECT id, site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+    if sheet_row is None:
+        raise LookupError("sheet_not_found")
+
+    existing_entry = conn.execute(
+        """
+        SELECT id, sheet_id, vendor_name, pre_entry_requirement, requirement_status
+        FROM vendor_work_entries
+        WHERE id = ?
+        """,
+        (entry_id,),
+    ).fetchone()
+    if existing_entry is None:
+        raise LookupError("entry_not_found")
+    if int(existing_entry["sheet_id"] or 0) != int(sheet_id):
+        raise LookupError("sheet_mismatch")
+
+    context = apply_vendor_work_entry_gate_state(
+        {
+            "sheet_id": int(sheet_row["id"]),
+            "site_id": int(sheet_row["site_id"]),
+            "entry_id": int(existing_entry["id"]),
+            "vendor_name": str(existing_entry["vendor_name"] or ""),
+            "pre_entry_requirement": str(existing_entry["pre_entry_requirement"] or ""),
+            "requirement_status": str(existing_entry["requirement_status"] or "pending"),
+        }
+    )
+    return context
+
+
+def authorize_vendor_work_entry_formal_approve(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    entry_id: int,
+) -> dict[str, object]:
+    context = resolve_vendor_work_entry_formal_approve_context(
+        conn,
+        sheet_id=sheet_id,
+        entry_id=entry_id,
+    )
+    user = _current_internal_user()
+    if user is None:
+        if current_vendor_account() is not None:
+            raise LookupError("vendor_auth_forbidden")
+        raise LookupError("auth_required")
+    if is_global_admin(user):
+        current_site_context = authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+        context["current_site_id"] = int(current_site_context["current_site_id"])
+        return context
+
+    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    if int(context["site_id"]) != int(current_site_id):
+        raise LookupError("write_target_not_in_current_site")
+    context["current_site_id"] = int(current_site_id)
+    return context
+
+
+def _handle_vendor_work_entry_formal_approve_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "sheet_not_found":
+        return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+    if code == "entry_not_found":
+        return crew_api_error("entry_not_found", "vendor work entry id was not found.", status=404)
+    if code == "sheet_mismatch":
+        return crew_api_error("sheet_mismatch", "vendor work entry belongs to a different sheet_id.", status=409)
+    if code == "site_context_invalid":
+        return crew_api_error("site_context_invalid", "current_site_id is missing or invalid.", status=403)
+    if code == "site_permission_missing":
+        return crew_api_error("site_permission_missing", "current user no longer has permission for the current site.", status=403)
+    if code == "write_target_not_in_current_site":
+        return crew_api_error("write_target_not_in_current_site", "write target does not belong to the current site.", status=403)
+    if code == "vendor_auth_forbidden":
+        return crew_api_error("vendor_auth_forbidden", "vendor authentication cannot approve entries.", status=403)
+    if code == "auth_required":
+        return crew_api_error("auth_required", "authentication is required.", status=403)
+    raise exc
+
+
 def get_active_crew_vendors(sheet_id: int) -> list[str]:
     with db() as conn:
         tasks = conn.execute(
@@ -2227,23 +2332,7 @@ def fetch_vendor_work_entries(
     ).fetchall()
     entries_by_vendor: dict[str, list[dict[str, object]]] = {}
     for row in rows:
-        entry = dict(row)
-        requirement_text = str(entry.get("pre_entry_requirement") or "").strip()
-        requirement_status = str(entry.get("requirement_status") or "").strip()
-        if not requirement_text:
-            entry["readiness_state"] = "ready"
-            entry["readiness_reason"] = "no_requirement"
-        elif requirement_status == "confirmed":
-            entry["readiness_state"] = "ready"
-            entry["readiness_reason"] = "requirement_confirmed"
-        else:
-            entry["readiness_state"] = "not_ready"
-            entry["readiness_reason"] = "requirement_pending"
-        if entry["readiness_state"] == "ready":
-            entry["scheduling_gate_state"] = "allowed"
-        else:
-            entry["scheduling_gate_state"] = "warning"
-        entry["scheduling_gate_reason"] = entry["readiness_reason"]
+        entry = apply_vendor_work_entry_gate_state(dict(row))
         entries_by_vendor.setdefault(row["vendor_name"], []).append(entry)
     return entries_by_vendor
 
@@ -4819,6 +4908,47 @@ def api_crew_work_entry_requirement_confirm():
         ).fetchone()
 
     return jsonify({"ok": True, "entry": dict(confirmed_entry) if confirmed_entry else None})
+
+
+@app.route("/api/crew-work-entry/formal-approve", methods=["POST"])
+def api_crew_work_entry_formal_approve():
+    data = request.get_json(silent=True) or {}
+    try:
+        entry_id = parse_non_negative_int(data.get("entry_id"), field_name="entry_id")
+        sheet_id = parse_non_negative_int(data.get("sheet_id"), field_name="sheet_id")
+        action = str(data.get("action") or "").strip()
+        if entry_id <= 0:
+            raise ValueError("entry_id must be a positive integer.")
+        if sheet_id <= 0:
+            raise ValueError("sheet_id must be a positive integer.")
+        if action != "crew_formal_approve_entry":
+            raise ValueError("action must be crew_formal_approve_entry.")
+    except ValueError as exc:
+        return crew_api_error("invalid_request", str(exc))
+
+    with db() as conn:
+        try:
+            approval_context = authorize_vendor_work_entry_formal_approve(
+                conn,
+                sheet_id=sheet_id,
+                entry_id=entry_id,
+            )
+        except LookupError as exc:
+            return _handle_vendor_work_entry_formal_approve_lookup_error(exc)
+
+    if str(approval_context["scheduling_gate_state"]) != "allowed":
+        return crew_api_error("entry_not_ready", "Entry is not ready for this action.", status=409)
+
+    return jsonify(
+        {
+            "ok": True,
+            "action": "crew_formal_approve_entry",
+            "entry": {
+                "id": int(approval_context["entry_id"]),
+                "sheet_id": int(approval_context["sheet_id"]),
+            },
+        }
+    )
 
 
 @app.route("/api/vendor/work-entry/preflight", methods=["POST"])
