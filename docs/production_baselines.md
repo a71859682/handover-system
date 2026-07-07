@@ -308,6 +308,46 @@
 - Notification
 - Audit Log
 
+## Persistent Formal Approval v1 Production Baseline
+
+### 1. Baseline Name
+
+- Persistent Formal Approval v1 Production Baseline
+
+### 2. Completed Capability
+
+- Formal Approval Schema
+- Formal Approval Runtime Write
+- Formal Approval Crew Read Contract
+- Formal Approval Crew UI
+- Formal Approval Guardrail Freeze
+
+### 3. Scope
+
+- persisted approval
+- approved metadata
+- no override
+- no rejected / returned
+- no scheduling engine
+- no audit log
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_vendor_work_entry_formal_approve_smoke(...)` - PASS
+- `run_crew_api_smoke(...)` - PASS
+- `run_crew_readonly_render_smoke(...)` - PASS
+- `run_vendor_work_entry_write_isolation_smoke(...)` - PASS
+
+### 5. Explicit Out-of-Scope
+
+- override
+- notification
+- audit log
+- scheduling engine
+- rejected / returned
+
 ## Product Capability Freeze Scope
 
 ### Included
