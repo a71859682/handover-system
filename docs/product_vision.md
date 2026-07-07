@@ -103,3 +103,78 @@ Provide operational insight into bottlenecks, turnaround time, blocked reasons, 
 ### Mobile Experience
 
 Improve mobile-first access to the most important operational tasks so field users can act quickly without depending on desktop-heavy flows.
+
+## 7. Role-Oriented Work Hub
+
+### Principle
+
+After login, every user should immediately see:
+
+- what work needs to be completed today
+- which work items are currently blocked
+- which work items should be prioritized first
+- which actions can be executed directly
+
+The system should actively guide work instead of expecting users to search for functions on their own.
+
+### Role Examples
+
+### Site Supervisor（工地主任／工區主管）
+
+Homepage priorities:
+
+- Blocked Items
+- Pending Formal Approval
+- Pending Requirement Confirmation
+- Today's Summary
+
+### Site Member（工地成員）
+
+Homepage priorities:
+
+- Today Tasks
+- Today's Entries
+- Ready Items
+- Pending Requirement Confirmation
+
+### Vendor（廠商）
+
+Homepage priorities:
+
+- Pending Requirements
+- Today's Entry
+- Approval Status
+- Upcoming Entry Schedule
+
+### Admin
+
+Homepage priorities:
+
+- Site Health
+- Exceptions
+- User Management
+- Vendor Management
+
+### Design Principle
+
+Dashboard is not only a feature entry page.
+
+It should function as a:
+
+Role-Oriented Work Hub
+
+The first question answered after login should be:
+
+"What should I do now?"
+
+Instead of:
+
+"Which feature should I go to?"
+
+### Relationship to Task-Driven
+
+Task-Driven determines what work exists.
+
+Role-Oriented determines which work each role should see first.
+
+Together, these two directions form the core product design philosophy.
