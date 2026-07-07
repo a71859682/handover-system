@@ -244,6 +244,70 @@
 - 010F
 - 010G
 
+## Hard Block v1 Release Baseline
+
+### 1. Release Name
+
+- Hard Block v1
+
+### 2. Capability Inventory
+
+- Hard Block Design
+- Contract Planning
+- Formal Action Inventory
+- State Machine
+- No-op API Contract
+- UI Baseline
+- Guardrail Freeze
+- Production Baseline
+
+### 3. Baseline Commits
+
+- 010B Design Baseline
+  - `3ae0b8f` - `Document scheduling hard block design baseline`
+- 010C Contract Planning
+  - `fca03b9` - `Document hard block contract planning`
+- 010D-0 Formal Action Inventory
+  - `947cddd` - `Document crew formal action inventory`
+- 010D State Machine
+  - `f905774` - `Document formal action state machine baseline`
+- 010E No-op API Contract
+  - `216125f` - `Add hard block formal approve API baseline`
+- 010F UI Baseline
+  - `2ba355b` - `Add hard block formal approve UI baseline`
+- 010G Guardrail Freeze
+  - `562adba` - `Freeze hard block guardrails`
+- 010H Production Baseline
+  - `6a7888d` - `Document hard block production baseline`
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_vendor_work_entry_formal_approve_smoke(...)` - PASS
+- `run_crew_readonly_render_smoke(...)` - PASS
+- `run_crew_api_smoke(...)` - PASS
+- `run_vendor_work_entry_submit_pipeline_regression_smoke(...)` - PASS
+- `run_vendor_work_entry_requirement_confirmation_smoke(...)` - PASS
+- `run_vendor_work_entry_write_isolation_smoke(...)` - PASS
+
+### 5. Production Scope
+
+- no persistence
+- no schema
+- no workflow change
+- no override
+- no scheduling engine
+- no audit log
+
+### 6. Future Product Lines
+
+- Persistent Formal Approval State
+- Override Policy
+- Scheduling Engine
+- Notification
+- Audit Log
+
 ## Product Capability Freeze Scope
 
 ### Included
