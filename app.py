@@ -1344,6 +1344,15 @@ def _handle_grid_read_lookup_error(exc: LookupError):
     raise exc
 
 
+def _handle_dashboard_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "vendor_auth_forbidden":
+        return crew_api_error("vendor_auth_forbidden", "vendor authentication cannot access dashboard.", status=403)
+    if code == "auth_required":
+        return crew_api_error("auth_required", "authentication is required.", status=403)
+    return _handle_grid_read_lookup_error(exc)
+
+
 def resolve_admin_current_site_id(conn: sqlite3.Connection) -> int:
     user = _current_internal_user()
     if user is None:
@@ -1548,6 +1557,32 @@ def authorize_sheet_read(conn: sqlite3.Connection, sheet_id: int) -> None:
         return
     if int(sheet_row["site_id"] or 0) != int(current_site_id):
         raise LookupError("sheet_not_in_current_site")
+
+
+def authorize_dashboard_read(conn: sqlite3.Connection, *, sheet_id: int) -> dict[str, int]:
+    sheet_row = conn.execute("SELECT id, site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+    if sheet_row is None:
+        raise LookupError("sheet_not_found")
+
+    user = _current_internal_user()
+    if user is None:
+        if current_vendor_account() is not None:
+            raise LookupError("vendor_auth_forbidden")
+        raise LookupError("auth_required")
+
+    if is_global_admin(user):
+        current_site_id = resolve_admin_current_site_id(conn)
+    else:
+        current_site_id = _resolve_non_admin_read_site_id(conn, user)
+
+    if int(sheet_row["site_id"] or 0) != int(current_site_id):
+        raise LookupError("sheet_not_in_current_site")
+
+    return {
+        "sheet_id": int(sheet_row["id"]),
+        "site_id": int(sheet_row["site_id"]),
+        "current_site_id": int(current_site_id),
+    }
 
 
 def resolve_progress_write_context(conn: sqlite3.Connection, *, unit_id: int, task_id: int) -> dict[str, int]:
@@ -2358,6 +2393,67 @@ def fetch_vendor_work_entries(
         entry = apply_vendor_work_entry_formal_approval_state(entry)
         entries_by_vendor.setdefault(row["vendor_name"], []).append(entry)
     return entries_by_vendor
+
+
+def build_dashboard_payload(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    business_date: str,
+) -> dict[str, object]:
+    entries_by_vendor = fetch_vendor_work_entries(conn, sheet_id=sheet_id, business_date=business_date)
+    today_entries = [
+        entry.copy()
+        for vendor_entries in entries_by_vendor.values()
+        for entry in vendor_entries
+    ]
+    blocked_items = [entry.copy() for entry in today_entries if str(entry.get("scheduling_gate_state")) == "warning"]
+    pending_approvals = [
+        entry.copy()
+        for entry in today_entries
+        if str(entry.get("scheduling_gate_state")) == "allowed"
+        and str(entry.get("formal_approval_state")) == "pending"
+    ]
+    pending_requirements = [
+        entry.copy()
+        for entry in today_entries
+        if str(entry.get("readiness_reason")) == "requirement_pending"
+    ]
+    approved_today_count = sum(1 for entry in today_entries if str(entry.get("formal_approval_state")) == "approved")
+
+    return {
+        "summary": {
+            "blocked_count": len(blocked_items),
+            "pending_approval_count": len(pending_approvals),
+            "pending_requirement_count": len(pending_requirements),
+            "today_entry_count": len(today_entries),
+            "approved_today_count": approved_today_count,
+        },
+        "blocked_items": blocked_items,
+        "pending_approvals": pending_approvals,
+        "pending_requirements": pending_requirements,
+        "today_entries": today_entries,
+        "quick_actions": [
+            {
+                "action": "review_blocked_items",
+                "label": "Blocked Items",
+                "href": f"/sheet?sheet_id={int(sheet_id)}",
+                "count": len(blocked_items),
+            },
+            {
+                "action": "review_pending_approvals",
+                "label": "Pending Formal Approval",
+                "href": f"/sheet?sheet_id={int(sheet_id)}",
+                "count": len(pending_approvals),
+            },
+            {
+                "action": "review_pending_requirements",
+                "label": "Pending Requirement Confirmation",
+                "href": f"/sheet?sheet_id={int(sheet_id)}",
+                "count": len(pending_requirements),
+            },
+        ],
+    }
 
 
 def parse_planned_at_datetime(value: str) -> datetime | None:
@@ -4780,6 +4876,32 @@ def api_crew_forms():
             "inactive_contacts": inactive_contacts,
         }
     )
+
+
+@app.route("/api/dashboard")
+def api_dashboard():
+    sheet_id = request.args.get("sheet_id", type=int)
+    if sheet_id is None:
+        return crew_api_error("invalid_sheet_id", "sheet_id is required and must be a valid integer.")
+
+    raw_business_date = request.args.get("business_date", "").strip()
+    try:
+        business_date = parse_crew_business_date(raw_business_date) if raw_business_date else resolve_crew_business_date()
+    except ValueError as exc:
+        return crew_api_error("invalid_business_date", str(exc))
+
+    with db() as conn:
+        try:
+            dashboard_context = authorize_dashboard_read(conn, sheet_id=sheet_id)
+        except LookupError as exc:
+            return _handle_dashboard_lookup_error(exc)
+        payload = build_dashboard_payload(
+            conn,
+            sheet_id=int(dashboard_context["sheet_id"]),
+            business_date=business_date,
+        )
+
+    return jsonify(payload)
 
 
 @app.route("/api/vendor-contact", methods=["POST"])

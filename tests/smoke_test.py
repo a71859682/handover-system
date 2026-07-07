@@ -7307,6 +7307,244 @@ print("vendor-work-entry formal approve smoke PASS")
         raise AssertionError("vendor-work-entry formal approve smoke subprocess did not report PASS.")
 
 
+def run_dashboard_api_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+
+business_date = module.resolve_crew_business_date()
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site_row = conn.execute("SELECT id, site_name FROM sites ORDER BY id LIMIT 1").fetchone()
+    if default_site_row is None:
+        raise SystemExit("expected a default site for dashboard smoke")
+    default_site_id = int(default_site_row["id"])
+    default_site_name = str(default_site_row["site_name"])
+    sheet_row = conn.execute("SELECT id FROM sheets WHERE site_id = ? ORDER BY id LIMIT 1", (default_site_id,)).fetchone()
+    if sheet_row is None:
+        raise SystemExit("expected a default sheet for dashboard smoke")
+    sheet_id = int(sheet_row["id"])
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+            ("__dashboard_site_b__", "dashboard-site-b"),
+        ).fetchone()["id"]
+    )
+    secondary_sheet_id = int(
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+            ("Dashboard Sheet B", 999, secondary_site_id),
+        ).fetchone()["id"]
+    )
+    member_password_hash = module.generate_password_hash("member-pass")
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("dashboard_member", "dashboard_member", member_password_hash, "member"),
+    )
+    member_id = int(conn.execute("SELECT id FROM users WHERE username = ?", ("dashboard_member",)).fetchone()["id"])
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, default_site_id, "member"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
+        VALUES (?, ?, ?, ?)
+        ''',
+        ("dashboard_vendor", module.generate_password_hash("vendor-pass"), "Vendor Dashboard", 1),
+    )
+    vendor_account_id = int(
+        conn.execute("SELECT id FROM vendor_accounts WHERE username = ?", ("dashboard_vendor",)).fetchone()["id"]
+    )
+    blocked_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Dashboard", business_date, "2000-01-01 09:00", 2, 0, "Blocked Work", "Need permit", 0, 0),
+        ).fetchone()["id"]
+    )
+    pending_approval_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Dashboard", business_date, "2000-01-01 10:00", 3, 0, "Pending Approval Work", "", 0, 1),
+        ).fetchone()["id"]
+    )
+    approved_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Dashboard", business_date, "2000-01-01 11:00", 1, 0, "Approved Work", "", 0, 2),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        '''
+        INSERT INTO formal_approvals (
+            entry_id, sheet_id, action, approval_status, approved_by, approved_at, created_at, updated_at
+        ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (approved_entry_id, sheet_id, "dashboard_member"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_work_entries (
+            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+            actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (secondary_sheet_id, "Vendor Dashboard", business_date, "2000-01-01 12:00", 1, 0, "Cross Site Work", "", 0, 0),
+    )
+    conn.commit()
+
+def fetch_db_snapshot():
+    with module.db() as conn:
+        return {
+            "vendor_work_entries": int(conn.execute("SELECT COUNT(*) FROM vendor_work_entries").fetchone()[0]),
+            "formal_approvals": int(conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0]),
+        }
+
+client = module.app.test_client()
+
+def set_member_session(*, with_current_site=True):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = int(member_id)
+        session["username"] = "dashboard_member"
+        session["display_name"] = "dashboard_member"
+        session["role"] = "member"
+        if with_current_site:
+            session["current_site_id"] = int(default_site_id)
+            session["current_site_name"] = str(default_site_name)
+            session["site_selection_required"] = False
+
+success_before = fetch_db_snapshot()
+set_member_session()
+success = client.get(f"/api/dashboard?sheet_id={sheet_id}")
+if success.status_code != 200:
+    raise SystemExit("dashboard success path should return 200")
+payload = success.get_json()
+if set(payload.keys()) != {"summary", "blocked_items", "pending_approvals", "pending_requirements", "today_entries", "quick_actions"}:
+    raise SystemExit("dashboard success response should keep exact top-level contract")
+summary = payload["summary"]
+expected_summary_keys = {
+    "blocked_count",
+    "pending_approval_count",
+    "pending_requirement_count",
+    "today_entry_count",
+    "approved_today_count",
+}
+if set(summary.keys()) != expected_summary_keys:
+    raise SystemExit("dashboard summary should keep exact first-baseline contract")
+if summary["blocked_count"] != 1:
+    raise SystemExit("dashboard summary should count one blocked item")
+if summary["pending_approval_count"] != 1:
+    raise SystemExit("dashboard summary should count one pending approval")
+if summary["pending_requirement_count"] != 1:
+    raise SystemExit("dashboard summary should count one pending requirement")
+if summary["today_entry_count"] != 3:
+    raise SystemExit("dashboard summary should count three today entries")
+if summary["approved_today_count"] != 1:
+    raise SystemExit("dashboard summary should count one approved today entry")
+if len(payload["blocked_items"]) != 1 or int(payload["blocked_items"][0]["id"]) != int(blocked_entry_id):
+    raise SystemExit("dashboard blocked_items should surface the blocked entry")
+if payload["blocked_items"][0]["scheduling_gate_state"] != "warning" or payload["blocked_items"][0]["scheduling_gate_reason"] != "requirement_pending":
+    raise SystemExit("dashboard blocked_items should preserve scheduling gate warning contract")
+if len(payload["pending_approvals"]) != 1 or int(payload["pending_approvals"][0]["id"]) != int(pending_approval_entry_id):
+    raise SystemExit("dashboard pending_approvals should surface the ready unapproved entry")
+if payload["pending_approvals"][0]["formal_approval_state"] != "pending":
+    raise SystemExit("dashboard pending_approvals should preserve pending formal approval state")
+if len(payload["pending_requirements"]) != 1 or int(payload["pending_requirements"][0]["id"]) != int(blocked_entry_id):
+    raise SystemExit("dashboard pending_requirements should surface the blocked requirement-pending entry")
+if len(payload["today_entries"]) != 3:
+    raise SystemExit("dashboard today_entries should include all in-scope entries")
+if len(payload["quick_actions"]) != 3:
+    raise SystemExit("dashboard quick_actions should expose the first-baseline action list")
+if fetch_db_snapshot() != success_before:
+    raise SystemExit("dashboard aggregation API must not modify DB state")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["identity_type"] = "vendor"
+    session["vendor_account_id"] = int(vendor_account_id)
+    session["vendor_username"] = "dashboard_vendor"
+    session["vendor_name"] = "Vendor Dashboard"
+vendor_response = client.get(f"/api/dashboard?sheet_id={sheet_id}")
+if vendor_response.status_code != 403:
+    raise SystemExit("vendor session should be forbidden from dashboard API")
+vendor_payload = vendor_response.get_json()
+if vendor_payload.get("ok") is not False or vendor_payload["error"]["code"] != "vendor_auth_forbidden":
+    raise SystemExit("vendor dashboard rejection should preserve vendor_auth_forbidden")
+
+set_member_session(with_current_site=False)
+missing_site = client.get(f"/api/dashboard?sheet_id={sheet_id}")
+if missing_site.status_code != 403:
+    raise SystemExit("missing current site should reject dashboard API with 403")
+missing_site_payload = missing_site.get_json()
+if missing_site_payload.get("ok") is not False or missing_site_payload["error"]["code"] != "site_context_invalid":
+    raise SystemExit("missing current site dashboard rejection should preserve site_context_invalid")
+
+set_member_session()
+cross_site_before = fetch_db_snapshot()
+cross_site = client.get(f"/api/dashboard?sheet_id={secondary_sheet_id}")
+if cross_site.status_code != 403:
+    raise SystemExit("cross-site dashboard read should be rejected with 403")
+cross_site_payload = cross_site.get_json()
+if cross_site_payload.get("ok") is not False or cross_site_payload["error"]["code"] != "sheet_not_in_current_site":
+    raise SystemExit("cross-site dashboard rejection should preserve sheet_not_in_current_site")
+if fetch_db_snapshot() != cross_site_before:
+    raise SystemExit("cross-site dashboard rejection must not modify DB state")
+
+print("dashboard api smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "dashboard api smoke PASS" not in result.stdout:
+        raise AssertionError("dashboard api smoke subprocess did not report PASS.")
+
+
 def run_site_write_isolation_readiness_smoke() -> None:
     script_path = TOOLS_DIR / "check_site_write_isolation_readiness.py"
     if not script_path.exists():
@@ -9035,6 +9273,7 @@ def main() -> int:
         run_crew_schema_smoke_v2(Path(tmpdir) / "crew-schema-smoke.db")
         run_crew_schema_migration_smoke(Path(tmpdir) / "crew-schema-migration-smoke.db")
         run_crew_api_smoke(Path(tmpdir) / "crew-api-smoke.db")
+        run_dashboard_api_smoke(Path(tmpdir) / "dashboard-api-smoke.db")
         run_crew_readonly_render_smoke(Path(tmpdir) / "crew-readonly-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
