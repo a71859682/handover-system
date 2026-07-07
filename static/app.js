@@ -134,6 +134,26 @@ function buildCrewFormalApproveMeta(entry) {
   };
 }
 
+function buildCrewFormalApprovalIndicatorMeta(entry) {
+  const formalApprovalState = String(entry?.formal_approval_state || "pending").trim() || "pending";
+  const formalApprovalStatus = String(entry?.formal_approval_status || "pending").trim() || "pending";
+  const formalApprovedBy = String(entry?.formal_approved_by || "").trim();
+  const formalApprovedAt = String(entry?.formal_approved_at || "").trim();
+  const indicatorLabel = formalApprovalState === "approved" ? "正式核准：已完成" : "正式核准：待核准";
+  const detailMarkup =
+    formalApprovalState === "approved" && (formalApprovedBy || formalApprovedAt)
+      ? `<div data-testid="crew-work-entry-formal-approval-meta"><span class="crew-label">核准資訊</span><strong data-testid="crew-work-entry-formal-approved-by">${escapeHtml(formalApprovedBy || "已完成正式核准")}</strong>${formalApprovedAt ? `<span data-testid="crew-work-entry-formal-approved-at">${escapeHtml(formatCrewDateTime(formalApprovedAt))}</span>` : ""}</div>`
+      : "";
+  return {
+    formalApprovalState,
+    formalApprovalStatus,
+    formalApprovedBy,
+    formalApprovedAt,
+    indicatorLabel,
+    detailMarkup,
+  };
+}
+
 function renderCrewForms(data) {
   if (!crewFormShell || !crewVendorList) return;
   if (crewFormError) {
@@ -198,6 +218,7 @@ function renderCrewForms(data) {
       const requirementMeta = buildCrewRequirementMeta(entry);
       const readinessMeta = buildCrewReadinessMeta(entry);
       const schedulingGateMeta = buildCrewSchedulingGateMeta(entry);
+      const formalApprovalIndicatorMeta = buildCrewFormalApprovalIndicatorMeta(entry);
       const formalApproveMeta = buildCrewFormalApproveMeta(entry);
 
       const requirementNode = document.createElement("div");
@@ -224,6 +245,19 @@ function renderCrewForms(data) {
         schedulingGateNode.setAttribute("data-scheduling-gate-reason", schedulingGateMeta.schedulingGateReason);
         schedulingGateNode.innerHTML = `<span class="crew-label">排程提醒</span><strong>${escapeHtml(schedulingGateMeta.schedulingGateLabel)}</strong>`;
         row.appendChild(schedulingGateNode);
+      }
+
+      const formalApprovalNode = document.createElement("div");
+      formalApprovalNode.setAttribute("data-testid", "crew-work-entry-formal-approval-indicator");
+      formalApprovalNode.setAttribute("data-formal-approval-state", formalApprovalIndicatorMeta.formalApprovalState);
+      formalApprovalNode.setAttribute("data-formal-approval-status", formalApprovalIndicatorMeta.formalApprovalStatus);
+      formalApprovalNode.innerHTML = `<span class="crew-label">正式核准</span><strong>${escapeHtml(formalApprovalIndicatorMeta.indicatorLabel)}</strong>`;
+      row.appendChild(formalApprovalNode);
+
+      if (formalApprovalIndicatorMeta.detailMarkup) {
+        const formalApprovalMetaNode = document.createElement("div");
+        formalApprovalMetaNode.innerHTML = formalApprovalIndicatorMeta.detailMarkup;
+        row.appendChild(formalApprovalMetaNode.firstElementChild);
       }
 
       if (requirementMeta.confirmedMeta) {

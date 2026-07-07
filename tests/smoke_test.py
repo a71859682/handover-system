@@ -2365,6 +2365,7 @@ for required in (
     "function buildCrewRequirementMeta",
     "function buildCrewReadinessMeta",
     "function buildCrewSchedulingGateMeta",
+    "function buildCrewFormalApprovalIndicatorMeta",
     "function buildCrewFormalApproveMeta",
     "function renderCrewForms",
     "function renderCrewFormError",
@@ -2374,19 +2375,26 @@ for required in (
     "/api/crew-work-entry-requirement-confirm",
     "/api/crew-work-entry/formal-approve",
     "const schedulingGateMeta = buildCrewSchedulingGateMeta(entry);",
+    "const formalApprovalIndicatorMeta = buildCrewFormalApprovalIndicatorMeta(entry);",
     "const formalApproveMeta = buildCrewFormalApproveMeta(entry);",
     'setAttribute("data-testid", "crew-work-entry-pre-entry-requirement")',
     'setAttribute("data-testid", "crew-work-entry-requirement-status")',
     'setAttribute("data-testid", "crew-work-entry-readiness-indicator")',
     'setAttribute("data-testid", "crew-work-entry-scheduling-gate-indicator")',
+    'setAttribute("data-testid", "crew-work-entry-formal-approval-indicator")',
     'setAttribute("data-testid", "crew-work-entry-formal-approve-slot")',
     'setAttribute("data-scheduling-gate-state", schedulingGateMeta.schedulingGateState)',
     'setAttribute("data-scheduling-gate-reason", schedulingGateMeta.schedulingGateReason)',
+    'setAttribute("data-formal-approval-state", formalApprovalIndicatorMeta.formalApprovalState)',
+    'setAttribute("data-formal-approval-status", formalApprovalIndicatorMeta.formalApprovalStatus)',
     "if (schedulingGateMeta.schedulingGateLabel) {",
     "row.appendChild(schedulingGateNode);",
+    "row.appendChild(formalApprovalNode);",
     'data-testid="crew-work-entry-requirement-confirm-action"',
     'data-testid="crew-work-entry-formal-approve-action"',
     'data-testid="crew-work-entry-formal-approve-feedback"',
+    'data-testid="crew-work-entry-formal-approved-by"',
+    'data-testid="crew-work-entry-formal-approved-at"',
     'const actionMarkup = isConfirmed',
     "尚未具備進場條件",
     "需求已確認",
@@ -2394,6 +2402,8 @@ for required in (
     "排程提醒：進場前需求尚未確認",
     "可排程：進場前需求已確認",
     "可排程：無進場前需求",
+    "正式核准：待核准",
+    "正式核准：已完成",
     "\u6b63\u5f0f\u6838\u51c6",
     "\u5df2\u5b8c\u6210\u6b63\u5f0f\u6838\u51c6",
     "\u7121\u6cd5\u5b8c\u6210\u6b63\u5f0f\u6838\u51c6\uff1a\u9032\u5834\u524d\u9700\u6c42\u5c1a\u672a\u78ba\u8a8d",
@@ -2439,6 +2449,19 @@ for formal_approve_required in (
 ):
     if formal_approve_required not in js_text:
         raise SystemExit(f"app.js missing formal approve UI guardrail: {formal_approve_required}")
+
+for formal_approval_indicator_required in (
+    'setAttribute("data-testid", "crew-work-entry-formal-approval-indicator")',
+    'setAttribute("data-formal-approval-state", formalApprovalIndicatorMeta.formalApprovalState)',
+    'setAttribute("data-formal-approval-status", formalApprovalIndicatorMeta.formalApprovalStatus)',
+    'data-testid="crew-work-entry-formal-approved-by"',
+    'data-testid="crew-work-entry-formal-approved-at"',
+    "正式核准：待核准",
+    "正式核准：已完成",
+    "核准資訊",
+):
+    if formal_approval_indicator_required not in js_text:
+        raise SystemExit(f"app.js missing formal approval indicator guardrail: {formal_approval_indicator_required}")
 
 for forbidden in (
     'fetch("/api/vendor-contact"',
