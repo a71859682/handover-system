@@ -348,6 +348,72 @@
 - scheduling engine
 - rejected / returned
 
+## Persistent Formal Approval v1 Release Baseline
+
+### 1. Release Name
+
+- Persistent Formal Approval v1
+
+### 2. Capability Inventory
+
+- Design Baseline
+- Schema Evaluation
+- Persistence Schema
+- Write Contract
+- Runtime Write
+- Crew Read Contract
+- Crew UI
+- Guardrail Freeze
+- Production Baseline
+
+### 3. Baseline Commits
+
+- 011A Design Baseline
+  - `ef7ade6` - `Document persistent formal approval design baseline`
+- 011B Schema Evaluation
+  - `a026f0b` - `Document formal approval schema evaluation`
+- 011C Persistence Schema
+  - `1497c03` - `Add formal approval persistence schema baseline`
+- 011D Write Contract
+  - `5a2052f` - `Document formal approval write contract`
+- 011E Runtime Write
+  - `ac50826` - `Persist vendor formal approval`
+- 011F Crew Read Contract
+  - `31fa5e4` - `Add formal approval crew read contract`
+- 011G Crew UI
+  - `6667cf0` - `Add formal approval crew UI`
+- 011H Guardrail Freeze
+  - Freeze verified by full smoke and targeted formal approval / crew render / crew API smoke coverage
+- 011I Production Baseline
+  - `2a51556` - `Document persistent formal approval production baseline`
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_vendor_work_entry_formal_approve_smoke(...)` - PASS
+- `run_crew_api_smoke(...)` - PASS
+- `run_crew_readonly_render_smoke(...)` - PASS
+- `run_vendor_work_entry_write_isolation_smoke(...)` - PASS
+
+### 5. Production Scope
+
+- persisted approval
+- read contract
+- UI indicator
+- no override
+- no audit log
+- no scheduling engine
+- no rejected / returned
+
+### 6. Future Product Lines
+
+- Override Policy
+- Approval Revocation
+- Approval History / Audit
+- Scheduling Engine Integration
+- Notification
+
 ## Product Capability Freeze Scope
 
 ### Included
