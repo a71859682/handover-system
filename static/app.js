@@ -105,6 +105,26 @@ function buildCrewReadinessMeta(entry) {
   };
 }
 
+function buildCrewSchedulingGateMeta(entry) {
+  const schedulingGateState = String(entry?.scheduling_gate_state || "").trim();
+  const schedulingGateReason = String(entry?.scheduling_gate_reason || "").trim();
+  let schedulingGateLabel = "";
+
+  if (schedulingGateState === "warning" && schedulingGateReason === "requirement_pending") {
+    schedulingGateLabel = "排程提醒：進場前需求尚未確認";
+  } else if (schedulingGateState === "allowed" && schedulingGateReason === "requirement_confirmed") {
+    schedulingGateLabel = "可排程：進場前需求已確認";
+  } else if (schedulingGateState === "allowed" && schedulingGateReason === "no_requirement") {
+    schedulingGateLabel = "可排程：無進場前需求";
+  }
+
+  return {
+    schedulingGateState,
+    schedulingGateReason,
+    schedulingGateLabel,
+  };
+}
+
 function renderCrewForms(data) {
   if (!crewFormShell || !crewVendorList) return;
   if (crewFormError) {
@@ -168,6 +188,7 @@ function renderCrewForms(data) {
       if (!row) return;
       const requirementMeta = buildCrewRequirementMeta(entry);
       const readinessMeta = buildCrewReadinessMeta(entry);
+      const schedulingGateMeta = buildCrewSchedulingGateMeta(entry);
 
       const requirementNode = document.createElement("div");
       requirementNode.setAttribute("data-testid", "crew-work-entry-pre-entry-requirement");
@@ -185,6 +206,15 @@ function renderCrewForms(data) {
       readinessNode.setAttribute("data-readiness-reason", readinessMeta.readinessReason);
       readinessNode.innerHTML = `<span class="crew-label">進場條件</span><strong>${escapeHtml(readinessMeta.readinessLabel)}</strong>`;
       row.appendChild(readinessNode);
+
+      if (schedulingGateMeta.schedulingGateLabel) {
+        const schedulingGateNode = document.createElement("div");
+        schedulingGateNode.setAttribute("data-testid", "crew-work-entry-scheduling-gate-indicator");
+        schedulingGateNode.setAttribute("data-scheduling-gate-state", schedulingGateMeta.schedulingGateState);
+        schedulingGateNode.setAttribute("data-scheduling-gate-reason", schedulingGateMeta.schedulingGateReason);
+        schedulingGateNode.innerHTML = `<span class="crew-label">排程提醒</span><strong>${escapeHtml(schedulingGateMeta.schedulingGateLabel)}</strong>`;
+        row.appendChild(schedulingGateNode);
+      }
 
       if (requirementMeta.confirmedMeta) {
         const confirmedMetaNode = document.createElement("div");

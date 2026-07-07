@@ -2199,6 +2199,7 @@ for required in (
     "async function confirmCrewWorkEntryRequirement",
     "function buildCrewRequirementMeta",
     "function buildCrewReadinessMeta",
+    "function buildCrewSchedulingGateMeta",
     "function renderCrewForms",
     "function renderCrewFormError",
     "function formatCrewDate",
@@ -2208,11 +2209,15 @@ for required in (
     'setAttribute("data-testid", "crew-work-entry-pre-entry-requirement")',
     'setAttribute("data-testid", "crew-work-entry-requirement-status")',
     'setAttribute("data-testid", "crew-work-entry-readiness-indicator")',
+    'setAttribute("data-testid", "crew-work-entry-scheduling-gate-indicator")',
     'data-testid="crew-work-entry-requirement-confirm-action"',
     'const actionMarkup = isConfirmed',
     "尚未具備進場條件",
     "需求已確認",
     "無進場前需求",
+    "排程提醒：進場前需求尚未確認",
+    "可排程：進場前需求已確認",
+    "可排程：無進場前需求",
     "await loadCrewForms(sheetId);",
 ):
     if required not in js_text:
@@ -2227,6 +2232,19 @@ for readiness_required in (
 ):
     if readiness_required not in js_text:
         raise SystemExit(f"app.js missing readiness indicator guardrail: {readiness_required}")
+
+for scheduling_gate_required in (
+    'setAttribute("data-scheduling-gate-state", schedulingGateMeta.schedulingGateState)',
+    'setAttribute("data-scheduling-gate-reason", schedulingGateMeta.schedulingGateReason)',
+    'schedulingGateState === "warning" && schedulingGateReason === "requirement_pending"',
+    'schedulingGateState === "allowed" && schedulingGateReason === "requirement_confirmed"',
+    'schedulingGateState === "allowed" && schedulingGateReason === "no_requirement"',
+    "排程提醒：進場前需求尚未確認",
+    "可排程：進場前需求已確認",
+    "可排程：無進場前需求",
+):
+    if scheduling_gate_required not in js_text:
+        raise SystemExit(f"app.js missing scheduling gate indicator guardrail: {scheduling_gate_required}")
 
 for forbidden in (
     'fetch("/api/vendor-contact"',
