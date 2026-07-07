@@ -125,6 +125,15 @@ function buildCrewSchedulingGateMeta(entry) {
   };
 }
 
+function buildCrewFormalApproveMeta(entry) {
+  return {
+    actionLabel: "正式核准",
+    successMessage: "已完成正式核准",
+    blockedMessage: "無法完成正式核准：進場前需求尚未確認",
+    actionMarkup: `<button type="button" class="crew-formal-approve-btn" data-testid="crew-work-entry-formal-approve-action" data-entry-id="${escapeHtml(entry?.id ?? "")}" data-sheet-id="${escapeHtml(entry?.sheet_id ?? "")}">正式核准</button>`,
+  };
+}
+
 function renderCrewForms(data) {
   if (!crewFormShell || !crewVendorList) return;
   if (crewFormError) {
@@ -189,6 +198,7 @@ function renderCrewForms(data) {
       const requirementMeta = buildCrewRequirementMeta(entry);
       const readinessMeta = buildCrewReadinessMeta(entry);
       const schedulingGateMeta = buildCrewSchedulingGateMeta(entry);
+      const formalApproveMeta = buildCrewFormalApproveMeta(entry);
 
       const requirementNode = document.createElement("div");
       requirementNode.setAttribute("data-testid", "crew-work-entry-pre-entry-requirement");
@@ -226,6 +236,11 @@ function renderCrewForms(data) {
       actionSlot.setAttribute("data-testid", "crew-work-entry-requirement-action-slot");
       actionSlot.innerHTML = requirementMeta.actionMarkup;
       row.appendChild(actionSlot);
+
+      const formalApproveSlot = document.createElement("div");
+      formalApproveSlot.setAttribute("data-testid", "crew-work-entry-formal-approve-slot");
+      formalApproveSlot.innerHTML = `${formalApproveMeta.actionMarkup}<div data-testid="crew-work-entry-formal-approve-feedback"></div>`;
+      row.appendChild(formalApproveSlot);
     });
   });
 }
@@ -275,6 +290,59 @@ async function confirmCrewWorkEntryRequirement(button) {
     button.disabled = false;
     button.textContent = originalText;
     renderCrewFormError(error?.message || "crew requirement confirmation failed");
+  }
+}
+
+function setCrewFormalApproveFeedback(button, message, state = "") {
+  const slot = button?.closest("[data-testid='crew-work-entry-formal-approve-slot']");
+  const feedback = slot?.querySelector("[data-testid='crew-work-entry-formal-approve-feedback']");
+  if (!feedback) return;
+  feedback.textContent = message || "";
+  if (state) {
+    feedback.setAttribute("data-feedback-state", state);
+  } else {
+    feedback.removeAttribute("data-feedback-state");
+  }
+}
+
+async function approveCrewWorkEntryFormal(button) {
+  const entryId = Number.parseInt(button?.dataset.entryId || "", 10);
+  const sheetId = Number.parseInt(button?.dataset.sheetId || crewFormShell?.dataset.sheetId || "", 10);
+  if (!entryId || !sheetId) {
+    renderCrewFormError("missing formal approve context");
+    return;
+  }
+
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "核准中...";
+  setCrewFormalApproveFeedback(button, "");
+  try {
+    const response = await fetch("/api/crew-work-entry/formal-approve", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        entry_id: entryId,
+        sheet_id: sheetId,
+        action: "crew_formal_approve_entry",
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      if (data?.error?.code === "entry_not_ready") {
+        setCrewFormalApproveFeedback(button, "無法完成正式核准：進場前需求尚未確認", "blocked");
+        return;
+      }
+      throw new Error(data?.error?.message || "crew formal approve failed");
+    }
+    setCrewFormalApproveFeedback(button, "已完成正式核准", "success");
+  } catch (error) {
+    setCrewFormalApproveFeedback(button, error?.message || "crew formal approve failed", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
   }
 }
 
@@ -578,6 +646,9 @@ document.addEventListener("click", (event) => {
 
   const crewRequirementConfirm = event.target.closest("[data-testid='crew-work-entry-requirement-confirm-action']");
   if (crewRequirementConfirm) return confirmCrewWorkEntryRequirement(crewRequirementConfirm);
+
+  const crewFormalApprove = event.target.closest("[data-testid='crew-work-entry-formal-approve-action']");
+  if (crewFormalApprove) return approveCrewWorkEntryFormal(crewFormalApprove);
 
   const head = event.target.closest(".selectable-head[data-task-id], .selectable-head[data-vendor-task]");
   if (head) {

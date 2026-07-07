@@ -2223,25 +2223,32 @@ if "/api/vendor-contact" in template_text or "/api/vendor-work-entry" in templat
 for required in (
     "async function loadCrewForms",
     "async function confirmCrewWorkEntryRequirement",
+    "async function approveCrewWorkEntryFormal",
     "function buildCrewRequirementMeta",
     "function buildCrewReadinessMeta",
     "function buildCrewSchedulingGateMeta",
+    "function buildCrewFormalApproveMeta",
     "function renderCrewForms",
     "function renderCrewFormError",
     "function formatCrewDate",
     "function formatCrewDateTime",
     "/api/crew-forms?sheet_id=",
     "/api/crew-work-entry-requirement-confirm",
+    "/api/crew-work-entry/formal-approve",
     "const schedulingGateMeta = buildCrewSchedulingGateMeta(entry);",
+    "const formalApproveMeta = buildCrewFormalApproveMeta(entry);",
     'setAttribute("data-testid", "crew-work-entry-pre-entry-requirement")',
     'setAttribute("data-testid", "crew-work-entry-requirement-status")',
     'setAttribute("data-testid", "crew-work-entry-readiness-indicator")',
     'setAttribute("data-testid", "crew-work-entry-scheduling-gate-indicator")',
+    'setAttribute("data-testid", "crew-work-entry-formal-approve-slot")',
     'setAttribute("data-scheduling-gate-state", schedulingGateMeta.schedulingGateState)',
     'setAttribute("data-scheduling-gate-reason", schedulingGateMeta.schedulingGateReason)',
     "if (schedulingGateMeta.schedulingGateLabel) {",
     "row.appendChild(schedulingGateNode);",
     'data-testid="crew-work-entry-requirement-confirm-action"',
+    'data-testid="crew-work-entry-formal-approve-action"',
+    'data-testid="crew-work-entry-formal-approve-feedback"',
     'const actionMarkup = isConfirmed',
     "尚未具備進場條件",
     "需求已確認",
@@ -2249,6 +2256,9 @@ for required in (
     "排程提醒：進場前需求尚未確認",
     "可排程：進場前需求已確認",
     "可排程：無進場前需求",
+    "\u6b63\u5f0f\u6838\u51c6",
+    "\u5df2\u5b8c\u6210\u6b63\u5f0f\u6838\u51c6",
+    "\u7121\u6cd5\u5b8c\u6210\u6b63\u5f0f\u6838\u51c6\uff1a\u9032\u5834\u524d\u9700\u6c42\u5c1a\u672a\u78ba\u8a8d",
     "await loadCrewForms(sheetId);",
 ):
     if required not in js_text:
@@ -2277,6 +2287,20 @@ for scheduling_gate_required in (
 ):
     if scheduling_gate_required not in js_text:
         raise SystemExit(f"app.js missing scheduling gate indicator guardrail: {scheduling_gate_required}")
+
+for formal_approve_required in (
+    'const slot = button?.closest("[data-testid=\\\'crew-work-entry-formal-approve-slot\\\']");',
+    'const feedback = slot?.querySelector("[data-testid=\\\'crew-work-entry-formal-approve-feedback\\\']");',
+    'button.textContent = "\\u6838\\u51c6\\u4e2d...";',
+    'action: "crew_formal_approve_entry"',
+    'if (data?.error?.code === "entry_not_ready") {',
+    'setCrewFormalApproveFeedback(button, "\\u7121\\u6cd5\\u5b8c\\u6210\\u6b63\\u5f0f\\u6838\\u51c6\\uff1a\\u9032\\u5834\\u524d\\u9700\\u6c42\\u5c1a\\u672a\\u78ba\\u8a8d", "blocked");',
+    'setCrewFormalApproveFeedback(button, "\\u5df2\\u5b8c\\u6210\\u6b63\\u5f0f\\u6838\\u51c6", "success");',
+    'const crewFormalApprove = event.target.closest("[data-testid=\\\'crew-work-entry-formal-approve-action\\\']");',
+    "if (crewFormalApprove) return approveCrewWorkEntryFormal(crewFormalApprove);",
+):
+    if formal_approve_required not in js_text:
+        raise SystemExit(f"app.js missing formal approve UI guardrail: {formal_approve_required}")
 
 for forbidden in (
     'fetch("/api/vendor-contact"',
