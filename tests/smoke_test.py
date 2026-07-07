@@ -1019,6 +1019,32 @@ with module.app.test_client() as client:
     if vendor_c["contact"]["contact_name"] != "" or vendor_c["contact"]["contact_phone"] != "":
         raise SystemExit("empty compatibility contact should preserve readonly-safe blank fields")
 
+    scheduling_gate_snapshot = {
+        ("VendorA", "Need power off"): (
+            first_work_entry["scheduling_gate_state"],
+            first_work_entry["scheduling_gate_reason"],
+        ),
+        ("VendorA", "Need lift access"): (
+            second_work_entry["scheduling_gate_state"],
+            second_work_entry["scheduling_gate_reason"],
+        ),
+        ("VendorC", ""): (
+            vendor_c_entry["scheduling_gate_state"],
+            vendor_c_entry["scheduling_gate_reason"],
+        ),
+    }
+    expected_scheduling_gate_snapshot = {
+        ("VendorA", "Need power off"): ("warning", "requirement_pending"),
+        ("VendorA", "Need lift access"): ("allowed", "requirement_confirmed"),
+        ("VendorC", ""): ("allowed", "no_requirement"),
+    }
+    if scheduling_gate_snapshot != expected_scheduling_gate_snapshot:
+        raise SystemExit(
+            f"/api/crew-forms scheduling gate contract regression: {scheduling_gate_snapshot!r}"
+        )
+    if {state for state, _reason in scheduling_gate_snapshot.values()} != {"warning", "allowed"}:
+        raise SystemExit("/api/crew-forms scheduling gate state set should remain warning/allowed only")
+
     inactive_names = {item["vendor_name"] for item in crew_forms["inactive_contacts"]}
     if "VendorB" not in inactive_names:
         raise SystemExit("inactive vendor contacts should remain visible in inactive_contacts")
@@ -2206,10 +2232,15 @@ for required in (
     "function formatCrewDateTime",
     "/api/crew-forms?sheet_id=",
     "/api/crew-work-entry-requirement-confirm",
+    "const schedulingGateMeta = buildCrewSchedulingGateMeta(entry);",
     'setAttribute("data-testid", "crew-work-entry-pre-entry-requirement")',
     'setAttribute("data-testid", "crew-work-entry-requirement-status")',
     'setAttribute("data-testid", "crew-work-entry-readiness-indicator")',
     'setAttribute("data-testid", "crew-work-entry-scheduling-gate-indicator")',
+    'setAttribute("data-scheduling-gate-state", schedulingGateMeta.schedulingGateState)',
+    'setAttribute("data-scheduling-gate-reason", schedulingGateMeta.schedulingGateReason)',
+    "if (schedulingGateMeta.schedulingGateLabel) {",
+    "row.appendChild(schedulingGateNode);",
     'data-testid="crew-work-entry-requirement-confirm-action"',
     'const actionMarkup = isConfirmed',
     "尚未具備進場條件",
@@ -2236,6 +2267,7 @@ for readiness_required in (
 for scheduling_gate_required in (
     'setAttribute("data-scheduling-gate-state", schedulingGateMeta.schedulingGateState)',
     'setAttribute("data-scheduling-gate-reason", schedulingGateMeta.schedulingGateReason)',
+    '<span class="crew-label">排程提醒</span>',
     'schedulingGateState === "warning" && schedulingGateReason === "requirement_pending"',
     'schedulingGateState === "allowed" && schedulingGateReason === "requirement_confirmed"',
     'schedulingGateState === "allowed" && schedulingGateReason === "no_requirement"',
