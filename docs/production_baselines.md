@@ -44,6 +44,103 @@
 - This production validation did not include authenticated payload-level manual verification after deploy.
 - Authenticated payload-level verification can remain part of a future staging / production checklist.
 
+## Scheduling Gate v1 Production Baseline
+
+### 1. Purpose
+
+- Define the first production baseline for Scheduling Gate v1.
+- Consolidate the completed Scheduling Gate read contract, warning UI, and guardrail freeze into a stable reference baseline.
+- Keep this baseline docs-only, with no application, schema, API, permission, workflow, or write-path change.
+
+### 2. Completed Capability Inventory
+
+- Scheduling Gate Read Contract
+- Scheduling Gate Warning UI
+- Scheduling Gate Guardrail Freeze
+
+### 3. Actor Boundary
+
+- Vendor
+  - continues vendor submit flow without scheduling-gate blocking
+  - does not control scheduling-gate projection
+
+- Site/Crew
+  - views scheduling-gate state and reason from crew-side read payload
+  - sees warning / allowed indicator on the crew-side entry list
+  - continues requirement confirmation without scheduling-gate blocking
+
+- Admin
+  - retains existing site-side operational boundary
+  - does not receive new scheduling-gate override or control surface in this baseline
+
+### 4. API / Read Boundary
+
+- Crew-side read surface exposes:
+  - `scheduling_gate_state`
+  - `scheduling_gate_reason`
+
+- These fields are read-contract projection fields only.
+
+- Relationship to readiness:
+  - `readiness_state=not_ready` and `readiness_reason=requirement_pending`
+    - projects to `scheduling_gate_state=warning`
+    - projects to `scheduling_gate_reason=requirement_pending`
+  - `readiness_state=ready` and `readiness_reason=requirement_confirmed`
+    - projects to `scheduling_gate_state=allowed`
+    - projects to `scheduling_gate_reason=requirement_confirmed`
+  - `readiness_state=ready` and `readiness_reason=no_requirement`
+    - projects to `scheduling_gate_state=allowed`
+    - projects to `scheduling_gate_reason=no_requirement`
+
+- No new persisted scheduling-gate field is introduced in this baseline.
+
+### 5. UI Boundary
+
+- Crew-side UI shows a scheduling-gate indicator per `.crew-entry-row`.
+- Indicator states in this baseline are:
+  - warning indicator
+  - allowed indicator
+- This UI is non-blocking.
+- It does not affect vendor submit.
+- It does not affect requirement confirmation.
+- It does not introduce hard block, override, or write behavior.
+
+### 6. Freeze Criteria
+
+- Read Contract
+  - `/api/crew-forms` work entries must include `scheduling_gate_state` and `scheduling_gate_reason`
+  - pending requirement must remain `warning / requirement_pending`
+  - confirmed requirement must remain `allowed / requirement_confirmed`
+  - no requirement must remain `allowed / no_requirement`
+
+- UI Warning
+  - crew readonly render guardrail must cover scheduling-gate indicator wiring
+  - crew readonly render guardrail must cover the three scheduling-gate labels
+
+- Regression Guardrails
+  - readiness regression remains green
+  - confirmation API smoke remains green
+  - vendor submit pipeline regression remains green
+  - vendor write isolation remains green
+
+### 7. Explicit Out-of-Scope
+
+- Hard Block
+- Override
+- Notification
+- Audit Log
+- Scheduling Engine
+- Permission Rewrite
+- Workflow Redesign
+
+### 8. Future Product Lines
+
+- Scheduling Gate Hard Block
+- Override Policy
+- Rejected / Returned Flow
+- Notification
+- Audit Log
+
 ## Product Capability Freeze Scope
 
 ### Included
@@ -53,6 +150,9 @@
 - Entry readiness read contract
 - Entry readiness indicator UI
 - Entry readiness guardrails
+- Scheduling gate read contract
+- Scheduling gate warning UI
+- Scheduling gate guardrails
 
 ### Explicitly Not Included
 
@@ -61,6 +161,8 @@
 - Notification
 - Audit log
 - Checklist
-- Scheduling gate
+- Scheduling gate hard block
+- Scheduling gate override
+- Scheduling engine
 - Permission model redesign
 - Bulk confirmation
