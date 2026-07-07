@@ -6908,6 +6908,26 @@ def set_member_session(*, with_current_site=True):
             session["current_site_name"] = str(default_site_name)
             session["site_selection_required"] = False
 
+with module.db() as conn:
+    ready_context = module.resolve_vendor_work_entry_formal_approve_context(
+        conn,
+        sheet_id=sheet_id,
+        entry_id=ready_entry_id,
+    )
+    pending_context = module.resolve_vendor_work_entry_formal_approve_context(
+        conn,
+        sheet_id=sheet_id,
+        entry_id=pending_entry_id,
+    )
+if ready_context["readiness_state"] != "ready" or ready_context["readiness_reason"] != "no_requirement":
+    raise SystemExit("allowed formal approve smoke entry should remain readiness=ready/no_requirement")
+if ready_context["scheduling_gate_state"] != "allowed" or ready_context["scheduling_gate_reason"] != "no_requirement":
+    raise SystemExit("allowed formal approve smoke entry should remain scheduling gate allowed/no_requirement")
+if pending_context["readiness_state"] != "not_ready" or pending_context["readiness_reason"] != "requirement_pending":
+    raise SystemExit("blocked formal approve smoke entry should remain readiness=not_ready/requirement_pending")
+if pending_context["scheduling_gate_state"] != "warning" or pending_context["scheduling_gate_reason"] != "requirement_pending":
+    raise SystemExit("blocked formal approve smoke entry should remain scheduling gate warning/requirement_pending")
+
 ready_before = fetch_entry_snapshot(ready_entry_id)
 set_member_session()
 ready_response = client.post(
@@ -6917,6 +6937,10 @@ ready_response = client.post(
 if ready_response.status_code != 200 or not ready_response.get_json().get("ok"):
     raise SystemExit("ready entry formal approve should return ok=true")
 ready_payload = ready_response.get_json()
+if set(ready_payload.keys()) != {"ok", "action", "entry"}:
+    raise SystemExit("formal approve success response should keep exact contract keys")
+if ready_payload["ok"] is not True:
+    raise SystemExit("formal approve success response should keep ok=true")
 if ready_payload["action"] != "crew_formal_approve_entry":
     raise SystemExit("formal approve success should return crew_formal_approve_entry action")
 if set(ready_payload["entry"].keys()) != {"id", "sheet_id"}:
@@ -6936,6 +6960,12 @@ blocked_response = client.post(
 if blocked_response.status_code != 409:
     raise SystemExit("not-ready formal approve should be rejected with 409")
 blocked_payload = blocked_response.get_json()
+if set(blocked_payload.keys()) != {"ok", "error"}:
+    raise SystemExit("blocked formal approve response should keep exact contract keys")
+if blocked_payload["ok"] is not False:
+    raise SystemExit("blocked formal approve response should keep ok=false")
+if set(blocked_payload["error"].keys()) != {"code", "message"}:
+    raise SystemExit("blocked formal approve error contract should remain minimal")
 if blocked_payload["error"]["code"] != "entry_not_ready":
     raise SystemExit("not-ready formal approve should preserve entry_not_ready error code")
 if blocked_payload["error"]["message"] != "Entry is not ready for this action.":
@@ -6958,6 +6988,8 @@ vendor_forbidden = client.post(
 if vendor_forbidden.status_code != 403:
     raise SystemExit("vendor session should not formal-approve entry")
 vendor_forbidden_payload = vendor_forbidden.get_json()
+if vendor_forbidden_payload.get("ok") is not False:
+    raise SystemExit("vendor formal approve rejection should keep ok=false")
 if vendor_forbidden_payload["error"]["code"] != "vendor_auth_forbidden":
     raise SystemExit("vendor formal approve rejection should preserve vendor_auth_forbidden error code")
 if fetch_entry_snapshot(ready_entry_id) != vendor_forbidden_before:
@@ -6972,6 +7004,8 @@ missing_site = client.post(
 if missing_site.status_code != 403:
     raise SystemExit("missing current site should reject formal approve with 403")
 missing_site_payload = missing_site.get_json()
+if missing_site_payload.get("ok") is not False:
+    raise SystemExit("missing current site formal approve rejection should keep ok=false")
 if missing_site_payload["error"]["code"] != "site_context_invalid":
     raise SystemExit("missing current site formal approve should preserve site_context_invalid error code")
 if fetch_entry_snapshot(ready_entry_id) != missing_site_before:
@@ -6986,6 +7020,8 @@ cross_site = client.post(
 if cross_site.status_code != 403:
     raise SystemExit("cross-site formal approve should be rejected with 403")
 cross_site_payload = cross_site.get_json()
+if cross_site_payload.get("ok") is not False:
+    raise SystemExit("cross-site formal approve rejection should keep ok=false")
 if cross_site_payload["error"]["code"] != "write_target_not_in_current_site":
     raise SystemExit("cross-site formal approve should preserve write_target_not_in_current_site error code")
 if fetch_entry_snapshot(secondary_entry_id) != cross_site_before:
@@ -7000,6 +7036,8 @@ sheet_mismatch = client.post(
 if sheet_mismatch.status_code != 409:
     raise SystemExit("sheet mismatch formal approve should be rejected with 409")
 sheet_mismatch_payload = sheet_mismatch.get_json()
+if sheet_mismatch_payload.get("ok") is not False:
+    raise SystemExit("sheet mismatch formal approve rejection should keep ok=false")
 if sheet_mismatch_payload["error"]["code"] != "sheet_mismatch":
     raise SystemExit("sheet mismatch formal approve should preserve sheet_mismatch error code")
 if fetch_entry_snapshot(ready_entry_id) != sheet_mismatch_before:
@@ -7013,6 +7051,8 @@ entry_not_found = client.post(
 if entry_not_found.status_code != 404:
     raise SystemExit("missing entry formal approve should be rejected with 404")
 entry_not_found_payload = entry_not_found.get_json()
+if entry_not_found_payload.get("ok") is not False:
+    raise SystemExit("missing entry formal approve rejection should keep ok=false")
 if entry_not_found_payload["error"]["code"] != "entry_not_found":
     raise SystemExit("missing entry formal approve should preserve entry_not_found error code")
 
@@ -7126,6 +7166,8 @@ from pathlib import Path
 
 db_path, root_dir = sys.argv[1:3]
 os.environ["APP_DB_PATH"] = db_path
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
 spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -7545,7 +7587,7 @@ for fragment in (
 ):
     if fragment not in vendor_work_entry_page_html:
         raise SystemExit(f"vendor work entry page missing fragment: {fragment}")
-if "2000-01-01 09:00" not in vendor_work_entry_page_html or "2000-01-01 10:00" not in vendor_work_entry_page_html:
+if "2000-01-01 09:15" not in vendor_work_entry_page_html or "2000-01-01 10:00" not in vendor_work_entry_page_html:
     raise SystemExit("vendor work entry page should render today's multiple planned entries")
 if "You are viewing an existing planned entry for today. Switching entries aligns the draft form with that entry's update context." not in vendor_work_entry_page_html:
     raise SystemExit("vendor work entry page should explain selected-entry navigation status")
@@ -7621,9 +7663,6 @@ if f'data-testid="vendor-work-entry-draft-write-mode">update<' not in vendor_wor
     raise SystemExit("vendor work entry draft write mode should align with active entry preflight")
 if f'data-testid="vendor-work-entry-draft-hidden-entry-id"' not in vendor_work_entry_page_html or f'value="{vendor_a_entry_id}"' not in vendor_work_entry_page_html:
     raise SystemExit("vendor work entry draft hidden entry id should align with active entry preflight")
-if "Vendor A Requirement 1" not in vendor_work_entry_page_html:
-    raise SystemExit("vendor work entry selected-entry mode should display existing pre-entry requirement")
-
 def extract_input_value_by_testid(html: str, testid: str) -> str:
     marker = f'data-testid="{testid}"'
     marker_index = html.find(marker)
@@ -7667,6 +7706,12 @@ def extract_textarea_value_by_testid(html: str, testid: str) -> str:
 
 def extract_hidden_vendor_work_entry_id(html: str) -> str:
     return extract_input_value_by_testid(html, "vendor-work-entry-draft-hidden-entry-id")
+
+
+if "Vendor A Requirement 1" in vendor_work_entry_page_html:
+    raise SystemExit("vendor work entry selected-entry mode should not show stale pre-entry requirement after internal update")
+if extract_textarea_value_by_testid(vendor_work_entry_page_html, "vendor-work-entry-draft-pre-entry-requirement") != "":
+    raise SystemExit("vendor work entry selected-entry mode should align draft pre-entry requirement with updated entry state")
 
 
 def fetch_vendor_work_entry_snapshot(entry_id: int) -> dict[str, object]:
@@ -8092,8 +8137,14 @@ for forbidden_key in ("site_id", "sheet_id", "allowed_site_ids", "allowed_sheet_
 entries = vendor_business_preview_payload.get("entries")
 if not isinstance(entries, list):
     raise SystemExit("vendor business read preview should return entries list")
-if len(entries) != 3:
+if vendor_business_preview_payload.get("entry_count") != len(entries):
+    raise SystemExit("vendor business read preview entry_count should match entries length")
+if len(entries) < 3:
+    raise SystemExit("vendor business read preview should include the seeded current vendor entries")
+if any(entry.get("vendor_name") != "Vendor A" for entry in entries):
     raise SystemExit("vendor business read preview should only return current vendor entries")
+if any(int(entry.get("entry_id") or 0) == int(vendor_other_entry_id) for entry in entries):
+    raise SystemExit("vendor business read preview must not include another vendor's entry")
 actual_entry_order = [(entry["business_date"], entry["entry_order"]) for entry in entries]
 expected_entry_order = sorted(actual_entry_order, key=lambda item: (item[0], -item[1]), reverse=True)
 if actual_entry_order != expected_entry_order:
@@ -8109,6 +8160,7 @@ for entry in entries:
         "planned_headcount",
         "actual_headcount",
         "work_content",
+        "pre_entry_requirement",
         "work_headcount",
         "entry_order",
     }
@@ -8134,7 +8186,7 @@ if not isinstance(business_dates, list) or business_date not in business_dates:
     raise SystemExit("vendor business read preview should return current vendor business_dates")
 if business_dates != [business_date, earlier_business_date]:
     raise SystemExit("vendor business read preview should return de-duplicated, stable-sorted business_dates")
-if vendor_business_preview_payload.get("entry_count") != 3:
+if vendor_business_preview_payload.get("entry_count") != len(entries):
     raise SystemExit("vendor business read preview should return current vendor entry_count")
 
 vendor_logout = client.get("/vendor/logout", follow_redirects=False)
@@ -8186,13 +8238,16 @@ with client.session_transaction() as session:
 
 print("vendor auth foundation smoke PASS")
 """
-    result = subprocess.run(
-        [sys.executable, "-c", script, str(db_path), str(ROOT_DIR)],
-        cwd=ROOT_DIR,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        script_path = Path(tmpdir) / "vendor_auth_foundation_smoke.py"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(script_path), str(db_path), str(ROOT_DIR)],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
     if "vendor auth foundation smoke PASS" not in result.stdout:
         raise AssertionError("vendor auth foundation smoke subprocess did not report PASS.")
 
