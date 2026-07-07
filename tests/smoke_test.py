@@ -941,25 +941,39 @@ with module.db() as conn:
         (sheet_id, "VendorB", "Bob", "0900000002"),
     )
 
-    conn.execute(
-        '''
-        INSERT INTO vendor_work_entries (
-            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-            actual_headcount, work_content, pre_entry_requirement, requirement_status,
-            requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''',
-        (sheet_id, "VendorA", business_date, "2000-01-01 09:00", 3, 0, "Missing Crew", "Need power off", "pending", None, None, 0, 0),
+    pending_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, requirement_status,
+                requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
+            ''',
+            (sheet_id, "VendorA", business_date, "2000-01-01 09:00", 3, 0, "Missing Crew", "Need power off", "pending", None, None, 0, 0),
+        ).fetchone()["id"]
+    )
+    approved_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, requirement_status,
+                requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
+            ''',
+            (sheet_id, "VendorA", business_date, "2000-01-01 10:00", 2, 2, "Summary Crew", "Need lift access", "confirmed", "confirm_member", "2026-07-06 09:30:00", 2, 1),
+        ).fetchone()["id"]
     )
     conn.execute(
         '''
-        INSERT INTO vendor_work_entries (
-            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-            actual_headcount, work_content, pre_entry_requirement, requirement_status,
-            requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO formal_approvals (
+            entry_id, sheet_id, action, approval_status, approved_by, approved_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
         ''',
-        (sheet_id, "VendorA", business_date, "2000-01-01 10:00", 2, 2, "Summary Crew", "Need lift access", "confirmed", "confirm_member", "2026-07-06 09:30:00", 2, 1),
+        (approved_entry_id, sheet_id, "crew_formal_approve_entry", "approved", "formal_member", "2026-07-06 10:00:00"),
     )
     conn.execute(
         '''
@@ -1030,6 +1044,10 @@ with module.app.test_client() as client:
         "readiness_reason",
         "scheduling_gate_state",
         "scheduling_gate_reason",
+        "formal_approval_state",
+        "formal_approval_status",
+        "formal_approved_by",
+        "formal_approved_at",
         "work_headcount",
         "entry_order",
         "created_at",
@@ -1047,6 +1065,12 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-forms pending requirement entry should be not_ready with requirement_pending reason")
     if first_work_entry["scheduling_gate_state"] != "warning" or first_work_entry["scheduling_gate_reason"] != "requirement_pending":
         raise SystemExit("/api/crew-forms pending requirement entry should map to scheduling warning with requirement_pending reason")
+    if int(first_work_entry["id"]) != pending_entry_id:
+        raise SystemExit("/api/crew-forms pending requirement entry should preserve entry identity")
+    if first_work_entry["formal_approval_state"] != "pending" or first_work_entry["formal_approval_status"] != "pending":
+        raise SystemExit("/api/crew-forms pending requirement entry should expose pending formal approval state")
+    if first_work_entry["formal_approved_by"] != "" or first_work_entry["formal_approved_at"] != "":
+        raise SystemExit("/api/crew-forms pending requirement entry should keep formal approval actor fields empty")
     if second_work_entry["pre_entry_requirement"] != "Need lift access":
         raise SystemExit("/api/crew-forms should expose confirmed pre_entry_requirement text")
     if second_work_entry["requirement_status"] != "confirmed":
@@ -1059,6 +1083,12 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-forms confirmed requirement entry should be ready with requirement_confirmed reason")
     if second_work_entry["scheduling_gate_state"] != "allowed" or second_work_entry["scheduling_gate_reason"] != "requirement_confirmed":
         raise SystemExit("/api/crew-forms confirmed requirement entry should map to scheduling allowed with requirement_confirmed reason")
+    if int(second_work_entry["id"]) != approved_entry_id:
+        raise SystemExit("/api/crew-forms approved formal entry should preserve entry identity")
+    if second_work_entry["formal_approval_state"] != "approved" or second_work_entry["formal_approval_status"] != "approved":
+        raise SystemExit("/api/crew-forms approved entry should expose approved formal approval state")
+    if second_work_entry["formal_approved_by"] != "formal_member" or second_work_entry["formal_approved_at"] != "2026-07-06 10:00:00":
+        raise SystemExit("/api/crew-forms approved entry should expose persisted formal approval actor fields")
     vendor_c = active_vendors["VendorC"]
     if len(vendor_c["work_entries"]) != 1:
         raise SystemExit("/api/crew-forms should include no-requirement work entry for active vendor")
@@ -1069,6 +1099,10 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-forms no-requirement entry should be ready with no_requirement reason")
     if vendor_c_entry["scheduling_gate_state"] != "allowed" or vendor_c_entry["scheduling_gate_reason"] != "no_requirement":
         raise SystemExit("/api/crew-forms no-requirement entry should map to scheduling allowed with no_requirement reason")
+    if vendor_c_entry["formal_approval_state"] != "pending" or vendor_c_entry["formal_approval_status"] != "pending":
+        raise SystemExit("/api/crew-forms no-requirement entry without approval should expose pending formal approval state")
+    if vendor_c_entry["formal_approved_by"] != "" or vendor_c_entry["formal_approved_at"] != "":
+        raise SystemExit("/api/crew-forms no-requirement pending approval entry should keep actor fields empty")
     if vendor_c["contact"]["id"] is not None:
         raise SystemExit("active vendor without contacts should use empty compatibility contact")
     if vendor_c["contact"]["display_name"] != "":

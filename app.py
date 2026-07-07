@@ -2017,6 +2017,22 @@ def apply_vendor_work_entry_gate_state(entry: dict[str, object]) -> dict[str, ob
     return entry
 
 
+def apply_vendor_work_entry_formal_approval_state(entry: dict[str, object]) -> dict[str, object]:
+    approval_status = str(entry.get("formal_approval_status") or "").strip()
+    if approval_status == "approved":
+        entry["formal_approval_state"] = "approved"
+        entry["formal_approval_status"] = "approved"
+        entry["formal_approved_by"] = str(entry.get("formal_approved_by") or "")
+        entry["formal_approved_at"] = str(entry.get("formal_approved_at") or "")
+        return entry
+
+    entry["formal_approval_state"] = "pending"
+    entry["formal_approval_status"] = "pending"
+    entry["formal_approved_by"] = ""
+    entry["formal_approved_at"] = ""
+    return entry
+
+
 def resolve_vendor_work_entry_formal_approve_context(
     conn: sqlite3.Connection,
     *,
@@ -2320,19 +2336,26 @@ def fetch_vendor_work_entries(
 ) -> dict[str, list[dict[str, object]]]:
     rows = conn.execute(
         """
-        SELECT id, sheet_id, vendor_name, business_date, planned_at, planned_headcount,
-               actual_headcount, work_content, pre_entry_requirement, requirement_status,
-               requirement_confirmed_by, requirement_confirmed_at, work_headcount,
-               entry_order, created_at, updated_at
-        FROM vendor_work_entries
-        WHERE sheet_id = ? AND business_date = ?
-        ORDER BY vendor_name, entry_order, id
+        SELECT vwe.id, vwe.sheet_id, vwe.vendor_name, vwe.business_date, vwe.planned_at, vwe.planned_headcount,
+               vwe.actual_headcount, vwe.work_content, vwe.pre_entry_requirement, vwe.requirement_status,
+               vwe.requirement_confirmed_by, vwe.requirement_confirmed_at, vwe.work_headcount,
+               vwe.entry_order, vwe.created_at, vwe.updated_at,
+               fa.approval_status AS formal_approval_status,
+               fa.approved_by AS formal_approved_by,
+               fa.approved_at AS formal_approved_at
+        FROM vendor_work_entries vwe
+        LEFT JOIN formal_approvals fa
+               ON fa.entry_id = vwe.id
+              AND fa.action = 'crew_formal_approve_entry'
+        WHERE vwe.sheet_id = ? AND vwe.business_date = ?
+        ORDER BY vwe.vendor_name, vwe.entry_order, vwe.id
         """,
         (sheet_id, business_date),
     ).fetchall()
     entries_by_vendor: dict[str, list[dict[str, object]]] = {}
     for row in rows:
         entry = apply_vendor_work_entry_gate_state(dict(row))
+        entry = apply_vendor_work_entry_formal_approval_state(entry)
         entries_by_vendor.setdefault(row["vendor_name"], []).append(entry)
     return entries_by_vendor
 
