@@ -2339,6 +2339,10 @@ if '<section class="crew-form-shell"' not in template_text:
     raise SystemExit("sheet.html should render a .crew-form-shell section")
 if 'data-mode="readonly"' not in template_text:
     raise SystemExit("crew readonly shell should expose data-mode=readonly")
+if 'data-testid="crew-work-hub-shell"' not in template_text:
+    raise SystemExit("sheet.html should render a crew work hub shell")
+if 'data-testid="crew-work-hub-cards"' not in template_text:
+    raise SystemExit("sheet.html should render a crew work hub cards container")
 if not re.search(r'<section class="table-shell">.*?</section>\\s*<section class="crew-form-shell"', template_text, re.S):
     raise SystemExit(".crew-form-shell should be a sibling after .table-shell, not nested inside it")
 
@@ -2365,12 +2369,16 @@ for required in (
     "function buildCrewRequirementMeta",
     "function buildCrewReadinessMeta",
     "function buildCrewSchedulingGateMeta",
+    "function buildCrewWorkHubCardMeta",
+    "function renderCrewWorkHubCards",
     "function buildCrewFormalApprovalIndicatorMeta",
     "function buildCrewFormalApproveMeta",
     "function renderCrewForms",
     "function renderCrewFormError",
     "function formatCrewDate",
     "function formatCrewDateTime",
+    "async function loadCrewWorkHubSummary",
+    "/api/dashboard?sheet_id=",
     "/api/crew-forms?sheet_id=",
     "/api/crew-work-entry-requirement-confirm",
     "/api/crew-work-entry/formal-approve",
@@ -2395,6 +2403,8 @@ for required in (
     'data-testid="crew-work-entry-formal-approve-feedback"',
     'data-testid="crew-work-entry-formal-approved-by"',
     'data-testid="crew-work-entry-formal-approved-at"',
+    'data-testid="${card.testId}"',
+    'data-testid="crew-work-hub-card-value-${card.summaryKey}"',
     'const actionMarkup = isConfirmed',
     "尚未具備進場條件",
     "需求已確認",
@@ -2407,6 +2417,14 @@ for required in (
     "\u6b63\u5f0f\u6838\u51c6",
     "\u5df2\u5b8c\u6210\u6b63\u5f0f\u6838\u51c6",
     "\u7121\u6cd5\u5b8c\u6210\u6b63\u5f0f\u6838\u51c6\uff1a\u9032\u5834\u524d\u9700\u6c42\u5c1a\u672a\u78ba\u8a8d",
+    "Blocked",
+    "待正式核准",
+    "待確認需求",
+    "今日進場",
+    "blocked_count",
+    "pending_approval_count",
+    "pending_requirement_count",
+    "today_entry_count",
     "await loadCrewForms(sheetId);",
 ):
     if required not in js_text:
@@ -2463,6 +2481,17 @@ for formal_approval_indicator_required in (
     if formal_approval_indicator_required not in js_text:
         raise SystemExit(f"app.js missing formal approval indicator guardrail: {formal_approval_indicator_required}")
 
+for dashboard_required in (
+    'data-testid="crew-work-hub-cards"',
+    "crew-work-hub-card-blocked",
+    "crew-work-hub-card-pending-approval",
+    "crew-work-hub-card-pending-requirement",
+    "crew-work-hub-card-today-entry",
+    "loadCrewWorkHubSummary(crewFormShell.dataset.sheetId);",
+):
+    if dashboard_required not in js_text and dashboard_required not in template_text:
+        raise SystemExit(f"crew work hub dashboard baseline missing guardrail: {dashboard_required}")
+
 for forbidden in (
     'fetch("/api/vendor-contact"',
     "fetch('/api/vendor-contact'",
@@ -2490,7 +2519,13 @@ with module.app.test_client() as client:
     if sheet_response.status_code != 200:
         raise SystemExit("/sheet GET should render successfully with crew readonly shell")
     html = sheet_response.get_data(as_text=True)
-    for snippet in ('class="crew-form-shell"', 'data-mode="readonly"', 'id="crewVendorList"'):
+    for snippet in (
+        'class="crew-form-shell"',
+        'data-mode="readonly"',
+        'data-testid="crew-work-hub-shell"',
+        'data-testid="crew-work-hub-cards"',
+        'id="crewVendorList"',
+    ):
         if snippet not in html:
             raise SystemExit(f"rendered /sheet missing crew readonly markup: {snippet}")
 

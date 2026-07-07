@@ -5,6 +5,7 @@ const crewFormShell = document.querySelector(".crew-form-shell");
 const crewVendorList = document.getElementById("crewVendorList");
 const crewBusinessDate = document.getElementById("crewBusinessDate");
 const crewFormError = document.getElementById("crewFormError");
+const crewWorkHubCards = document.getElementById("crewWorkHubCards");
 const progressControls = new Map();
 const extraControls = new Map();
 const parentCells = new Map();
@@ -61,6 +62,59 @@ function renderCrewFormError(error) {
   if (crewVendorList) {
     crewVendorList.innerHTML = '<div class="crew-error-state">工班資料目前無法顯示，請稍後再試。</div>';
   }
+}
+
+function buildCrewWorkHubCardMeta(summary = {}) {
+  return [
+    {
+      testId: "crew-work-hub-card-blocked",
+      title: "Blocked",
+      value: summary.blocked_count ?? 0,
+      summaryKey: "blocked_count",
+    },
+    {
+      testId: "crew-work-hub-card-pending-approval",
+      title: "待正式核准",
+      value: summary.pending_approval_count ?? 0,
+      summaryKey: "pending_approval_count",
+    },
+    {
+      testId: "crew-work-hub-card-pending-requirement",
+      title: "待確認需求",
+      value: summary.pending_requirement_count ?? 0,
+      summaryKey: "pending_requirement_count",
+    },
+    {
+      testId: "crew-work-hub-card-today-entry",
+      title: "今日進場",
+      value: summary.today_entry_count ?? 0,
+      summaryKey: "today_entry_count",
+    },
+  ];
+}
+
+function renderCrewWorkHubCards(data) {
+  if (!crewWorkHubCards) return;
+  const summary = data?.summary || {};
+  const cards = buildCrewWorkHubCardMeta(summary);
+  crewWorkHubCards.innerHTML = cards
+    .map(
+      (card) => `
+        <article
+          class="crew-work-hub-card"
+          data-testid="${card.testId}"
+          style="border:1px solid #d9e2ec;border-radius:16px;padding:14px 16px;background:linear-gradient(180deg,#ffffff 0%,#f5f8fb 100%);box-shadow:0 8px 20px rgba(15,23,42,0.06);min-height:88px;display:flex;flex-direction:column;justify-content:space-between;"
+        >
+          <span class="crew-label">${escapeHtml(card.title)}</span>
+          <strong data-testid="crew-work-hub-card-value-${card.summaryKey}" style="font-size:1.75rem;line-height:1.1;">${escapeHtml(card.value)}</strong>
+        </article>
+      `,
+    )
+    .join("");
+  crewWorkHubCards.style.display = "grid";
+  crewWorkHubCards.style.gridTemplateColumns = "repeat(auto-fit, minmax(140px, 1fr))";
+  crewWorkHubCards.style.gap = "12px";
+  crewWorkHubCards.style.margin = "0 0 16px";
 }
 
 function buildCrewRequirementMeta(entry) {
@@ -324,6 +378,27 @@ async function confirmCrewWorkEntryRequirement(button) {
     button.disabled = false;
     button.textContent = originalText;
     renderCrewFormError(error?.message || "crew requirement confirmation failed");
+  }
+}
+
+async function loadCrewWorkHubSummary(sheetId) {
+  if (!crewWorkHubCards || !sheetId) return;
+  try {
+    const response = await fetch(`/api/dashboard?sheet_id=${encodeURIComponent(sheetId)}`);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data?.summary) {
+      throw new Error(data?.error?.message || "dashboard summary request failed");
+    }
+    renderCrewWorkHubCards(data);
+  } catch {
+    renderCrewWorkHubCards({
+      summary: {
+        blocked_count: 0,
+        pending_approval_count: 0,
+        pending_requirement_count: 0,
+        today_entry_count: 0,
+      },
+    });
   }
 }
 
@@ -735,6 +810,7 @@ document.addEventListener("change", (event) => {
 buildDomCache();
 updatePrintDate();
 if (crewFormShell?.dataset.sheetId) {
+  loadCrewWorkHubSummary(crewFormShell.dataset.sheetId);
   loadCrewForms(crewFormShell.dataset.sheetId);
 }
 setInterval(refreshGrid, 10000);
