@@ -189,6 +189,61 @@
 - Notification
 - Audit Log
 
+## Hard Block v1 Production Baseline
+
+### 1. Baseline Name
+
+- Hard Block v1 Production Baseline
+
+### 2. Completed Capability
+
+- Formal approve no-op API contract
+- Hard block `entry_not_ready` guardrail
+- Crew-side formal approve UI baseline
+- Success / blocked feedback
+- Guardrail freeze
+
+### 3. Scope
+
+- no-op success
+- no persistence
+- blocked reject
+- DB unchanged
+- crew-side only
+
+### 4. Explicit Out-of-Scope
+
+- override
+- rejected / returned
+- notification
+- audit log
+- scheduling engine
+- persistent formal approval state
+- permission redesign
+
+### 5. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_vendor_work_entry_formal_approve_smoke(...)` - PASS
+- `run_crew_readonly_render_smoke(...)` - PASS
+- `run_crew_api_smoke(...)` - PASS
+- `run_vendor_work_entry_submit_pipeline_regression_smoke(...)` - PASS
+- `run_vendor_work_entry_requirement_confirmation_smoke(...)` - PASS
+- `run_vendor_work_entry_write_isolation_smoke(...)` - PASS
+
+### 6. Dependencies
+
+- Vendor Work Entry Product Baseline v1
+- Scheduling Gate v1 Production Baseline
+- 010B
+- 010C
+- 010D-0
+- 010D
+- 010E
+- 010F
+- 010G
+
 ## Product Capability Freeze Scope
 
 ### Included
