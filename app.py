@@ -5032,8 +5032,52 @@ def api_crew_work_entry_formal_approve():
         except LookupError as exc:
             return _handle_vendor_work_entry_formal_approve_lookup_error(exc)
 
-    if str(approval_context["scheduling_gate_state"]) != "allowed":
-        return crew_api_error("entry_not_ready", "Entry is not ready for this action.", status=409)
+        if str(approval_context["scheduling_gate_state"]) != "allowed":
+            return crew_api_error("entry_not_ready", "Entry is not ready for this action.", status=409)
+
+        existing_approval = conn.execute(
+            """
+            SELECT id
+            FROM formal_approvals
+            WHERE entry_id = ? AND action = ?
+            """,
+            (int(approval_context["entry_id"]), action),
+        ).fetchone()
+        if existing_approval is not None:
+            return crew_api_error(
+                "duplicate_approval",
+                "Formal approval already exists for this entry.",
+                status=409,
+            )
+
+        user = _current_internal_user()
+        approved_by = str(user["username"] if user is not None else "")
+        try:
+            conn.execute(
+                """
+                INSERT INTO formal_approvals (
+                    entry_id,
+                    sheet_id,
+                    action,
+                    approval_status,
+                    approved_by,
+                    approved_at,
+                    updated_at
+                ) VALUES (?, ?, ?, 'approved', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                (
+                    int(approval_context["entry_id"]),
+                    int(approval_context["sheet_id"]),
+                    action,
+                    approved_by,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            return crew_api_error(
+                "duplicate_approval",
+                "Formal approval already exists for this entry.",
+                status=409,
+            )
 
     return jsonify(
         {

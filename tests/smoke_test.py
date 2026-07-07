@@ -7002,6 +7002,19 @@ def fetch_formal_approval_count():
     with module.db() as conn:
         return int(conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0])
 
+def fetch_formal_approval_row(entry_id):
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            '''
+            SELECT entry_id, sheet_id, action, approval_status, approved_by, approved_at
+            FROM formal_approvals
+            WHERE entry_id = ?
+            ''',
+            (entry_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
 client = module.app.test_client()
 
 def set_member_session(*, with_current_site=True):
@@ -7059,8 +7072,40 @@ if int(ready_payload["entry"]["id"]) != int(ready_entry_id) or int(ready_payload
 ready_after = fetch_entry_snapshot(ready_entry_id)
 if ready_after != ready_before:
     raise SystemExit("allowed formal approve must not modify stored row")
-if fetch_formal_approval_count() != formal_approvals_before_ready:
-    raise SystemExit("allowed formal approve must remain no-op for formal_approvals")
+if fetch_formal_approval_count() != formal_approvals_before_ready + 1:
+    raise SystemExit("allowed formal approve should create exactly one formal_approvals row")
+ready_approval = fetch_formal_approval_row(ready_entry_id)
+if ready_approval is None:
+    raise SystemExit("allowed formal approve should persist a formal approval row")
+if int(ready_approval["entry_id"]) != int(ready_entry_id) or int(ready_approval["sheet_id"]) != int(sheet_id):
+    raise SystemExit("formal approval row should persist acted-on entry identity")
+if ready_approval["action"] != "crew_formal_approve_entry":
+    raise SystemExit("formal approval row should persist crew_formal_approve_entry action")
+if ready_approval["approval_status"] != "approved":
+    raise SystemExit("formal approval row should persist approval_status=approved")
+if ready_approval["approved_by"] != "formal_member":
+    raise SystemExit("formal approval row should persist approving username")
+if not str(ready_approval["approved_at"] or "").strip():
+    raise SystemExit("formal approval row should persist approved_at timestamp")
+
+duplicate_before = fetch_entry_snapshot(ready_entry_id)
+duplicate_count_before = fetch_formal_approval_count()
+set_member_session()
+duplicate_response = client.post(
+    "/api/crew-work-entry/formal-approve",
+    json={"entry_id": ready_entry_id, "sheet_id": sheet_id, "action": "crew_formal_approve_entry"},
+)
+if duplicate_response.status_code != 409:
+    raise SystemExit("duplicate formal approve should be rejected with 409")
+duplicate_payload = duplicate_response.get_json()
+if duplicate_payload.get("ok") is not False:
+    raise SystemExit("duplicate formal approve rejection should keep ok=false")
+if duplicate_payload["error"]["code"] != "duplicate_approval":
+    raise SystemExit("duplicate formal approve should preserve duplicate_approval error code")
+if fetch_entry_snapshot(ready_entry_id) != duplicate_before:
+    raise SystemExit("duplicate formal approve rejection must not modify stored entry")
+if fetch_formal_approval_count() != duplicate_count_before:
+    raise SystemExit("duplicate formal approve should not create extra formal_approvals rows")
 
 pending_before = fetch_entry_snapshot(pending_entry_id)
 formal_approvals_before_blocked = fetch_formal_approval_count()
@@ -7086,7 +7131,9 @@ pending_after = fetch_entry_snapshot(pending_entry_id)
 if pending_after != pending_before:
     raise SystemExit("blocked formal approve must not modify stored row")
 if fetch_formal_approval_count() != formal_approvals_before_blocked:
-    raise SystemExit("blocked formal approve must remain no-op for formal_approvals")
+    raise SystemExit("blocked formal approve must not create formal_approvals rows")
+if fetch_formal_approval_row(pending_entry_id) is not None:
+    raise SystemExit("blocked formal approve must not persist a formal approval row")
 
 with client.session_transaction() as session:
     session.clear()
@@ -7108,9 +7155,12 @@ if vendor_forbidden_payload["error"]["code"] != "vendor_auth_forbidden":
     raise SystemExit("vendor formal approve rejection should preserve vendor_auth_forbidden error code")
 if fetch_entry_snapshot(ready_entry_id) != vendor_forbidden_before:
     raise SystemExit("vendor formal approve rejection must not modify stored row")
+if fetch_formal_approval_count() != duplicate_count_before:
+    raise SystemExit("vendor formal approve rejection must not create formal_approvals rows")
 
 set_member_session(with_current_site=False)
 missing_site_before = fetch_entry_snapshot(ready_entry_id)
+missing_site_formal_count_before = fetch_formal_approval_count()
 missing_site = client.post(
     "/api/crew-work-entry/formal-approve",
     json={"entry_id": ready_entry_id, "sheet_id": sheet_id, "action": "crew_formal_approve_entry"},
@@ -7124,9 +7174,12 @@ if missing_site_payload["error"]["code"] != "site_context_invalid":
     raise SystemExit("missing current site formal approve should preserve site_context_invalid error code")
 if fetch_entry_snapshot(ready_entry_id) != missing_site_before:
     raise SystemExit("missing current site formal approve rejection must not modify stored row")
+if fetch_formal_approval_count() != missing_site_formal_count_before:
+    raise SystemExit("missing current site formal approve must not create formal_approvals rows")
 
 set_member_session()
 cross_site_before = fetch_entry_snapshot(secondary_entry_id)
+cross_site_formal_count_before = fetch_formal_approval_count()
 cross_site = client.post(
     "/api/crew-work-entry/formal-approve",
     json={"entry_id": secondary_entry_id, "sheet_id": secondary_sheet_id, "action": "crew_formal_approve_entry"},
@@ -7140,9 +7193,12 @@ if cross_site_payload["error"]["code"] != "write_target_not_in_current_site":
     raise SystemExit("cross-site formal approve should preserve write_target_not_in_current_site error code")
 if fetch_entry_snapshot(secondary_entry_id) != cross_site_before:
     raise SystemExit("cross-site formal approve must not modify stored row")
+if fetch_formal_approval_count() != cross_site_formal_count_before:
+    raise SystemExit("cross-site formal approve must not create formal_approvals rows")
 
 set_member_session()
 sheet_mismatch_before = fetch_entry_snapshot(ready_entry_id)
+sheet_mismatch_formal_count_before = fetch_formal_approval_count()
 sheet_mismatch = client.post(
     "/api/crew-work-entry/formal-approve",
     json={"entry_id": ready_entry_id, "sheet_id": secondary_sheet_id, "action": "crew_formal_approve_entry"},
@@ -7156,8 +7212,11 @@ if sheet_mismatch_payload["error"]["code"] != "sheet_mismatch":
     raise SystemExit("sheet mismatch formal approve should preserve sheet_mismatch error code")
 if fetch_entry_snapshot(ready_entry_id) != sheet_mismatch_before:
     raise SystemExit("sheet mismatch formal approve must not modify stored row")
+if fetch_formal_approval_count() != sheet_mismatch_formal_count_before:
+    raise SystemExit("sheet mismatch formal approve must not create formal_approvals rows")
 
 set_member_session()
+entry_not_found_formal_count_before = fetch_formal_approval_count()
 entry_not_found = client.post(
     "/api/crew-work-entry/formal-approve",
     json={"entry_id": 999999, "sheet_id": sheet_id, "action": "crew_formal_approve_entry"},
@@ -7169,6 +7228,8 @@ if entry_not_found_payload.get("ok") is not False:
     raise SystemExit("missing entry formal approve rejection should keep ok=false")
 if entry_not_found_payload["error"]["code"] != "entry_not_found":
     raise SystemExit("missing entry formal approve should preserve entry_not_found error code")
+if fetch_formal_approval_count() != entry_not_found_formal_count_before:
+    raise SystemExit("missing entry formal approve must not create formal_approvals rows")
 
 print("vendor-work-entry formal approve smoke PASS")
 """
