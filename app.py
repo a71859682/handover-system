@@ -3024,6 +3024,20 @@ def init_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
         );
+
+        CREATE TABLE IF NOT EXISTS formal_approvals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL,
+            sheet_id INTEGER NOT NULL,
+            action TEXT NOT NULL DEFAULT 'crew_formal_approve_entry',
+            approval_status TEXT NOT NULL DEFAULT 'approved',
+            approved_by TEXT,
+            approved_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (entry_id) REFERENCES vendor_work_entries(id),
+            FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+        );
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_site_permissions_user_id ON user_site_permissions (user_id)")
@@ -3042,6 +3056,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
         """
     )
     ensure_vendor_work_entries_schema(conn)
+    ensure_formal_approvals_schema(conn)
     ensure_vendor_contacts_schema(conn)
 
 
@@ -3117,6 +3132,66 @@ def ensure_vendor_work_entries_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_business_date
         ON vendor_work_entries (business_date);
+        """
+    )
+
+
+def ensure_formal_approvals_schema(conn: sqlite3.Connection) -> None:
+    existing_tables = {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "formal_approvals" not in existing_tables:
+        conn.executescript(
+            """
+            CREATE TABLE formal_approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id INTEGER NOT NULL,
+                sheet_id INTEGER NOT NULL,
+                action TEXT NOT NULL DEFAULT 'crew_formal_approve_entry',
+                approval_status TEXT NOT NULL DEFAULT 'approved',
+                approved_by TEXT,
+                approved_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (entry_id) REFERENCES vendor_work_entries(id),
+                FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_formal_approvals_entry_action_unique
+            ON formal_approvals (entry_id, action);
+
+            CREATE INDEX IF NOT EXISTS idx_formal_approvals_sheet_id
+            ON formal_approvals (sheet_id);
+            """
+        )
+        return
+
+    formal_approvals_columns = _table_columns(conn, "formal_approvals")
+    if "entry_id" not in formal_approvals_columns:
+        conn.execute("ALTER TABLE formal_approvals ADD COLUMN entry_id INTEGER")
+    if "sheet_id" not in formal_approvals_columns:
+        conn.execute("ALTER TABLE formal_approvals ADD COLUMN sheet_id INTEGER")
+    if "action" not in formal_approvals_columns:
+        conn.execute(
+            "ALTER TABLE formal_approvals ADD COLUMN action TEXT NOT NULL DEFAULT 'crew_formal_approve_entry'"
+        )
+    if "approval_status" not in formal_approvals_columns:
+        conn.execute("ALTER TABLE formal_approvals ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'")
+    if "approved_by" not in formal_approvals_columns:
+        conn.execute("ALTER TABLE formal_approvals ADD COLUMN approved_by TEXT")
+    if "approved_at" not in formal_approvals_columns:
+        conn.execute("ALTER TABLE formal_approvals ADD COLUMN approved_at TEXT")
+    if "created_at" not in formal_approvals_columns:
+        conn.execute("ALTER TABLE formal_approvals ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    if "updated_at" not in formal_approvals_columns:
+        conn.execute("ALTER TABLE formal_approvals ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    conn.executescript(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_formal_approvals_entry_action_unique
+        ON formal_approvals (entry_id, action);
+
+        CREATE INDEX IF NOT EXISTS idx_formal_approvals_sheet_id
+        ON formal_approvals (sheet_id);
         """
     )
 
@@ -3918,6 +3993,20 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
         );
 
+        CREATE TABLE IF NOT EXISTS formal_approvals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL,
+            sheet_id INTEGER NOT NULL,
+            action TEXT NOT NULL DEFAULT 'crew_formal_approve_entry',
+            approval_status TEXT NOT NULL DEFAULT 'approved',
+            approved_by TEXT,
+            approved_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (entry_id) REFERENCES vendor_work_entries(id),
+            FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
         ON vendor_work_entries (sheet_id, business_date);
 
@@ -3926,9 +4015,16 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_business_date
         ON vendor_work_entries (business_date);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_formal_approvals_entry_action_unique
+        ON formal_approvals (entry_id, action);
+
+        CREATE INDEX IF NOT EXISTS idx_formal_approvals_sheet_id
+        ON formal_approvals (sheet_id);
         """
     )
     ensure_vendor_work_entries_schema(conn)
+    ensure_formal_approvals_schema(conn)
     ensure_site_foundation_schema(conn)
     ensure_vendor_contacts_schema(conn)
 

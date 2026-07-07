@@ -681,6 +681,8 @@ with module.db() as conn:
         raise SystemExit("vendor_contacts table should exist after bootstrap")
     if "vendor_work_entries" not in tables:
         raise SystemExit("vendor_work_entries table should exist after bootstrap")
+    if "formal_approvals" not in tables:
+        raise SystemExit("formal_approvals table should exist after bootstrap")
 
     vendor_contacts_columns = [row["name"] for row in conn.execute("PRAGMA table_info(vendor_contacts)").fetchall()]
     for required in (
@@ -720,6 +722,21 @@ with module.db() as conn:
         if required not in vendor_work_entries_columns:
             raise SystemExit(f"vendor_work_entries missing required column: {required}")
 
+    formal_approvals_columns = [row["name"] for row in conn.execute("PRAGMA table_info(formal_approvals)").fetchall()]
+    for required in (
+        "id",
+        "entry_id",
+        "sheet_id",
+        "action",
+        "approval_status",
+        "approved_by",
+        "approved_at",
+        "created_at",
+        "updated_at",
+    ):
+        if required not in formal_approvals_columns:
+            raise SystemExit(f"formal_approvals missing required column: {required}")
+
     contact_indexes = {row["name"] for row in conn.execute("PRAGMA index_list(vendor_contacts)").fetchall()}
     for required in ("idx_vendor_contacts_sheet_id", "idx_vendor_contacts_sheet_vendor", "idx_vendor_contacts_sheet_vendor_order"):
         if required not in contact_indexes:
@@ -733,6 +750,48 @@ with module.db() as conn:
     ):
         if required not in work_indexes:
             raise SystemExit(f"vendor_work_entries missing expected index: {required}")
+
+    formal_indexes = conn.execute("PRAGMA index_list(formal_approvals)").fetchall()
+    formal_index_names = {row["name"] for row in formal_indexes}
+    for required in ("idx_formal_approvals_entry_action_unique", "idx_formal_approvals_sheet_id"):
+        if required not in formal_index_names:
+            raise SystemExit(f"formal_approvals missing expected index: {required}")
+    unique_entry_action_present = False
+    for row in formal_indexes:
+        if row["unique"]:
+            cols = tuple(index_row["name"] for index_row in conn.execute(f"PRAGMA index_info({row['name']})").fetchall())
+            if cols == ("entry_id", "action"):
+                unique_entry_action_present = True
+                break
+    if not unique_entry_action_present:
+        raise SystemExit("formal_approvals should enforce UNIQUE(entry_id, action)")
+
+    approval_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, work_headcount, entry_order
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
+            ''',
+            (1, "Formal Schema Vendor", "2000-01-01", "", 0, 0, "Formal Schema Work", 0, 0),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        "INSERT INTO formal_approvals (entry_id, sheet_id) VALUES (?, ?)",
+        (approval_entry_id, 1),
+    )
+    duplicate_rejected = False
+    try:
+        conn.execute(
+            "INSERT INTO formal_approvals (entry_id, sheet_id) VALUES (?, ?)",
+            (approval_entry_id, 1),
+        )
+    except sqlite3.IntegrityError:
+        duplicate_rejected = True
+    if not duplicate_rejected:
+        raise SystemExit("formal_approvals should reject duplicate (entry_id, action)")
 
     legacy_unique_present = False
     for row in conn.execute("PRAGMA index_list(vendor_contacts)").fetchall():
@@ -2033,6 +2092,8 @@ with module.db() as conn:
         raise SystemExit("vendor_contacts table should exist after bootstrap")
     if "vendor_work_entries" not in tables:
         raise SystemExit("vendor_work_entries table should exist after bootstrap")
+    if "formal_approvals" not in tables:
+        raise SystemExit("formal_approvals table should exist after bootstrap")
 
     vendor_contacts_columns = [row["name"] for row in conn.execute("PRAGMA table_info(vendor_contacts)").fetchall()]
     for required in (
@@ -2052,6 +2113,14 @@ with module.db() as conn:
         if required not in vendor_work_entries_columns:
             raise SystemExit(f"vendor_work_entries missing required column: {required}")
 
+    formal_approvals_columns = [row["name"] for row in conn.execute("PRAGMA table_info(formal_approvals)").fetchall()]
+    for required in (
+        "id", "entry_id", "sheet_id", "action", "approval_status",
+        "approved_by", "approved_at", "created_at", "updated_at",
+    ):
+        if required not in formal_approvals_columns:
+            raise SystemExit(f"formal_approvals missing required column: {required}")
+
     contact_indexes = conn.execute("PRAGMA index_list(vendor_contacts)").fetchall()
     contact_index_names = {row["name"] for row in contact_indexes}
     for required in ("idx_vendor_contacts_sheet_id", "idx_vendor_contacts_sheet_vendor", "idx_vendor_contacts_sheet_vendor_order"):
@@ -2063,6 +2132,12 @@ with module.db() as conn:
             cols = tuple(index_row["name"] for index_row in conn.execute(f"PRAGMA index_info({row['name']})").fetchall())
             if cols == ("sheet_id", "vendor_name"):
                 raise SystemExit("vendor_contacts should not enforce legacy UNIQUE(sheet_id, vendor_name)")
+
+    formal_indexes = conn.execute("PRAGMA index_list(formal_approvals)").fetchall()
+    formal_index_names = {row["name"] for row in formal_indexes}
+    for required in ("idx_formal_approvals_entry_action_unique", "idx_formal_approvals_sheet_id"):
+        if required not in formal_index_names:
+            raise SystemExit(f"formal_approvals missing expected index: {required}")
 
     conn.execute(
         "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_title, contact_phone, is_primary, contact_order) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -2159,6 +2234,35 @@ with module.db() as conn:
     ):
         if required not in work_columns:
             raise SystemExit("vendor_work_entries should remain intact after vendor_contacts migration")
+
+    formal_tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "formal_approvals" not in formal_tables:
+        raise SystemExit("formal_approvals table should exist after migration")
+    formal_columns = [col["name"] for col in conn.execute("PRAGMA table_info(formal_approvals)").fetchall()]
+    for required in (
+        "entry_id",
+        "sheet_id",
+        "action",
+        "approval_status",
+        "approved_by",
+        "approved_at",
+        "created_at",
+        "updated_at",
+    ):
+        if required not in formal_columns:
+            raise SystemExit("formal_approvals should include the persistent schema baseline columns")
+    formal_indexes = conn.execute("PRAGMA index_list(formal_approvals)").fetchall()
+    unique_entry_action_present = False
+    for index_row in formal_indexes:
+        if index_row["unique"]:
+            cols = tuple(
+                info_row["name"] for info_row in conn.execute(f"PRAGMA index_info({index_row['name']})").fetchall()
+            )
+            if cols == ("entry_id", "action"):
+                unique_entry_action_present = True
+                break
+    if not unique_entry_action_present:
+        raise SystemExit("formal_approvals should enforce UNIQUE(entry_id, action) after migration")
 
 print("crew schema migration smoke PASS")
 """
@@ -6894,6 +6998,10 @@ def fetch_entry_snapshot(entry_id):
         ).fetchone()
         return dict(row)
 
+def fetch_formal_approval_count():
+    with module.db() as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0])
+
 client = module.app.test_client()
 
 def set_member_session(*, with_current_site=True):
@@ -6929,6 +7037,7 @@ if pending_context["scheduling_gate_state"] != "warning" or pending_context["sch
     raise SystemExit("blocked formal approve smoke entry should remain scheduling gate warning/requirement_pending")
 
 ready_before = fetch_entry_snapshot(ready_entry_id)
+formal_approvals_before_ready = fetch_formal_approval_count()
 set_member_session()
 ready_response = client.post(
     "/api/crew-work-entry/formal-approve",
@@ -6950,8 +7059,11 @@ if int(ready_payload["entry"]["id"]) != int(ready_entry_id) or int(ready_payload
 ready_after = fetch_entry_snapshot(ready_entry_id)
 if ready_after != ready_before:
     raise SystemExit("allowed formal approve must not modify stored row")
+if fetch_formal_approval_count() != formal_approvals_before_ready:
+    raise SystemExit("allowed formal approve must remain no-op for formal_approvals")
 
 pending_before = fetch_entry_snapshot(pending_entry_id)
+formal_approvals_before_blocked = fetch_formal_approval_count()
 set_member_session()
 blocked_response = client.post(
     "/api/crew-work-entry/formal-approve",
@@ -6973,6 +7085,8 @@ if blocked_payload["error"]["message"] != "Entry is not ready for this action.":
 pending_after = fetch_entry_snapshot(pending_entry_id)
 if pending_after != pending_before:
     raise SystemExit("blocked formal approve must not modify stored row")
+if fetch_formal_approval_count() != formal_approvals_before_blocked:
+    raise SystemExit("blocked formal approve must remain no-op for formal_approvals")
 
 with client.session_transaction() as session:
     session.clear()
