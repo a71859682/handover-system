@@ -141,6 +141,54 @@
 - Notification
 - Audit Log
 
+## Scheduling Gate v1 Release Baseline
+
+### 1. Release Name
+
+- Scheduling Gate v1
+
+### 2. Capability Inventory
+
+- Scheduling Gate Read Contract
+- Scheduling Gate Warning UI
+- Scheduling Gate Guardrail Freeze
+
+### 3. Baseline Commit
+
+- Read Contract commit
+  - `bb96f9f` - `Add scheduling gate read contract`
+- Warning UI commit
+  - `2349639` - `Add scheduling gate warning UI`
+- Guardrail Freeze commit
+  - `08180ec` - `Freeze scheduling gate guardrails`
+- Production Baseline commit
+  - `6cb9823` - `Document scheduling gate production baseline`
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `run_crew_api_smoke(...)` - PASS
+- `run_crew_readonly_render_smoke(...)` - PASS
+- `run_vendor_work_entry_requirement_confirmation_smoke(...)` - PASS
+- `run_vendor_work_entry_submit_pipeline_regression_smoke(...)` - PASS
+- `run_vendor_work_entry_write_isolation_smoke(...)` - PASS
+
+### 5. Production Scope
+
+- warning only
+- non-blocking
+- no override
+- no scheduling engine
+- no workflow change
+
+### 6. Future Product Lines
+
+- Scheduling Gate Hard Block
+- Override Policy
+- Scheduling Engine
+- Notification
+- Audit Log
+
 ## Product Capability Freeze Scope
 
 ### Included
