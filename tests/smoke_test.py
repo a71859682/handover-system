@@ -969,6 +969,8 @@ with module.app.test_client() as client:
         "requirement_confirmed_at",
         "readiness_state",
         "readiness_reason",
+        "scheduling_gate_state",
+        "scheduling_gate_reason",
         "work_headcount",
         "entry_order",
         "created_at",
@@ -984,6 +986,8 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-forms pending requirement should keep confirmation fields empty")
     if first_work_entry["readiness_state"] != "not_ready" or first_work_entry["readiness_reason"] != "requirement_pending":
         raise SystemExit("/api/crew-forms pending requirement entry should be not_ready with requirement_pending reason")
+    if first_work_entry["scheduling_gate_state"] != "warning" or first_work_entry["scheduling_gate_reason"] != "requirement_pending":
+        raise SystemExit("/api/crew-forms pending requirement entry should map to scheduling warning with requirement_pending reason")
     if second_work_entry["pre_entry_requirement"] != "Need lift access":
         raise SystemExit("/api/crew-forms should expose confirmed pre_entry_requirement text")
     if second_work_entry["requirement_status"] != "confirmed":
@@ -994,6 +998,8 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-forms should expose requirement_confirmed_at for confirmed entries")
     if second_work_entry["readiness_state"] != "ready" or second_work_entry["readiness_reason"] != "requirement_confirmed":
         raise SystemExit("/api/crew-forms confirmed requirement entry should be ready with requirement_confirmed reason")
+    if second_work_entry["scheduling_gate_state"] != "allowed" or second_work_entry["scheduling_gate_reason"] != "requirement_confirmed":
+        raise SystemExit("/api/crew-forms confirmed requirement entry should map to scheduling allowed with requirement_confirmed reason")
     vendor_c = active_vendors["VendorC"]
     if len(vendor_c["work_entries"]) != 1:
         raise SystemExit("/api/crew-forms should include no-requirement work entry for active vendor")
@@ -1002,6 +1008,8 @@ with module.app.test_client() as client:
         raise SystemExit("/api/crew-forms no-requirement entry should preserve empty requirement text")
     if vendor_c_entry["readiness_state"] != "ready" or vendor_c_entry["readiness_reason"] != "no_requirement":
         raise SystemExit("/api/crew-forms no-requirement entry should be ready with no_requirement reason")
+    if vendor_c_entry["scheduling_gate_state"] != "allowed" or vendor_c_entry["scheduling_gate_reason"] != "no_requirement":
+        raise SystemExit("/api/crew-forms no-requirement entry should map to scheduling allowed with no_requirement reason")
     if vendor_c["contact"]["id"] is not None:
         raise SystemExit("active vendor without contacts should use empty compatibility contact")
     if vendor_c["contact"]["display_name"] != "":

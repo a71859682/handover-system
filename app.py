@@ -2239,6 +2239,11 @@ def fetch_vendor_work_entries(
         else:
             entry["readiness_state"] = "not_ready"
             entry["readiness_reason"] = "requirement_pending"
+        if entry["readiness_state"] == "ready":
+            entry["scheduling_gate_state"] = "allowed"
+        else:
+            entry["scheduling_gate_state"] = "warning"
+        entry["scheduling_gate_reason"] = entry["readiness_reason"]
         entries_by_vendor.setdefault(row["vendor_name"], []).append(entry)
     return entries_by_vendor
 
