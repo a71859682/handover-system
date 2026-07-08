@@ -1353,6 +1353,15 @@ def _handle_dashboard_lookup_error(exc: LookupError):
     return _handle_grid_read_lookup_error(exc)
 
 
+def _handle_scheduling_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "vendor_auth_forbidden":
+        return crew_api_error("vendor_auth_forbidden", "vendor authentication cannot access scheduling.", status=403)
+    if code == "auth_required":
+        return crew_api_error("auth_required", "authentication is required.", status=403)
+    return _handle_grid_read_lookup_error(exc)
+
+
 def resolve_admin_current_site_id(conn: sqlite3.Connection) -> int:
     user = _current_internal_user()
     if user is None:
@@ -2453,6 +2462,46 @@ def build_dashboard_payload(
                 "count": len(pending_requirements),
             },
         ],
+    }
+
+
+def build_scheduling_payload(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    business_date: str,
+) -> dict[str, object]:
+    entries_by_vendor = fetch_vendor_work_entries(conn, sheet_id=sheet_id, business_date=business_date)
+    today_entries = [
+        entry.copy()
+        for vendor_entries in entries_by_vendor.values()
+        for entry in vendor_entries
+    ]
+    schedulable_entries = [
+        entry.copy()
+        for entry in today_entries
+        if str(entry.get("formal_approval_state")) == "approved"
+        and str(entry.get("scheduling_gate_state")) == "allowed"
+    ]
+    blocked_entries = [
+        entry.copy()
+        for entry in today_entries
+        if str(entry.get("formal_approval_state")) != "approved"
+        or str(entry.get("scheduling_gate_state")) == "warning"
+    ]
+    scheduled_entries: list[dict[str, object]] = []
+    unscheduled_entries = [entry.copy() for entry in today_entries]
+
+    return {
+        "summary": {
+            "schedulable_count": len(schedulable_entries),
+            "blocked_count": len(blocked_entries),
+            "unscheduled_count": len(unscheduled_entries),
+        },
+        "schedulable_entries": schedulable_entries,
+        "blocked_entries": blocked_entries,
+        "scheduled_entries": scheduled_entries,
+        "unscheduled_entries": unscheduled_entries,
     }
 
 
@@ -4898,6 +4947,32 @@ def api_dashboard():
         payload = build_dashboard_payload(
             conn,
             sheet_id=int(dashboard_context["sheet_id"]),
+            business_date=business_date,
+        )
+
+    return jsonify(payload)
+
+
+@app.route("/api/scheduling")
+def api_scheduling():
+    sheet_id = request.args.get("sheet_id", type=int)
+    if sheet_id is None:
+        return crew_api_error("invalid_sheet_id", "sheet_id is required and must be a valid integer.")
+
+    raw_business_date = request.args.get("business_date", "").strip()
+    try:
+        business_date = parse_crew_business_date(raw_business_date) if raw_business_date else resolve_crew_business_date()
+    except ValueError as exc:
+        return crew_api_error("invalid_business_date", str(exc))
+
+    with db() as conn:
+        try:
+            scheduling_context = authorize_dashboard_read(conn, sheet_id=sheet_id)
+        except LookupError as exc:
+            return _handle_scheduling_lookup_error(exc)
+        payload = build_scheduling_payload(
+            conn,
+            sheet_id=int(scheduling_context["sheet_id"]),
             business_date=business_date,
         )
 
