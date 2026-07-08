@@ -7981,6 +7981,294 @@ print("scheduling api smoke PASS")
         raise AssertionError("scheduling api smoke subprocess did not report PASS.")
 
 
+def run_scheduling_guardrail_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+
+business_date = module.resolve_crew_business_date()
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site_row = conn.execute("SELECT id, site_name FROM sites ORDER BY id LIMIT 1").fetchone()
+    if default_site_row is None:
+        raise SystemExit("expected a default site for scheduling guardrail smoke")
+    default_site_id = int(default_site_row["id"])
+    default_site_name = str(default_site_row["site_name"])
+    sheet_row = conn.execute("SELECT id FROM sheets WHERE site_id = ? ORDER BY id LIMIT 1", (default_site_id,)).fetchone()
+    if sheet_row is None:
+        raise SystemExit("expected a default sheet for scheduling guardrail smoke")
+    sheet_id = int(sheet_row["id"])
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+            ("__scheduling_guardrail_site_b__", "scheduling-guardrail-site-b"),
+        ).fetchone()["id"]
+    )
+    secondary_sheet_id = int(
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+            ("Scheduling Guardrail Sheet B", 1000, secondary_site_id),
+        ).fetchone()["id"]
+    )
+    member_password_hash = module.generate_password_hash("member-pass")
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("scheduling_guardrail_member", "scheduling_guardrail_member", member_password_hash, "member"),
+    )
+    member_id = int(
+        conn.execute("SELECT id FROM users WHERE username = ?", ("scheduling_guardrail_member",)).fetchone()["id"]
+    )
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, default_site_id, "member"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
+        VALUES (?, ?, ?, ?)
+        ''',
+        ("scheduling_guardrail_vendor", module.generate_password_hash("vendor-pass"), "Vendor Scheduling Guardrail", 1),
+    )
+    vendor_account_id = int(
+        conn.execute("SELECT id FROM vendor_accounts WHERE username = ?", ("scheduling_guardrail_vendor",)).fetchone()["id"]
+    )
+    blocked_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (
+                sheet_id,
+                "Vendor Scheduling Guardrail",
+                business_date,
+                "2000-01-01 09:00",
+                2,
+                0,
+                "Blocked Guardrail Work",
+                "Need permit",
+                0,
+                0,
+            ),
+        ).fetchone()["id"]
+    )
+    schedulable_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (
+                sheet_id,
+                "Vendor Scheduling Guardrail",
+                business_date,
+                "2000-01-01 10:00",
+                3,
+                0,
+                "Schedulable Guardrail Work",
+                "",
+                0,
+                1,
+            ),
+        ).fetchone()["id"]
+    )
+    unapproved_ready_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (
+                sheet_id,
+                "Vendor Scheduling Guardrail",
+                business_date,
+                "2000-01-01 11:00",
+                1,
+                0,
+                "Unapproved Ready Guardrail Work",
+                "",
+                0,
+                2,
+            ),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        '''
+        INSERT INTO formal_approvals (
+            entry_id, sheet_id, action, approval_status, approved_by, approved_at, created_at, updated_at
+        ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (schedulable_entry_id, sheet_id, "scheduling_guardrail_member"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_work_entries (
+            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+            actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (
+            secondary_sheet_id,
+            "Vendor Scheduling Guardrail",
+            business_date,
+            "2000-01-01 12:00",
+            1,
+            0,
+            "Cross Site Guardrail Work",
+            "",
+            0,
+            0,
+        ),
+    )
+    conn.commit()
+
+def fetch_db_snapshot():
+    with module.db() as conn:
+        return {
+            "vendor_work_entries": int(conn.execute("SELECT COUNT(*) FROM vendor_work_entries").fetchone()[0]),
+            "formal_approvals": int(conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0]),
+        }
+
+client = module.app.test_client()
+
+def set_member_session(*, with_current_site=True):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = int(member_id)
+        session["username"] = "scheduling_guardrail_member"
+        session["display_name"] = "scheduling_guardrail_member"
+        session["role"] = "member"
+        if with_current_site:
+            session["current_site_id"] = int(default_site_id)
+            session["current_site_name"] = str(default_site_name)
+            session["site_selection_required"] = False
+
+success_before = fetch_db_snapshot()
+set_member_session()
+success = client.get(f"/api/scheduling?sheet_id={sheet_id}")
+if success.status_code != 200:
+    raise SystemExit("scheduling guardrail success path should return 200")
+payload = success.get_json()
+expected_top_level_keys = {"summary", "schedulable_entries", "blocked_entries", "scheduled_entries", "unscheduled_entries"}
+if set(payload.keys()) != expected_top_level_keys:
+    raise SystemExit("scheduling guardrail should freeze exact top-level response contract")
+summary = payload["summary"]
+expected_summary_keys = {"schedulable_count", "blocked_count", "unscheduled_count"}
+if set(summary.keys()) != expected_summary_keys:
+    raise SystemExit("scheduling guardrail should freeze exact summary contract")
+if summary["schedulable_count"] != 1:
+    raise SystemExit("scheduling guardrail should freeze one schedulable entry")
+if summary["blocked_count"] != 2:
+    raise SystemExit("scheduling guardrail should freeze two blocked entries")
+if summary["unscheduled_count"] != 3:
+    raise SystemExit("scheduling guardrail should freeze three unscheduled entries")
+
+schedulable_entries = payload["schedulable_entries"]
+if len(schedulable_entries) != 1 or int(schedulable_entries[0]["id"]) != int(schedulable_entry_id):
+    raise SystemExit("scheduling guardrail should freeze schedulable entry membership")
+for entry in schedulable_entries:
+    if entry["formal_approval_state"] != "approved" or entry["scheduling_gate_state"] != "allowed":
+        raise SystemExit("scheduling guardrail should freeze schedulable AND decision contract")
+
+blocked_entries = payload["blocked_entries"]
+blocked_ids = {int(entry["id"]) for entry in blocked_entries}
+if blocked_ids != {int(blocked_entry_id), int(unapproved_ready_entry_id)}:
+    raise SystemExit("scheduling guardrail should freeze blocked entry membership")
+for entry in blocked_entries:
+    if not (
+        entry["formal_approval_state"] != "approved"
+        or entry["scheduling_gate_state"] == "warning"
+    ):
+        raise SystemExit("scheduling guardrail should freeze blocked OR decision contract")
+
+if payload["scheduled_entries"] != []:
+    raise SystemExit("scheduling guardrail should freeze scheduled_entries as an empty list in v1")
+
+unscheduled_entries = payload["unscheduled_entries"]
+unscheduled_ids = {int(entry["id"]) for entry in unscheduled_entries}
+if unscheduled_ids != {int(blocked_entry_id), int(schedulable_entry_id), int(unapproved_ready_entry_id)}:
+    raise SystemExit("scheduling guardrail should freeze unscheduled_entries membership in v1")
+
+if fetch_db_snapshot() != success_before:
+    raise SystemExit("scheduling guardrail API must not modify DB state")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["identity_type"] = "vendor"
+    session["vendor_account_id"] = int(vendor_account_id)
+    session["vendor_username"] = "scheduling_guardrail_vendor"
+    session["vendor_name"] = "Vendor Scheduling Guardrail"
+vendor_response = client.get(f"/api/scheduling?sheet_id={sheet_id}")
+if vendor_response.status_code != 403:
+    raise SystemExit("vendor session should remain forbidden from scheduling guardrail API")
+vendor_payload = vendor_response.get_json()
+if vendor_payload.get("ok") is not False or vendor_payload["error"]["code"] != "vendor_auth_forbidden":
+    raise SystemExit("scheduling guardrail should preserve vendor_auth_forbidden")
+
+set_member_session(with_current_site=False)
+missing_site = client.get(f"/api/scheduling?sheet_id={sheet_id}")
+if missing_site.status_code != 403:
+    raise SystemExit("missing current site should remain rejected by scheduling guardrail API")
+missing_site_payload = missing_site.get_json()
+if missing_site_payload.get("ok") is not False or missing_site_payload["error"]["code"] != "site_context_invalid":
+    raise SystemExit("scheduling guardrail should preserve site_context_invalid")
+
+set_member_session()
+cross_site_before = fetch_db_snapshot()
+cross_site = client.get(f"/api/scheduling?sheet_id={secondary_sheet_id}")
+if cross_site.status_code != 403:
+    raise SystemExit("cross-site scheduling guardrail read should be rejected with 403")
+cross_site_payload = cross_site.get_json()
+if cross_site_payload.get("ok") is not False or cross_site_payload["error"]["code"] != "sheet_not_in_current_site":
+    raise SystemExit("scheduling guardrail should preserve sheet_not_in_current_site")
+if fetch_db_snapshot() != cross_site_before:
+    raise SystemExit("cross-site scheduling guardrail rejection must not modify DB state")
+
+print("scheduling guardrail smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "scheduling guardrail smoke PASS" not in result.stdout:
+        raise AssertionError("scheduling guardrail smoke subprocess did not report PASS.")
+
+
 def run_site_write_isolation_readiness_smoke() -> None:
     script_path = TOOLS_DIR / "check_site_write_isolation_readiness.py"
     if not script_path.exists():
@@ -9711,6 +9999,7 @@ def main() -> int:
         run_crew_api_smoke(Path(tmpdir) / "crew-api-smoke.db")
         run_dashboard_api_smoke(Path(tmpdir) / "dashboard-api-smoke.db")
         run_scheduling_api_smoke(Path(tmpdir) / "scheduling-api-smoke.db")
+        run_scheduling_guardrail_smoke(Path(tmpdir) / "scheduling-guardrail-smoke.db")
         run_crew_readonly_render_smoke(Path(tmpdir) / "crew-readonly-smoke.db")
         run_work_hub_scheduling_smoke(Path(tmpdir) / "work-hub-scheduling-smoke.db")
         run_work_hub_quick_action_smoke(Path(tmpdir) / "work-hub-quick-action-smoke.db")
