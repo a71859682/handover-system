@@ -2317,6 +2317,104 @@ print("crew schema migration smoke PASS")
         raise AssertionError("crew schema migration smoke subprocess did not report PASS.")
 
 
+def run_scheduler_schema_smoke(app_db_path: Path) -> None:
+    if app_db_path.exists():
+        app_db_path.unlink()
+    legacy_db_path = app_db_path.with_name(f"{app_db_path.stem}-legacy{app_db_path.suffix}")
+    if legacy_db_path.exists():
+        legacy_db_path.unlink()
+    create_sample_sqlite(legacy_db_path)
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+bootstrap_db_path, legacy_db_path, root_dir = sys.argv[1:4]
+
+def load_module(db_path: str):
+    os.environ["APP_DB_PATH"] = db_path
+    spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+def assert_scheduler_schema(conn: sqlite3.Connection, *, label: str):
+    conn.row_factory = sqlite3.Row
+    tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "scheduling_entries" not in tables:
+        raise SystemExit(f"{label}: scheduling_entries table should exist")
+
+    scheduling_columns = [row["name"] for row in conn.execute("PRAGMA table_info(scheduling_entries)").fetchall()]
+    for required in (
+        "id",
+        "entry_id",
+        "sheet_id",
+        "action",
+        "schedule_status",
+        "scheduled_date",
+        "scheduled_time",
+        "scheduled_by",
+        "scheduled_at",
+        "created_at",
+        "updated_at",
+    ):
+        if required not in scheduling_columns:
+            raise SystemExit(f"{label}: scheduling_entries missing required column: {required}")
+
+    scheduling_indexes = conn.execute("PRAGMA index_list(scheduling_entries)").fetchall()
+    scheduling_index_names = {row["name"] for row in scheduling_indexes}
+    for required in (
+        "idx_scheduling_entries_entry_action_unique",
+        "idx_scheduling_entries_sheet_id",
+        "idx_scheduling_entries_scheduled_date",
+    ):
+        if required not in scheduling_index_names:
+            raise SystemExit(f"{label}: scheduling_entries missing expected index: {required}")
+
+    unique_entry_action_present = False
+    for row in scheduling_indexes:
+        if row["unique"]:
+            cols = tuple(index_row["name"] for index_row in conn.execute(f"PRAGMA index_info({row['name']})").fetchall())
+            if cols == ("entry_id", "action"):
+                unique_entry_action_present = True
+                break
+    if not unique_entry_action_present:
+        raise SystemExit(f"{label}: scheduling_entries should enforce UNIQUE(entry_id, action)")
+
+    row_count = int(conn.execute("SELECT COUNT(*) FROM scheduling_entries").fetchone()[0])
+    if row_count != 0:
+        raise SystemExit(f"{label}: scheduling_entries row count should remain 0 in schema baseline")
+
+bootstrap_module = load_module(bootstrap_db_path)
+with bootstrap_module.db() as conn:
+    assert_scheduler_schema(conn, label="bootstrap")
+
+legacy_module = load_module(legacy_db_path)
+with legacy_module.db() as conn:
+    assert_scheduler_schema(conn, label="migration")
+
+print("scheduler schema smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(legacy_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "scheduler schema smoke PASS" not in result.stdout:
+        raise AssertionError("scheduler schema smoke subprocess did not report PASS.")
+
+
 def run_crew_readonly_render_smoke(app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -9996,6 +10094,7 @@ def main() -> int:
         run_users_read_compare_readiness_smoke(Path(tmpdir) / "app-smoke.db")
         run_crew_schema_smoke_v2(Path(tmpdir) / "crew-schema-smoke.db")
         run_crew_schema_migration_smoke(Path(tmpdir) / "crew-schema-migration-smoke.db")
+        run_scheduler_schema_smoke(Path(tmpdir) / "scheduler-schema-smoke.db")
         run_crew_api_smoke(Path(tmpdir) / "crew-api-smoke.db")
         run_dashboard_api_smoke(Path(tmpdir) / "dashboard-api-smoke.db")
         run_scheduling_api_smoke(Path(tmpdir) / "scheduling-api-smoke.db")

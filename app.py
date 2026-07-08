@@ -3206,6 +3206,22 @@ def init_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (entry_id) REFERENCES vendor_work_entries(id),
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
         );
+
+        CREATE TABLE IF NOT EXISTS scheduling_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL,
+            sheet_id INTEGER NOT NULL,
+            action TEXT NOT NULL DEFAULT 'schedule_entry',
+            schedule_status TEXT NOT NULL DEFAULT 'scheduled',
+            scheduled_date TEXT NOT NULL DEFAULT '',
+            scheduled_time TEXT NOT NULL DEFAULT '',
+            scheduled_by TEXT,
+            scheduled_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (entry_id) REFERENCES vendor_work_entries(id),
+            FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+        );
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_user_site_permissions_user_id ON user_site_permissions (user_id)")
@@ -3225,6 +3241,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     )
     ensure_vendor_work_entries_schema(conn)
     ensure_formal_approvals_schema(conn)
+    ensure_scheduling_entries_schema(conn)
     ensure_vendor_contacts_schema(conn)
 
 
@@ -3360,6 +3377,76 @@ def ensure_formal_approvals_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_formal_approvals_sheet_id
         ON formal_approvals (sheet_id);
+        """
+    )
+
+
+def ensure_scheduling_entries_schema(conn: sqlite3.Connection) -> None:
+    existing_tables = {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    if "scheduling_entries" not in existing_tables:
+        conn.executescript(
+            """
+            CREATE TABLE scheduling_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id INTEGER NOT NULL,
+                sheet_id INTEGER NOT NULL,
+                action TEXT NOT NULL DEFAULT 'schedule_entry',
+                schedule_status TEXT NOT NULL DEFAULT 'scheduled',
+                scheduled_date TEXT NOT NULL DEFAULT '',
+                scheduled_time TEXT NOT NULL DEFAULT '',
+                scheduled_by TEXT,
+                scheduled_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (entry_id) REFERENCES vendor_work_entries(id),
+                FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_entries_entry_action_unique
+            ON scheduling_entries (entry_id, action);
+
+            CREATE INDEX IF NOT EXISTS idx_scheduling_entries_sheet_id
+            ON scheduling_entries (sheet_id);
+
+            CREATE INDEX IF NOT EXISTS idx_scheduling_entries_scheduled_date
+            ON scheduling_entries (scheduled_date);
+            """
+        )
+        return
+
+    scheduling_entries_columns = _table_columns(conn, "scheduling_entries")
+    if "entry_id" not in scheduling_entries_columns:
+        conn.execute("ALTER TABLE scheduling_entries ADD COLUMN entry_id INTEGER")
+    if "sheet_id" not in scheduling_entries_columns:
+        conn.execute("ALTER TABLE scheduling_entries ADD COLUMN sheet_id INTEGER")
+    if "action" not in scheduling_entries_columns:
+        conn.execute("ALTER TABLE scheduling_entries ADD COLUMN action TEXT NOT NULL DEFAULT 'schedule_entry'")
+    if "schedule_status" not in scheduling_entries_columns:
+        conn.execute("ALTER TABLE scheduling_entries ADD COLUMN schedule_status TEXT NOT NULL DEFAULT 'scheduled'")
+    if "scheduled_date" not in scheduling_entries_columns:
+        conn.execute("ALTER TABLE scheduling_entries ADD COLUMN scheduled_date TEXT NOT NULL DEFAULT ''")
+    if "scheduled_time" not in scheduling_entries_columns:
+        conn.execute("ALTER TABLE scheduling_entries ADD COLUMN scheduled_time TEXT NOT NULL DEFAULT ''")
+    if "scheduled_by" not in scheduling_entries_columns:
+        conn.execute("ALTER TABLE scheduling_entries ADD COLUMN scheduled_by TEXT")
+    if "scheduled_at" not in scheduling_entries_columns:
+        conn.execute("ALTER TABLE scheduling_entries ADD COLUMN scheduled_at TEXT")
+    if "created_at" not in scheduling_entries_columns:
+        conn.execute("ALTER TABLE scheduling_entries ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    if "updated_at" not in scheduling_entries_columns:
+        conn.execute("ALTER TABLE scheduling_entries ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    conn.executescript(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_entries_entry_action_unique
+        ON scheduling_entries (entry_id, action);
+
+        CREATE INDEX IF NOT EXISTS idx_scheduling_entries_sheet_id
+        ON scheduling_entries (sheet_id);
+
+        CREATE INDEX IF NOT EXISTS idx_scheduling_entries_scheduled_date
+        ON scheduling_entries (scheduled_date);
         """
     )
 
@@ -4189,10 +4276,20 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_formal_approvals_sheet_id
         ON formal_approvals (sheet_id);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_scheduling_entries_entry_action_unique
+        ON scheduling_entries (entry_id, action);
+
+        CREATE INDEX IF NOT EXISTS idx_scheduling_entries_sheet_id
+        ON scheduling_entries (sheet_id);
+
+        CREATE INDEX IF NOT EXISTS idx_scheduling_entries_scheduled_date
+        ON scheduling_entries (scheduled_date);
         """
     )
     ensure_vendor_work_entries_schema(conn)
     ensure_formal_approvals_schema(conn)
+    ensure_scheduling_entries_schema(conn)
     ensure_site_foundation_schema(conn)
     ensure_vendor_contacts_schema(conn)
 
