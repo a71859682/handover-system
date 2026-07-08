@@ -541,3 +541,46 @@
 - Notification
 - Analytics
 - Mobile Experience
+
+## Scheduling Engine v1 Production Baseline
+
+### 1. Baseline Name
+
+- Scheduling Engine v1 Production Baseline
+
+### 2. Completed Capability
+
+- Product Design Baseline
+- State & Rules Baseline
+- Read Contract Planning
+- Runtime Aggregation API
+- Work Hub Integration
+- Guardrail Freeze
+
+### 3. Scope
+
+- Read-only Decision Layer
+- Scheduling Decision API
+- Work Hub Integration
+- No persistence
+- No scheduler write
+- No calendar
+- No time conflict engine
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_scheduling_api_smoke(...)` - PASS
+- `run_work_hub_scheduling_smoke(...)` - PASS
+- `run_scheduling_guardrail_smoke(...)` - PASS
+
+### 5. Explicit Out-of-Scope
+
+- Scheduler persistence
+- Calendar integration
+- Time conflict resolution
+- Notification
+- Audit log
+- Override
+- Permission redesign
