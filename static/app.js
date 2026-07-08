@@ -296,6 +296,21 @@ function buildCrewWorkHubFocusSummary(entry, sectionKey) {
   };
 }
 
+function buildCrewWorkHubFocusAriaLabel(entry) {
+  const vendorName = String(entry?.vendor_name || "未命名廠商").trim() || "未命名廠商";
+  const workContent = String(entry?.work_content || "未提供施作內容").trim() || "未提供施作內容";
+  return `${vendorName}，${workContent}，按 Enter 可定位到下方明細`;
+}
+
+function activateCrewWorkHubFocusItem(item) {
+  if (!item) return;
+  setCrewWorkHubFocusItemActiveState(item);
+  focusCrewWorkHubEntryRow(
+    item.dataset.workHubEntryId,
+    mapCrewWorkHubSectionKeyToAction(item.dataset.workHubSectionKey),
+  );
+}
+
 function renderCrewWorkHubFocusSections(data) {
   if (!crewWorkHubFocusSections) return;
   const sections = buildCrewWorkHubFocusSectionMeta(data);
@@ -313,6 +328,9 @@ function renderCrewWorkHubFocusSections(data) {
                     data-testid="crew-work-hub-focus-entry-${section.key}"
                     data-work-hub-entry-id="${escapeHtml(entry?.id ?? "")}"
                     data-work-hub-section-key="${escapeHtml(section.key)}"
+                    tabindex="0"
+                    role="button"
+                    aria-label="${escapeHtml(buildCrewWorkHubFocusAriaLabel(entry))}"
                     style="list-style:none;"
                   >
                     <div class="crew-work-hub-focus-item-main">
@@ -1224,11 +1242,7 @@ document.addEventListener("click", (event) => {
 
   const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");
   if (crewWorkHubFocusItem) {
-    setCrewWorkHubFocusItemActiveState(crewWorkHubFocusItem);
-    return focusCrewWorkHubEntryRow(
-      crewWorkHubFocusItem.dataset.workHubEntryId,
-      mapCrewWorkHubSectionKeyToAction(crewWorkHubFocusItem.dataset.workHubSectionKey),
-    );
+    return activateCrewWorkHubFocusItem(crewWorkHubFocusItem);
   }
 
   const crewWorkHubCard = event.target.closest("[data-work-hub-action]");
@@ -1262,6 +1276,14 @@ document.addEventListener("click", (event) => {
     if (activeDateInput) saveExtra(activeDateInput);
     return hideDatePopover();
   }
+});
+
+document.addEventListener("keydown", (event) => {
+  const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");
+  if (!crewWorkHubFocusItem) return;
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  activateCrewWorkHubFocusItem(crewWorkHubFocusItem);
 });
 
 document.addEventListener("focusin", (event) => {

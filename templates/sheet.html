@@ -258,7 +258,14 @@
     box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.12);
   }
 
+  .crew-work-hub-focus-item:focus-visible {
+    outline: 3px solid rgba(37, 99, 235, 0.42);
+    outline-offset: 3px;
+    box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.18);
+  }
+
   .crew-work-hub-focus-item:hover .crew-work-hub-focus-item-arrow,
+  .crew-work-hub-focus-item:focus-visible .crew-work-hub-focus-item-arrow,
   .crew-work-hub-focus-item:active .crew-work-hub-focus-item-arrow,
   .crew-work-hub-focus-item[data-work-hub-item-active="true"] .crew-work-hub-focus-item-arrow {
     transform: translateX(2px);

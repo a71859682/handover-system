@@ -3567,6 +3567,7 @@ for snippet in (
     ".crew-work-hub-focus-summary-line",
     ".crew-work-hub-focus-badges",
     ".crew-work-hub-focus-badge",
+    ".crew-work-hub-focus-item:focus-visible",
     ".crew-work-hub-focus-item-arrow",
     '@media (max-width: 720px)',
 ):
@@ -3585,12 +3586,17 @@ required_focus_section_snippets = (
     "function buildCrewWorkHubPrimaryTimeline(entry) {",
     "function buildCrewWorkHubSummaryBadges(entry, sectionKey) {",
     "function buildCrewWorkHubFocusSummary(entry, sectionKey) {",
+    "function buildCrewWorkHubFocusAriaLabel(entry) {",
+    "function activateCrewWorkHubFocusItem(item) {",
     'class="crew-work-hub-focus-badges"',
     'class="crew-work-hub-focus-badge"',
     'class="crew-work-hub-focus-primary-timeline"',
     'class="crew-work-hub-focus-summary-line"',
     'data-work-hub-entry-id="${escapeHtml(entry?.id ?? "")}"',
     'data-work-hub-section-key="${escapeHtml(section.key)}"',
+    'tabindex="0"',
+    'role="button"',
+    'aria-label="${escapeHtml(buildCrewWorkHubFocusAriaLabel(entry))}"',
     "function findCrewWorkHubEntryRow(entryId) {",
     "function setCrewWorkHubFocusItemActiveState(item) {",
     'function focusCrewWorkHubEntryRow(entryId, fallbackAction = "") {',
@@ -3600,8 +3606,10 @@ required_focus_section_snippets = (
     "if (!row) {",
     "scrollCrewWorkHubToTarget(fallbackAction);",
     'const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");',
-    "setCrewWorkHubFocusItemActiveState(crewWorkHubFocusItem);",
-    "mapCrewWorkHubSectionKeyToAction(crewWorkHubFocusItem.dataset.workHubSectionKey)",
+    "activateCrewWorkHubFocusItem(crewWorkHubFocusItem);",
+    'document.addEventListener("keydown", (event) => {',
+    'if (event.key !== "Enter" && event.key !== " ") return;',
+    "event.preventDefault();",
     "blocked_entries: Array.isArray(workHubRuntimeData?.work_hub?.blocked_entries)",
     "schedulable_entries: Array.isArray(workHubRuntimeData?.work_hub?.schedulable_entries)",
     "today_entries: Array.isArray(workHubRuntimeData?.work_hub?.today_entries)",
@@ -3636,6 +3644,14 @@ for forbidden_snippet in (
 ):
     if forbidden_snippet in focus_interaction_section:
         raise SystemExit(f"work hub focus item interaction should remain read-only and fetch-free: {forbidden_snippet}")
+
+for snippet in (
+    "setCrewWorkHubFocusItemActiveState(item);",
+    "focusCrewWorkHubEntryRow(",
+    "mapCrewWorkHubSectionKeyToAction(item.dataset.workHubSectionKey)",
+):
+    if snippet not in focus_interaction_section and snippet not in js_text:
+        raise SystemExit(f"work hub accessibility activation should keep existing navigation helper path: {snippet}")
 
 for forbidden_snippet in (
     "fetch(",
