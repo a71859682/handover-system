@@ -6,6 +6,7 @@ const crewVendorList = document.getElementById("crewVendorList");
 const crewBusinessDate = document.getElementById("crewBusinessDate");
 const crewFormError = document.getElementById("crewFormError");
 const crewWorkHubCards = document.getElementById("crewWorkHubCards");
+const crewWorkHubFocusSections = document.getElementById("crewWorkHubFocusSections");
 const progressControls = new Map();
 const extraControls = new Map();
 const parentCells = new Map();
@@ -135,6 +136,126 @@ function renderCrewWorkHubCards(data) {
   crewWorkHubCards.style.gridTemplateColumns = "repeat(auto-fit, minmax(140px, 1fr))";
   crewWorkHubCards.style.gap = "12px";
   crewWorkHubCards.style.margin = "0 0 16px";
+}
+
+function buildCrewWorkHubFocusSectionMeta(data = {}) {
+  const summary = data?.summary || {};
+  return [
+    {
+      key: "blocked",
+      title: "Blocked 項目",
+      count: summary.blocked_count ?? 0,
+      description: "需要先排除進場條件或確認需求。",
+      entries: Array.isArray(data?.blocked_entries) ? data.blocked_entries : [],
+      emptyLabel: "目前沒有 blocked 項目。",
+    },
+    {
+      key: "schedulable",
+      title: "可排程",
+      count: summary.schedulable_count ?? 0,
+      description: "已具備條件，可進入正式排程。",
+      entries: Array.isArray(data?.schedulable_entries) ? data.schedulable_entries : [],
+      emptyLabel: "目前沒有待排程的可排程項目。",
+    },
+    {
+      key: "scheduled",
+      title: "已正式排程",
+      count: summary.scheduled_count ?? 0,
+      description: "已經有正式排程事實的工班項目。",
+      entries: Array.isArray(data?.scheduled_entries) ? data.scheduled_entries : [],
+      emptyLabel: "目前沒有正式排程項目。",
+    },
+    {
+      key: "today-schedule",
+      title: "今日排程",
+      count: summary.today_schedule_count ?? 0,
+      description: "今天實際會發生的正式排程清單。",
+      entries: Array.isArray(data?.today_schedule) ? data.today_schedule : [],
+      emptyLabel: "今天目前沒有正式排程。",
+    },
+    {
+      key: "today-entries",
+      title: "今日進場總覽",
+      count: summary.today_entry_count ?? 0,
+      description: "今天所有工班進場資料的快速總覽。",
+      entries: Array.isArray(data?.today_entries) ? data.today_entries : [],
+      emptyLabel: "今天目前沒有工班進場資料。",
+    },
+  ];
+}
+
+function buildCrewWorkHubEntryFacts(entry, sectionKey) {
+  const facts = [];
+  const plannedAt = String(entry?.planned_at || "").trim();
+  const scheduledDate = String(entry?.scheduled_date || "").trim();
+  const scheduledTime = String(entry?.scheduled_time || "").trim();
+  const requirementStatus = String(entry?.requirement_status || "").trim();
+  const formalApprovalState = String(entry?.formal_approval_state || "").trim();
+  const schedulingGateState = String(entry?.scheduling_gate_state || "").trim();
+
+  if (plannedAt) {
+    facts.push(`預計進場 ${formatCrewDateTime(plannedAt)}`);
+  }
+  if (scheduledDate || scheduledTime) {
+    const scheduleLabel = [scheduledDate ? formatCrewDate(scheduledDate) : "", scheduledTime].filter(Boolean).join(" ");
+    facts.push(`正式排程 ${scheduleLabel}`);
+  }
+  if (sectionKey === "blocked" && requirementStatus) {
+    facts.push(`需求狀態 ${requirementStatus}`);
+  }
+  if (sectionKey === "schedulable" && formalApprovalState) {
+    facts.push(`核准狀態 ${formalApprovalState}`);
+  }
+  if ((sectionKey === "blocked" || sectionKey === "schedulable") && schedulingGateState) {
+    facts.push(`排程條件 ${schedulingGateState}`);
+  }
+  return facts.slice(0, 3);
+}
+
+function renderCrewWorkHubFocusSections(data) {
+  if (!crewWorkHubFocusSections) return;
+  const sections = buildCrewWorkHubFocusSectionMeta(data);
+  crewWorkHubFocusSections.innerHTML = sections
+    .map((section) => {
+      const entries = section.entries.slice(0, 4);
+      const sectionBody =
+        entries.length > 0
+          ? entries
+              .map((entry) => {
+                const entryFacts = buildCrewWorkHubEntryFacts(entry, section.key);
+                return `
+                  <li data-testid="crew-work-hub-focus-entry-${section.key}" style="list-style:none;border-top:1px solid #e2e8f0;padding:10px 0 0;margin:10px 0 0;">
+                    <strong style="display:block;font-size:0.98rem;color:#0f172a;">${escapeHtml(entry?.vendor_name || "未命名廠商")}</strong>
+                    <span style="display:block;color:#475569;margin-top:4px;">${escapeHtml(entry?.work_content || "未提供施作內容")}</span>
+                    <span style="display:block;color:#64748b;margin-top:6px;font-size:0.88rem;">${escapeHtml(entryFacts.join(" / ") || "尚無更多摘要")}</span>
+                  </li>
+                `;
+              })
+              .join("")
+          : `<li class="crew-empty-state" data-testid="crew-work-hub-focus-empty-${section.key}" style="list-style:none;margin:12px 0 0;">${escapeHtml(section.emptyLabel)}</li>`;
+
+      return `
+        <section
+          class="crew-work-hub-focus-section"
+          data-testid="crew-work-hub-focus-section-${section.key}"
+          style="border:1px solid #d9e2ec;border-radius:18px;padding:16px;background:#fff;box-shadow:0 8px 24px rgba(15,23,42,0.05);"
+        >
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+            <div>
+              <h3 style="margin:0;font-size:1rem;color:#0f172a;">${escapeHtml(section.title)}</h3>
+              <p style="margin:6px 0 0;color:#64748b;font-size:0.9rem;">${escapeHtml(section.description)}</p>
+            </div>
+            <strong data-testid="crew-work-hub-focus-count-${section.key}" style="font-size:1.35rem;line-height:1;color:#0f172a;">${escapeHtml(section.count)}</strong>
+          </div>
+          <ul style="margin:0;padding:0;">${sectionBody}</ul>
+        </section>
+      `;
+    })
+    .join("");
+  crewWorkHubFocusSections.style.display = "grid";
+  crewWorkHubFocusSections.style.gridTemplateColumns = "repeat(auto-fit, minmax(220px, 1fr))";
+  crewWorkHubFocusSections.style.gap = "12px";
+  crewWorkHubFocusSections.style.margin = "0 0 16px";
 }
 
 function findCrewWorkHubTarget(action) {
@@ -464,7 +585,7 @@ async function confirmCrewWorkEntryRequirement(button) {
 }
 
 async function loadCrewWorkHubSummary(sheetId) {
-  if (!crewWorkHubCards || !sheetId) return;
+  if ((!crewWorkHubCards && !crewWorkHubFocusSections) || !sheetId) return;
   const emptySummary = {
     blocked_count: 0,
     schedulable_count: 0,
@@ -472,6 +593,7 @@ async function loadCrewWorkHubSummary(sheetId) {
     pending_approval_count: 0,
     pending_requirement_count: 0,
     today_entry_count: 0,
+    today_schedule_count: 0,
   };
   try {
     const workHubRuntimeResponse = await fetch(`/api/work-hub-runtime?sheet_id=${encodeURIComponent(sheetId)}`);
@@ -487,6 +609,25 @@ async function loadCrewWorkHubSummary(sheetId) {
       pending_approval_count: workHubSummary.pending_approval_count ?? 0,
       pending_requirement_count: workHubSummary.pending_requirement_count ?? 0,
       today_entry_count: workHubSummary.today_entry_count ?? 0,
+      today_schedule_count: workHubSummary.today_schedule_count ?? 0,
+    };
+    const focusSections = {
+      summary,
+      blocked_entries: Array.isArray(workHubRuntimeData?.work_hub?.blocked_entries)
+        ? workHubRuntimeData.work_hub.blocked_entries
+        : [],
+      schedulable_entries: Array.isArray(workHubRuntimeData?.work_hub?.schedulable_entries)
+        ? workHubRuntimeData.work_hub.schedulable_entries
+        : [],
+      today_entries: Array.isArray(workHubRuntimeData?.work_hub?.today_entries)
+        ? workHubRuntimeData.work_hub.today_entries
+        : [],
+      scheduled_entries: Array.isArray(workHubRuntimeData?.work_hub?.scheduled_entries)
+        ? workHubRuntimeData.work_hub.scheduled_entries
+        : [],
+      today_schedule: Array.isArray(workHubRuntimeData?.work_hub?.today_schedule)
+        ? workHubRuntimeData.work_hub.today_schedule
+        : [],
     };
     crewScheduledEntryIds = new Set(
       Array.isArray(workHubRuntimeData?.work_hub?.scheduled_entries)
@@ -495,6 +636,7 @@ async function loadCrewWorkHubSummary(sheetId) {
     );
     syncCrewScheduledRowMarkers();
     renderCrewWorkHubCards({ summary });
+    renderCrewWorkHubFocusSections(focusSections);
     return;
   } catch {
     try {
@@ -503,6 +645,14 @@ async function loadCrewWorkHubSummary(sheetId) {
         fetch(`/api/scheduling?sheet_id=${encodeURIComponent(sheetId)}`),
       ]);
       const summary = { ...emptySummary };
+      const focusSections = {
+        summary,
+        blocked_entries: [],
+        schedulable_entries: [],
+        today_entries: [],
+        scheduled_entries: [],
+        today_schedule: [],
+      };
 
       if (dashboardResult.status === "fulfilled") {
         const dashboardResponse = dashboardResult.value;
@@ -514,6 +664,10 @@ async function loadCrewWorkHubSummary(sheetId) {
         summary.pending_requirement_count = dashboardData.summary.pending_requirement_count ?? 0;
         summary.today_entry_count = dashboardData.summary.today_entry_count ?? 0;
         summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;
+        summary.today_schedule_count = dashboardData.summary.today_schedule_count ?? 0;
+        focusSections.today_entries = Array.isArray(dashboardData.today_entries) ? dashboardData.today_entries : [];
+        focusSections.scheduled_entries = Array.isArray(dashboardData.scheduled_entries) ? dashboardData.scheduled_entries : [];
+        focusSections.today_schedule = Array.isArray(dashboardData.today_schedule) ? dashboardData.today_schedule : [];
         crewScheduledEntryIds = new Set(
           Array.isArray(dashboardData.scheduled_entries)
             ? dashboardData.scheduled_entries.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean)
@@ -530,12 +684,18 @@ async function loadCrewWorkHubSummary(sheetId) {
         if (schedulingResponse.ok && schedulingData?.summary) {
           summary.blocked_count = schedulingData.summary.blocked_count ?? 0;
           summary.schedulable_count = schedulingData.summary.schedulable_count ?? 0;
+          focusSections.blocked_entries = Array.isArray(schedulingData.blocked_entries) ? schedulingData.blocked_entries : [];
+          focusSections.schedulable_entries = Array.isArray(schedulingData.schedulable_entries)
+            ? schedulingData.schedulable_entries
+            : [];
         }
       }
 
       renderCrewWorkHubCards({ summary });
+      renderCrewWorkHubFocusSections(focusSections);
     } catch {
       renderCrewWorkHubCards({ summary: emptySummary });
+      renderCrewWorkHubFocusSections({ summary: emptySummary });
       crewScheduledEntryIds = new Set();
       syncCrewScheduledRowMarkers();
     }

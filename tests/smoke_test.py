@@ -3556,6 +3556,23 @@ for forbidden_snippet in (
 
 if 'data-testid="crew-work-hub-cards"' not in template_text:
     raise SystemExit("work hub runtime consumption should keep work hub cards mount container")
+if 'data-testid="crew-work-hub-focus-sections"' not in template_text:
+    raise SystemExit("work hub runtime consumption should keep work hub focus sections mount container")
+
+required_focus_section_snippets = (
+    'const crewWorkHubFocusSections = document.getElementById("crewWorkHubFocusSections");',
+    "function renderCrewWorkHubFocusSections(data) {",
+    'data-testid="crew-work-hub-focus-section-${section.key}"',
+    'data-testid="crew-work-hub-focus-count-${section.key}"',
+    "blocked_entries: Array.isArray(workHubRuntimeData?.work_hub?.blocked_entries)",
+    "schedulable_entries: Array.isArray(workHubRuntimeData?.work_hub?.schedulable_entries)",
+    "today_entries: Array.isArray(workHubRuntimeData?.work_hub?.today_entries)",
+    "today_schedule: Array.isArray(workHubRuntimeData?.work_hub?.today_schedule)",
+    "renderCrewWorkHubFocusSections(focusSections);",
+)
+for snippet in required_focus_section_snippets:
+    if snippet not in js_text:
+        raise SystemExit(f"work hub runtime consumption missing focus sections guardrail: {snippet}")
 
 with module.app.test_client() as client:
     login_response = client.post(
@@ -3573,6 +3590,7 @@ with module.app.test_client() as client:
     for snippet in (
         'data-testid="crew-work-hub-shell"',
         'data-testid="crew-work-hub-cards"',
+        'data-testid="crew-work-hub-focus-sections"',
         'data-testid="crew-work-hub-target-today-entries"',
     ):
         if snippet not in html:
