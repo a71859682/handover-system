@@ -584,3 +584,63 @@
 - Audit log
 - Override
 - Permission redesign
+
+## Scheduling Engine v1 Release Baseline
+
+### 1. Release Name
+
+- Scheduling Engine v1
+
+### 2. Capability Inventory
+
+- Product Design Baseline
+- State & Rules Baseline
+- Read Contract Planning
+- Runtime Aggregation API
+- Work Hub Integration
+- Guardrail Freeze
+- Production Baseline
+
+### 3. Baseline Commits
+
+- SE-001
+  - `9c53a09` - `Document scheduling engine v1 product design baseline`
+- SE-002
+  - `60468cf` - `Document scheduling engine state rules baseline`
+- SE-003
+  - `18b78ba` - `Document scheduling engine read contract planning`
+- SE-004
+  - `b032efe` - `Add scheduling runtime aggregation baseline`
+- SE-005
+  - `dfdd145` - `Integrate scheduling into work hub`
+- SE-006
+  - `f033a00` - `Freeze scheduling engine guardrails`
+- SE-007
+  - `d3e7a36` - `Document scheduling engine production baseline`
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_scheduling_api_smoke(...)` - PASS
+- `run_work_hub_scheduling_smoke(...)` - PASS
+- `run_scheduling_guardrail_smoke(...)` - PASS
+
+### 5. Production Scope
+
+- Read-only Decision Layer
+- Scheduling Decision API
+- Work Hub Integration
+- No persistence
+- No scheduler write
+- No calendar
+- No time conflict engine
+
+### 6. Future Product Lines
+
+- Scheduler Persistence
+- Calendar Integration
+- Time Conflict Resolution
+- Notification
+- Analytics
+- Mobile Experience
