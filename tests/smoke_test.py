@@ -2914,6 +2914,192 @@ print("work hub scheduled smoke PASS")
         raise AssertionError("work hub scheduled smoke subprocess did not report PASS.")
 
 
+def run_work_hub_scheduled_guardrail_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+
+template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
+js_text = (Path(root_dir) / "static" / "app.js").read_text(encoding="utf-8")
+
+required_js = (
+    'testId: "crew-work-hub-card-scheduled"',
+    'title: "已正式排程"',
+    'value: summary.scheduled_count ?? 0',
+    'summaryKey: "scheduled_count"',
+    'summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;',
+    'row.setAttribute("data-work-hub-scheduled", "true");',
+    'return crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
+    'data-entry-id="${escapeHtml(entry.id ?? "")}"',
+    'const crewWorkHubCard = event.target.closest("[data-work-hub-action]");',
+    'target.scrollIntoView({ behavior: "smooth", block: "start" });',
+)
+for snippet in required_js:
+    if snippet not in js_text:
+        raise SystemExit(f"work hub scheduled guardrail missing js snippet: {snippet}")
+
+quick_action_helper = js_text.split("function findCrewWorkHubTarget", 1)[1].split("function buildCrewRequirementMeta", 1)[0]
+if "fetch(" in quick_action_helper:
+    raise SystemExit("work hub scheduled guardrail should keep quick action fetch-free")
+if "POST" in quick_action_helper:
+    raise SystemExit("work hub scheduled guardrail should keep quick action write-free")
+
+if 'data-testid="crew-work-hub-target-today-entries"' not in template_text:
+    raise SystemExit("work hub scheduled guardrail should keep readonly list scroll target")
+
+business_date = module.resolve_crew_business_date()
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site_row = conn.execute("SELECT id, site_name FROM sites ORDER BY id LIMIT 1").fetchone()
+    if default_site_row is None:
+        raise SystemExit("expected a default site for work hub scheduled guardrail smoke")
+    default_site_id = int(default_site_row["id"])
+    default_site_name = str(default_site_row["site_name"])
+    sheet_row = conn.execute("SELECT id FROM sheets WHERE site_id = ? ORDER BY id LIMIT 1", (default_site_id,)).fetchone()
+    if sheet_row is None:
+        raise SystemExit("expected a default sheet for work hub scheduled guardrail smoke")
+    sheet_id = int(sheet_row["id"])
+    member_password_hash = module.generate_password_hash("member-pass")
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("work_hub_guard_member", "work_hub_guard_member", member_password_hash, "member"),
+    )
+    member_id = int(conn.execute("SELECT id FROM users WHERE username = ?", ("work_hub_guard_member",)).fetchone()["id"])
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, default_site_id, "member"),
+    )
+    approved_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, requirement_status,
+                work_headcount, entry_order, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Guardrail", business_date, "2000-01-01 09:00", 2, 0, "Scheduled Work", "", "pending", 0, 0),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        '''
+        INSERT INTO formal_approvals (
+            entry_id, sheet_id, action, approval_status, approved_by, approved_at, created_at, updated_at
+        ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (approved_entry_id, sheet_id, "work_hub_guard_member"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO scheduling_entries (
+            entry_id, sheet_id, action, schedule_status, scheduled_date, scheduled_time,
+            scheduled_by, scheduled_at, created_at, updated_at
+        ) VALUES (?, ?, 'schedule_entry', 'scheduled', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (approved_entry_id, sheet_id, business_date, "09:30", "work_hub_guard_member"),
+    )
+    conn.commit()
+
+def fetch_db_snapshot():
+    with module.db() as conn:
+        return {
+            "vendor_work_entries": int(conn.execute("SELECT COUNT(*) FROM vendor_work_entries").fetchone()[0]),
+            "formal_approvals": int(conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0]),
+            "scheduling_entries": int(conn.execute("SELECT COUNT(*) FROM scheduling_entries").fetchone()[0]),
+        }
+
+client = module.app.test_client()
+with client.session_transaction() as session:
+    session.clear()
+    session["user_id"] = int(member_id)
+    session["username"] = "work_hub_guard_member"
+    session["display_name"] = "work_hub_guard_member"
+    session["role"] = "member"
+    session["current_site_id"] = int(default_site_id)
+    session["current_site_name"] = str(default_site_name)
+    session["site_selection_required"] = False
+
+before = fetch_db_snapshot()
+response = client.get(f"/api/dashboard?sheet_id={sheet_id}")
+if response.status_code != 200:
+    raise SystemExit("work hub scheduled guardrail should allow dashboard read")
+payload = response.get_json()
+if set(payload.keys()) != {
+    "summary",
+    "blocked_items",
+    "pending_approvals",
+    "pending_requirements",
+    "today_entries",
+    "scheduled_entries",
+    "today_schedule",
+    "quick_actions",
+}:
+    raise SystemExit("work hub scheduled guardrail should freeze dashboard top-level contract")
+summary = payload["summary"]
+if set(summary.keys()) != {
+    "blocked_count",
+    "pending_approval_count",
+    "pending_requirement_count",
+    "today_entry_count",
+    "approved_today_count",
+    "scheduled_count",
+    "today_schedule_count",
+}:
+    raise SystemExit("work hub scheduled guardrail should freeze dashboard summary contract")
+if summary["scheduled_count"] != 1 or summary["today_schedule_count"] != 1:
+    raise SystemExit("work hub scheduled guardrail should freeze scheduled summary counts")
+if len(payload["scheduled_entries"]) != 1 or int(payload["scheduled_entries"][0]["id"]) != int(approved_entry_id):
+    raise SystemExit("work hub scheduled guardrail should freeze scheduled_entries membership")
+if len(payload["today_schedule"]) != 1 or int(payload["today_schedule"][0]["id"]) != int(approved_entry_id):
+    raise SystemExit("work hub scheduled guardrail should freeze today_schedule membership")
+if fetch_db_snapshot() != before:
+    raise SystemExit("work hub scheduled guardrail should keep dashboard aggregation read-only")
+
+sheet_response = client.get("/sheet")
+if sheet_response.status_code != 200:
+    raise SystemExit("work hub scheduled guardrail should render /sheet")
+html = sheet_response.get_data(as_text=True)
+for snippet in (
+    'data-testid="crew-work-hub-shell"',
+    'data-testid="crew-work-hub-cards"',
+    'data-testid="crew-work-hub-target-today-entries"',
+):
+    if snippet not in html:
+        raise SystemExit(f"work hub scheduled guardrail should keep readonly shell marker: {snippet}")
+
+print("work hub scheduled guardrail smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "work hub scheduled guardrail smoke PASS" not in result.stdout:
+        raise AssertionError("work hub scheduled guardrail smoke subprocess did not report PASS.")
+
+
 def run_sheet_endpoint_smoke(app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -10916,6 +11102,7 @@ def main() -> int:
         run_crew_readonly_render_smoke(Path(tmpdir) / "crew-readonly-smoke.db")
         run_work_hub_scheduling_smoke(Path(tmpdir) / "work-hub-scheduling-smoke.db")
         run_work_hub_scheduled_smoke(Path(tmpdir) / "work-hub-scheduled-smoke.db")
+        run_work_hub_scheduled_guardrail_smoke(Path(tmpdir) / "work-hub-scheduled-guardrail-smoke.db")
         run_work_hub_quick_action_smoke(Path(tmpdir) / "work-hub-quick-action-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
