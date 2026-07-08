@@ -752,3 +752,43 @@
 - Analytics
 - Attendance
 - Mobile Experience
+
+## Work Hub Scheduled Integration Production Baseline
+
+### 1. Baseline Name
+
+- Work Hub Scheduled Integration Production Baseline
+
+### 2. Completed Capability
+
+- Planning
+- Scheduled Aggregation Runtime
+- Scheduled Work Hub Card
+- Scheduled Quick Action
+- Scheduled Guardrail Freeze
+
+### 3. Scope
+
+- Dashboard scheduled aggregation
+- Scheduled Work Hub card
+- Scheduled quick action
+- Read-only integration
+- No write behavior
+- No schema change
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_dashboard_api_smoke(...)` - PASS
+- `run_work_hub_scheduled_smoke(...)` - PASS
+- `run_work_hub_scheduled_guardrail_smoke(...)` - PASS
+
+### 5. Explicit Out-of-Scope
+
+- Calendar
+- Notification
+- Analytics
+- Attendance
+- Scheduler write
+- Permission redesign
