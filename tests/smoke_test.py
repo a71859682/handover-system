@@ -3513,6 +3513,7 @@ module.app.testing = True
 template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
 js_text = (Path(root_dir) / "static" / "app.js").read_text(encoding="utf-8")
 load_section = js_text.split("async function loadCrewWorkHubSummary", 1)[1].split("function setCrewFormalApproveFeedback", 1)[0]
+focus_summary_section = js_text.split("function buildCrewWorkHubPrimaryTimeline", 1)[1].split("function renderCrewWorkHubFocusSections", 1)[0]
 focus_interaction_section = js_text.split("function mapCrewWorkHubSectionKeyToAction", 1)[1].split("function syncCrewScheduledRowMarkers", 1)[0]
 
 required_load_snippets = (
@@ -3562,6 +3563,10 @@ if 'data-testid="crew-work-hub-focus-sections"' not in template_text:
 for snippet in (
     ".crew-work-hub-focus-hint",
     ".crew-work-hub-focus-item",
+    ".crew-work-hub-focus-primary-timeline",
+    ".crew-work-hub-focus-summary-line",
+    ".crew-work-hub-focus-badges",
+    ".crew-work-hub-focus-badge",
     ".crew-work-hub-focus-item-arrow",
     '@media (max-width: 720px)',
 ):
@@ -3577,6 +3582,13 @@ required_focus_section_snippets = (
     'class="crew-work-hub-focus-item-main"',
     'class="crew-work-hub-focus-item-arrow"',
     '<p class="crew-work-hub-focus-hint">點擊項目可定位到下方明細</p>',
+    "function buildCrewWorkHubPrimaryTimeline(entry) {",
+    "function buildCrewWorkHubSummaryBadges(entry, sectionKey) {",
+    "function buildCrewWorkHubFocusSummary(entry, sectionKey) {",
+    'class="crew-work-hub-focus-badges"',
+    'class="crew-work-hub-focus-badge"',
+    'class="crew-work-hub-focus-primary-timeline"',
+    'class="crew-work-hub-focus-summary-line"',
     'data-work-hub-entry-id="${escapeHtml(entry?.id ?? "")}"',
     'data-work-hub-section-key="${escapeHtml(section.key)}"',
     "function findCrewWorkHubEntryRow(entryId) {",
@@ -3602,6 +3614,21 @@ for snippet in required_focus_section_snippets:
     if snippet not in js_text:
         raise SystemExit(f"work hub runtime consumption missing focus sections guardrail: {snippet}")
 
+for snippet in (
+    'const plannedAt = String(entry?.planned_at || "").trim();',
+    'const scheduledDate = String(entry?.scheduled_date || "").trim();',
+    'const scheduledTime = String(entry?.scheduled_time || "").trim();',
+    'const requirementStatus = String(entry?.requirement_status || "").trim();',
+    'const formalApprovalState = String(entry?.formal_approval_state || "").trim();',
+    'const schedulingGateState = String(entry?.scheduling_gate_state || "").trim();',
+    'const schedulingGateReason = String(entry?.scheduling_gate_reason || "").trim();',
+    'const readinessState = String(entry?.readiness_state || "").trim();',
+    'const readinessReason = String(entry?.readiness_reason || "").trim();',
+    'const hasRequirement = Boolean(String(entry?.pre_entry_requirement || "").trim());',
+):
+    if snippet not in focus_summary_section:
+        raise SystemExit(f"work hub focus summary density should consume existing entry fields: {snippet}")
+
 for forbidden_snippet in (
     "fetch(",
     'method: "POST"',
@@ -3609,6 +3636,14 @@ for forbidden_snippet in (
 ):
     if forbidden_snippet in focus_interaction_section:
         raise SystemExit(f"work hub focus item interaction should remain read-only and fetch-free: {forbidden_snippet}")
+
+for forbidden_snippet in (
+    "fetch(",
+    'method: "POST"',
+    "method: 'POST'",
+):
+    if forbidden_snippet in focus_summary_section:
+        raise SystemExit(f"work hub focus summary density should remain read-only and fetch-free: {forbidden_snippet}")
 
 with module.app.test_client() as client:
     login_response = client.post(

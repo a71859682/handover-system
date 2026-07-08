@@ -214,6 +214,88 @@ function buildCrewWorkHubEntryFacts(entry, sectionKey) {
   return facts.slice(0, 3);
 }
 
+function buildCrewWorkHubPrimaryTimeline(entry) {
+  const plannedAt = String(entry?.planned_at || "").trim();
+  const scheduledDate = String(entry?.scheduled_date || "").trim();
+  const scheduledTime = String(entry?.scheduled_time || "").trim();
+
+  if (scheduledDate || scheduledTime) {
+    const scheduleLabel = [scheduledDate ? formatCrewDate(scheduledDate) : "", scheduledTime].filter(Boolean).join(" ");
+    return scheduleLabel ? `正式排程 ${scheduleLabel}` : "正式排程待確認";
+  }
+  if (plannedAt) {
+    return `預計進場 ${formatCrewDateTime(plannedAt)}`;
+  }
+  return "時序資訊待補";
+}
+
+function buildCrewWorkHubStatusBadge(label, tone = "neutral") {
+  if (!label) return "";
+  return `<span class="crew-work-hub-focus-badge" data-badge-tone="${escapeHtml(tone)}">${escapeHtml(label)}</span>`;
+}
+
+function buildCrewWorkHubSummaryBadges(entry, sectionKey) {
+  const requirementStatus = String(entry?.requirement_status || "").trim();
+  const formalApprovalState = String(entry?.formal_approval_state || "").trim();
+  const schedulingGateState = String(entry?.scheduling_gate_state || "").trim();
+  const schedulingGateReason = String(entry?.scheduling_gate_reason || "").trim();
+  const readinessState = String(entry?.readiness_state || "").trim();
+  const readinessReason = String(entry?.readiness_reason || "").trim();
+  const hasRequirement = Boolean(String(entry?.pre_entry_requirement || "").trim());
+  const badges = [];
+
+  if (sectionKey === "blocked" && requirementStatus) {
+    badges.push(
+      buildCrewWorkHubStatusBadge(
+        requirementStatus === "confirmed" ? "需求已確認" : "需求待確認",
+        requirementStatus === "confirmed" ? "positive" : "warning",
+      ),
+    );
+  }
+  if (sectionKey === "schedulable" && formalApprovalState) {
+    badges.push(
+      buildCrewWorkHubStatusBadge(
+        formalApprovalState === "approved" ? "正式核准完成" : "正式核准待處理",
+        formalApprovalState === "approved" ? "positive" : "neutral",
+      ),
+    );
+  }
+  if (schedulingGateState) {
+    const gateLabel =
+      schedulingGateState === "warning" && schedulingGateReason === "requirement_pending"
+        ? "排程提醒"
+        : schedulingGateState === "allowed" && schedulingGateReason === "requirement_confirmed"
+          ? "可排程"
+          : schedulingGateState === "allowed" && schedulingGateReason === "no_requirement"
+            ? "可排程"
+            : `排程 ${schedulingGateState}`;
+    badges.push(buildCrewWorkHubStatusBadge(gateLabel, schedulingGateState === "warning" ? "warning" : "positive"));
+  }
+  if (readinessState || readinessReason) {
+    const readinessLabel =
+      readinessState === "not_ready" && readinessReason === "requirement_pending"
+        ? "未具備進場條件"
+        : readinessState === "ready" && readinessReason === "requirement_confirmed"
+          ? "需求已備妥"
+          : readinessState === "ready" && readinessReason === "no_requirement"
+            ? "免需求"
+            : `進場 ${readinessState || "待確認"}`;
+    badges.push(buildCrewWorkHubStatusBadge(readinessLabel, readinessState === "not_ready" ? "warning" : "neutral"));
+  }
+  badges.push(buildCrewWorkHubStatusBadge(hasRequirement ? "有進場前需求" : "無進場前需求", "neutral"));
+
+  return badges.filter(Boolean).slice(0, 2);
+}
+
+function buildCrewWorkHubFocusSummary(entry, sectionKey) {
+  const entryFacts = buildCrewWorkHubEntryFacts(entry, sectionKey);
+  return {
+    primaryTimeline: buildCrewWorkHubPrimaryTimeline(entry),
+    summaryLine: entryFacts.join(" / ") || "尚無更多摘要",
+    badges: buildCrewWorkHubSummaryBadges(entry, sectionKey),
+  };
+}
+
 function renderCrewWorkHubFocusSections(data) {
   if (!crewWorkHubFocusSections) return;
   const sections = buildCrewWorkHubFocusSectionMeta(data);
@@ -224,7 +306,7 @@ function renderCrewWorkHubFocusSections(data) {
         entries.length > 0
           ? entries
               .map((entry) => {
-                const entryFacts = buildCrewWorkHubEntryFacts(entry, section.key);
+                const focusSummary = buildCrewWorkHubFocusSummary(entry, section.key);
                 return `
                   <li
                     class="crew-work-hub-focus-item"
@@ -236,7 +318,9 @@ function renderCrewWorkHubFocusSections(data) {
                     <div class="crew-work-hub-focus-item-main">
                       <strong style="display:block;font-size:0.98rem;color:#0f172a;">${escapeHtml(entry?.vendor_name || "未命名廠商")}</strong>
                       <span style="display:block;color:#475569;margin-top:4px;">${escapeHtml(entry?.work_content || "未提供施作內容")}</span>
-                      <span style="display:block;color:#64748b;margin-top:6px;font-size:0.88rem;">${escapeHtml(entryFacts.join(" / ") || "尚無更多摘要")}</span>
+                      <span class="crew-work-hub-focus-primary-timeline">${escapeHtml(focusSummary.primaryTimeline)}</span>
+                      <span class="crew-work-hub-focus-summary-line">${escapeHtml(focusSummary.summaryLine)}</span>
+                      <span class="crew-work-hub-focus-badges">${focusSummary.badges.join("")}</span>
                     </div>
                     <span class="crew-work-hub-focus-item-arrow" aria-hidden="true">></span>
                   </li>

@@ -198,6 +198,52 @@
     min-width: 0;
   }
 
+  .crew-work-hub-focus-primary-timeline {
+    display: block;
+    margin-top: 8px;
+    color: #0f172a;
+    font-size: 0.9rem;
+    font-weight: 600;
+  }
+
+  .crew-work-hub-focus-summary-line {
+    display: block;
+    margin-top: 5px;
+    color: #64748b;
+    font-size: 0.84rem;
+    line-height: 1.45;
+  }
+
+  .crew-work-hub-focus-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .crew-work-hub-focus-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: #e2e8f0;
+    color: #334155;
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  .crew-work-hub-focus-badge[data-badge-tone="positive"] {
+    background: #dcfce7;
+    color: #166534;
+  }
+
+  .crew-work-hub-focus-badge[data-badge-tone="warning"] {
+    background: #fef3c7;
+    color: #92400e;
+  }
+
   .crew-work-hub-focus-item-arrow {
     flex: 0 0 auto;
     color: #2563eb;
@@ -230,6 +276,10 @@
       min-height: 88px;
       padding: 14px 14px 0;
       margin: 12px -14px 0;
+    }
+
+    .crew-work-hub-focus-summary-line {
+      font-size: 0.82rem;
     }
 
     .crew-work-hub-focus-item-arrow {
