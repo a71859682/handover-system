@@ -644,3 +644,48 @@
 - Notification
 - Analytics
 - Mobile Experience
+
+## Scheduler Persistence v1 Production Baseline
+
+### 1. Baseline Name
+
+- Scheduler Persistence v1 Production Baseline
+
+### 2. Completed Capability
+
+- Product Design Baseline
+- Schema Evaluation
+- Runtime Write Contract
+- Read Contract Planning
+- Schema Baseline
+- Runtime Write
+- Guardrail Freeze
+
+### 3. Scope
+
+- Scheduler Persistence
+- Runtime Write
+- Read Contract
+- No calendar
+- No notification
+- No analytics
+- No attendance
+- No override
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_scheduler_schema_smoke(...)` - PASS
+- `run_scheduler_persistence_smoke(...)` - PASS
+- `run_scheduler_persistence_guardrail_smoke(...)` - PASS
+
+### 5. Explicit Out-of-Scope
+
+- Calendar
+- Notification
+- Analytics
+- Attendance
+- Override
+- Audit Log
+- Permission redesign
