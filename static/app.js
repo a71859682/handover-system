@@ -74,6 +74,13 @@ function buildCrewWorkHubCardMeta(summary = {}) {
       summaryKey: "blocked_count",
     },
     {
+      action: "schedulable",
+      testId: "crew-work-hub-card-schedulable",
+      title: "可排程",
+      value: summary.schedulable_count ?? 0,
+      summaryKey: "schedulable_count",
+    },
+    {
       action: "pending-approval",
       testId: "crew-work-hub-card-pending-approval",
       title: "待正式核准",
@@ -126,6 +133,9 @@ function findCrewWorkHubTarget(action) {
   if (!crewVendorList) return null;
   if (action === "blocked") {
     return crewVendorList.querySelector("[data-work-hub-blocked='true']") || crewVendorList;
+  }
+  if (action === "schedulable") {
+    return crewVendorList.querySelector("[data-work-hub-schedulable='true']") || crewVendorList;
   }
   if (action === "pending-approval") {
     return crewVendorList.querySelector("[data-work-hub-pending-approval='true']") || crewVendorList;
@@ -306,6 +316,12 @@ function renderCrewForms(data) {
       }
       if (
         schedulingGateMeta.schedulingGateState === "allowed" &&
+        formalApprovalIndicatorMeta.formalApprovalState === "approved"
+      ) {
+        row.setAttribute("data-work-hub-schedulable", "true");
+      }
+      if (
+        schedulingGateMeta.schedulingGateState === "allowed" &&
         formalApprovalIndicatorMeta.formalApprovalState === "pending"
       ) {
         row.setAttribute("data-work-hub-pending-approval", "true");
@@ -423,16 +439,46 @@ async function confirmCrewWorkEntryRequirement(button) {
 async function loadCrewWorkHubSummary(sheetId) {
   if (!crewWorkHubCards || !sheetId) return;
   try {
-    const response = await fetch(`/api/dashboard?sheet_id=${encodeURIComponent(sheetId)}`);
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data?.summary) {
-      throw new Error(data?.error?.message || "dashboard summary request failed");
+    const [dashboardResult, schedulingResult] = await Promise.allSettled([
+      fetch(`/api/dashboard?sheet_id=${encodeURIComponent(sheetId)}`),
+      fetch(`/api/scheduling?sheet_id=${encodeURIComponent(sheetId)}`),
+    ]);
+    const summary = {
+      blocked_count: 0,
+      schedulable_count: 0,
+      pending_approval_count: 0,
+      pending_requirement_count: 0,
+      today_entry_count: 0,
+    };
+
+    if (dashboardResult.status === "fulfilled") {
+      const dashboardResponse = dashboardResult.value;
+      const dashboardData = await dashboardResponse.json().catch(() => ({}));
+      if (!dashboardResponse.ok || !dashboardData?.summary) {
+        throw new Error(dashboardData?.error?.message || "dashboard summary request failed");
+      }
+      summary.pending_approval_count = dashboardData.summary.pending_approval_count ?? 0;
+      summary.pending_requirement_count = dashboardData.summary.pending_requirement_count ?? 0;
+      summary.today_entry_count = dashboardData.summary.today_entry_count ?? 0;
+    } else {
+      throw dashboardResult.reason || new Error("dashboard summary request failed");
     }
-    renderCrewWorkHubCards(data);
+
+    if (schedulingResult.status === "fulfilled") {
+      const schedulingResponse = schedulingResult.value;
+      const schedulingData = await schedulingResponse.json().catch(() => ({}));
+      if (schedulingResponse.ok && schedulingData?.summary) {
+        summary.blocked_count = schedulingData.summary.blocked_count ?? 0;
+        summary.schedulable_count = schedulingData.summary.schedulable_count ?? 0;
+      }
+    }
+
+    renderCrewWorkHubCards({ summary });
   } catch {
     renderCrewWorkHubCards({
       summary: {
         blocked_count: 0,
+        schedulable_count: 0,
         pending_approval_count: 0,
         pending_requirement_count: 0,
         today_entry_count: 0,

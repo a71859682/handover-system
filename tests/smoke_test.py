@@ -2379,6 +2379,7 @@ for required in (
     "function formatCrewDateTime",
     "async function loadCrewWorkHubSummary",
     "/api/dashboard?sheet_id=",
+    "/api/scheduling?sheet_id=",
     "/api/crew-forms?sheet_id=",
     "/api/crew-work-entry-requirement-confirm",
     "/api/crew-work-entry/formal-approve",
@@ -2418,10 +2419,12 @@ for required in (
     "\u5df2\u5b8c\u6210\u6b63\u5f0f\u6838\u51c6",
     "\u7121\u6cd5\u5b8c\u6210\u6b63\u5f0f\u6838\u51c6\uff1a\u9032\u5834\u524d\u9700\u6c42\u5c1a\u672a\u78ba\u8a8d",
     "Blocked",
+    "可排程",
     "待正式核准",
     "待確認需求",
     "今日進場",
     "blocked_count",
+    "schedulable_count",
     "pending_approval_count",
     "pending_requirement_count",
     "today_entry_count",
@@ -2484,6 +2487,7 @@ for formal_approval_indicator_required in (
 for dashboard_required in (
     'data-testid="crew-work-hub-cards"',
     "crew-work-hub-card-blocked",
+    "crew-work-hub-card-schedulable",
     "crew-work-hub-card-pending-approval",
     "crew-work-hub-card-pending-requirement",
     "crew-work-hub-card-today-entry",
@@ -2633,6 +2637,93 @@ print("work hub quick action smoke PASS")
     )
     if "work hub quick action smoke PASS" not in result.stdout:
         raise AssertionError("work hub quick action smoke subprocess did not report PASS.")
+
+
+def run_work_hub_scheduling_smoke(app_db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
+js_text = (Path(root_dir) / "static" / "app.js").read_text(encoding="utf-8")
+
+required_js = (
+    "/api/dashboard?sheet_id=",
+    "/api/scheduling?sheet_id=",
+    "Promise.allSettled([",
+    'testId: "crew-work-hub-card-blocked"',
+    'testId: "crew-work-hub-card-schedulable"',
+    'title: "Blocked"',
+    'title: "可排程"',
+    'value: summary.blocked_count ?? 0',
+    'value: summary.schedulable_count ?? 0',
+    'summaryKey: "blocked_count"',
+    'summaryKey: "schedulable_count"',
+    'summary.pending_approval_count = dashboardData.summary.pending_approval_count ?? 0;',
+    'summary.pending_requirement_count = dashboardData.summary.pending_requirement_count ?? 0;',
+    'summary.today_entry_count = dashboardData.summary.today_entry_count ?? 0;',
+    'summary.blocked_count = schedulingData.summary.blocked_count ?? 0;',
+    'summary.schedulable_count = schedulingData.summary.schedulable_count ?? 0;',
+    'schedulable_count: 0',
+    'row.setAttribute("data-work-hub-schedulable", "true");',
+    'return crewVendorList.querySelector("[data-work-hub-schedulable=\\\'true\\\']") || crewVendorList;',
+)
+for snippet in required_js:
+    if snippet not in js_text:
+        raise SystemExit(f"work hub scheduling missing js guardrail: {snippet}")
+
+if 'data-testid="crew-work-hub-cards"' not in template_text:
+    raise SystemExit("work hub scheduling baseline should keep work hub mount container")
+
+if "fetch(" in js_text.split("function findCrewWorkHubTarget", 1)[1].split("function buildCrewRequirementMeta", 1)[0]:
+    raise SystemExit("work hub scroll helpers must remain read-only and fetch-free")
+
+with module.app.test_client() as client:
+    login_response = client.post(
+        "/login",
+        data={"username": "admin", "display_name": "Admin", "password": "admin"},
+        follow_redirects=False,
+    )
+    if login_response.status_code != 302:
+        raise SystemExit("login route did not redirect for work hub scheduling smoke")
+
+    sheet_response = client.get("/sheet")
+    if sheet_response.status_code != 200:
+        raise SystemExit("/sheet GET should render successfully for work hub scheduling smoke")
+    html = sheet_response.get_data(as_text=True)
+    for snippet in (
+        'data-testid="crew-work-hub-shell"',
+        'data-testid="crew-work-hub-cards"',
+    ):
+        if snippet not in html:
+            raise SystemExit(f"rendered /sheet missing work hub scheduling shell: {snippet}")
+
+print("work hub scheduling smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "work hub scheduling smoke PASS" not in result.stdout:
+        raise AssertionError("work hub scheduling smoke subprocess did not report PASS.")
 
 
 def run_sheet_endpoint_smoke(app_db_path: Path) -> None:
@@ -9621,6 +9712,7 @@ def main() -> int:
         run_dashboard_api_smoke(Path(tmpdir) / "dashboard-api-smoke.db")
         run_scheduling_api_smoke(Path(tmpdir) / "scheduling-api-smoke.db")
         run_crew_readonly_render_smoke(Path(tmpdir) / "crew-readonly-smoke.db")
+        run_work_hub_scheduling_smoke(Path(tmpdir) / "work-hub-scheduling-smoke.db")
         run_work_hub_quick_action_smoke(Path(tmpdir) / "work-hub-quick-action-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
