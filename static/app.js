@@ -67,24 +67,28 @@ function renderCrewFormError(error) {
 function buildCrewWorkHubCardMeta(summary = {}) {
   return [
     {
+      action: "blocked",
       testId: "crew-work-hub-card-blocked",
       title: "Blocked",
       value: summary.blocked_count ?? 0,
       summaryKey: "blocked_count",
     },
     {
+      action: "pending-approval",
       testId: "crew-work-hub-card-pending-approval",
       title: "待正式核准",
       value: summary.pending_approval_count ?? 0,
       summaryKey: "pending_approval_count",
     },
     {
+      action: "pending-requirement",
       testId: "crew-work-hub-card-pending-requirement",
       title: "待確認需求",
       value: summary.pending_requirement_count ?? 0,
       summaryKey: "pending_requirement_count",
     },
     {
+      action: "today-entries",
       testId: "crew-work-hub-card-today-entry",
       title: "今日進場",
       value: summary.today_entry_count ?? 0,
@@ -103,6 +107,7 @@ function renderCrewWorkHubCards(data) {
         <article
           class="crew-work-hub-card"
           data-testid="${card.testId}"
+          data-work-hub-action="${card.action}"
           style="border:1px solid #d9e2ec;border-radius:16px;padding:14px 16px;background:linear-gradient(180deg,#ffffff 0%,#f5f8fb 100%);box-shadow:0 8px 20px rgba(15,23,42,0.06);min-height:88px;display:flex;flex-direction:column;justify-content:space-between;"
         >
           <span class="crew-label">${escapeHtml(card.title)}</span>
@@ -115,6 +120,26 @@ function renderCrewWorkHubCards(data) {
   crewWorkHubCards.style.gridTemplateColumns = "repeat(auto-fit, minmax(140px, 1fr))";
   crewWorkHubCards.style.gap = "12px";
   crewWorkHubCards.style.margin = "0 0 16px";
+}
+
+function findCrewWorkHubTarget(action) {
+  if (!crewVendorList) return null;
+  if (action === "blocked") {
+    return crewVendorList.querySelector("[data-work-hub-blocked='true']") || crewVendorList;
+  }
+  if (action === "pending-approval") {
+    return crewVendorList.querySelector("[data-work-hub-pending-approval='true']") || crewVendorList;
+  }
+  if (action === "pending-requirement") {
+    return crewVendorList.querySelector("[data-work-hub-pending-requirement='true']") || crewVendorList;
+  }
+  return crewVendorList;
+}
+
+function scrollCrewWorkHubToTarget(action) {
+  const target = findCrewWorkHubTarget(action);
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function buildCrewRequirementMeta(entry) {
@@ -274,6 +299,20 @@ function renderCrewForms(data) {
       const schedulingGateMeta = buildCrewSchedulingGateMeta(entry);
       const formalApprovalIndicatorMeta = buildCrewFormalApprovalIndicatorMeta(entry);
       const formalApproveMeta = buildCrewFormalApproveMeta(entry);
+
+      row.setAttribute("data-work-hub-entry", "today-entry");
+      if (schedulingGateMeta.schedulingGateState === "warning") {
+        row.setAttribute("data-work-hub-blocked", "true");
+      }
+      if (
+        schedulingGateMeta.schedulingGateState === "allowed" &&
+        formalApprovalIndicatorMeta.formalApprovalState === "pending"
+      ) {
+        row.setAttribute("data-work-hub-pending-approval", "true");
+      }
+      if (readinessMeta.readinessReason === "requirement_pending") {
+        row.setAttribute("data-work-hub-pending-requirement", "true");
+      }
 
       const requirementNode = document.createElement("div");
       requirementNode.setAttribute("data-testid", "crew-work-entry-pre-entry-requirement");
@@ -752,6 +791,9 @@ function updatePrintDate() {
 document.addEventListener("click", (event) => {
   const toggle = event.target.closest(".toggle");
   if (toggle) return toggleFloor(toggle.dataset.floorId);
+
+  const crewWorkHubCard = event.target.closest("[data-work-hub-action]");
+  if (crewWorkHubCard) return scrollCrewWorkHubToTarget(crewWorkHubCard.dataset.workHubAction);
 
   const crewRequirementConfirm = event.target.closest("[data-testid='crew-work-entry-requirement-confirm-action']");
   if (crewRequirementConfirm) return confirmCrewWorkEntryRequirement(crewRequirementConfirm);
