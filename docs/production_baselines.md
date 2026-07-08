@@ -481,3 +481,63 @@
 - audit log
 - permission redesign
 - new persistence
+
+## Work Hub v1 Release Baseline
+
+### 1. Release Name
+
+- Work Hub v1
+
+### 2. Capability Inventory
+
+- Product Vision: Task-Driven Construction Operations Platform
+- Role-Oriented Work Hub
+- Dashboard v1 Product Design Baseline
+- Dashboard Read Contract Planning
+- Dashboard Aggregation API
+- Work Hub Cards
+- Work Hub Quick Actions
+- Work Hub Production Baseline
+
+### 3. Baseline Commits
+
+- VISION-001
+  - `b523748` - `Document product vision`
+- VISION-002
+  - `fb9bd98` - `Document dashboard read contract and role-oriented work hub`
+- DASH-001
+  - `df2547a` - `Document dashboard v1 product design baseline`
+- DASH-002
+  - `fb9bd98` - `Document dashboard read contract and role-oriented work hub`
+- DASH-003
+  - `35d6fc1` - `Add dashboard aggregation API baseline`
+- DASH-004
+  - `60c0ed5` - `Add work hub dashboard cards`
+- DASH-005
+  - `70b6fa1` - `Add work hub quick actions`
+- DASH-006
+  - `236db4c` - `Document work hub v1 production baseline`
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_dashboard_api_smoke(...)` - PASS
+- `run_work_hub_quick_action_smoke(...)` - PASS
+- `run_crew_readonly_render_smoke(...)` - PASS
+
+### 5. Production Scope
+
+- read-only aggregation
+- mobile-first cards
+- role-oriented work hub
+- quick action scroll targets
+- no write behavior
+- no new schema
+
+### 6. Future Product Lines
+
+- Scheduling Engine
+- Notification
+- Analytics
+- Mobile Experience
