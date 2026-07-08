@@ -792,3 +792,56 @@
 - Attendance
 - Scheduler write
 - Permission redesign
+
+## Work Hub Scheduled Integration v1 Release Baseline
+
+### 1. Release Name
+
+- Work Hub Scheduled Integration v1
+
+### 2. Capability Inventory
+
+- Planning
+- Scheduled Aggregation Runtime
+- Scheduled Work Hub Card
+- Scheduled Quick Action
+- Guardrail Freeze
+- Production Baseline
+
+### 3. Baseline Commits
+
+- M1-IMP-001
+  - Planning draft currently exists as `docs/work_hub_scheduled_integration_planning.md`
+  - No dedicated committed baseline yet
+- M1-IMP-002
+  - `bd132db` - `Add work hub scheduled aggregation runtime`
+- M1-IMP-003
+  - `1c60f06` - `Add scheduled work hub card`
+- M1-IMP-004
+  - `ab19911` - `Freeze work hub scheduled guardrails`
+- M1-IMP-005
+  - `f557c0b` - `Document work hub scheduled production baseline`
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_dashboard_api_smoke(...)` - PASS
+- `run_work_hub_scheduled_smoke(...)` - PASS
+- `run_work_hub_scheduled_guardrail_smoke(...)` - PASS
+
+### 5. Production Scope
+
+- Dashboard scheduled aggregation
+- Scheduled Work Hub card
+- Scheduled quick action
+- Read-only integration
+- No write behavior
+- No schema change
+
+### 6. Future Product Lines
+
+- Calendar Integration
+- Notification
+- Analytics
+- Mobile Experience
