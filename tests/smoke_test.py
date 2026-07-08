@@ -3513,6 +3513,7 @@ module.app.testing = True
 template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
 js_text = (Path(root_dir) / "static" / "app.js").read_text(encoding="utf-8")
 load_section = js_text.split("async function loadCrewWorkHubSummary", 1)[1].split("function setCrewFormalApproveFeedback", 1)[0]
+focus_interaction_section = js_text.split("function mapCrewWorkHubSectionKeyToAction", 1)[1].split("function syncCrewScheduledRowMarkers", 1)[0]
 
 required_load_snippets = (
     "/api/work-hub-runtime?sheet_id=",
@@ -3558,21 +3559,36 @@ if 'data-testid="crew-work-hub-cards"' not in template_text:
     raise SystemExit("work hub runtime consumption should keep work hub cards mount container")
 if 'data-testid="crew-work-hub-focus-sections"' not in template_text:
     raise SystemExit("work hub runtime consumption should keep work hub focus sections mount container")
+for snippet in (
+    ".crew-work-hub-focus-hint",
+    ".crew-work-hub-focus-item",
+    ".crew-work-hub-focus-item-arrow",
+    '@media (max-width: 720px)',
+):
+    if snippet not in template_text:
+        raise SystemExit(f"work hub runtime consumption should keep focus item affordance styling: {snippet}")
 
 required_focus_section_snippets = (
     'const crewWorkHubFocusSections = document.getElementById("crewWorkHubFocusSections");',
     "function renderCrewWorkHubFocusSections(data) {",
     'data-testid="crew-work-hub-focus-section-${section.key}"',
     'data-testid="crew-work-hub-focus-count-${section.key}"',
+    'class="crew-work-hub-focus-item"',
+    'class="crew-work-hub-focus-item-main"',
+    'class="crew-work-hub-focus-item-arrow"',
+    '<p class="crew-work-hub-focus-hint">點擊項目可定位到下方明細</p>',
     'data-work-hub-entry-id="${escapeHtml(entry?.id ?? "")}"',
     'data-work-hub-section-key="${escapeHtml(section.key)}"',
     "function findCrewWorkHubEntryRow(entryId) {",
+    "function setCrewWorkHubFocusItemActiveState(item) {",
     'function focusCrewWorkHubEntryRow(entryId, fallbackAction = "") {',
+    'item.setAttribute("data-work-hub-item-active", "true");',
     'row.setAttribute("data-work-hub-focus-active", "true");',
     "window.setTimeout(() => {",
     "if (!row) {",
     "scrollCrewWorkHubToTarget(fallbackAction);",
     'const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");',
+    "setCrewWorkHubFocusItemActiveState(crewWorkHubFocusItem);",
     "mapCrewWorkHubSectionKeyToAction(crewWorkHubFocusItem.dataset.workHubSectionKey)",
     "blocked_entries: Array.isArray(workHubRuntimeData?.work_hub?.blocked_entries)",
     "schedulable_entries: Array.isArray(workHubRuntimeData?.work_hub?.schedulable_entries)",
@@ -3585,6 +3601,14 @@ required_focus_section_snippets = (
 for snippet in required_focus_section_snippets:
     if snippet not in js_text:
         raise SystemExit(f"work hub runtime consumption missing focus sections guardrail: {snippet}")
+
+for forbidden_snippet in (
+    "fetch(",
+    'method: "POST"',
+    "method: 'POST'",
+):
+    if forbidden_snippet in focus_interaction_section:
+        raise SystemExit(f"work hub focus item interaction should remain read-only and fetch-free: {forbidden_snippet}")
 
 with module.app.test_client() as client:
     login_response = client.post(

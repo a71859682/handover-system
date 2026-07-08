@@ -27,6 +27,7 @@ const selectedTaskIds = new Set();
 let activeDateInput = null;
 let crewScheduledEntryIds = new Set();
 let crewWorkHubFocusHighlightTimeoutId = 0;
+let crewWorkHubFocusItemActiveTimeoutId = 0;
 
 function key(...parts) {
   return parts.join(":");
@@ -226,14 +227,18 @@ function renderCrewWorkHubFocusSections(data) {
                 const entryFacts = buildCrewWorkHubEntryFacts(entry, section.key);
                 return `
                   <li
+                    class="crew-work-hub-focus-item"
                     data-testid="crew-work-hub-focus-entry-${section.key}"
                     data-work-hub-entry-id="${escapeHtml(entry?.id ?? "")}"
                     data-work-hub-section-key="${escapeHtml(section.key)}"
-                    style="list-style:none;border-top:1px solid #e2e8f0;padding:10px 0 0;margin:10px 0 0;cursor:pointer;"
+                    style="list-style:none;"
                   >
-                    <strong style="display:block;font-size:0.98rem;color:#0f172a;">${escapeHtml(entry?.vendor_name || "未命名廠商")}</strong>
-                    <span style="display:block;color:#475569;margin-top:4px;">${escapeHtml(entry?.work_content || "未提供施作內容")}</span>
-                    <span style="display:block;color:#64748b;margin-top:6px;font-size:0.88rem;">${escapeHtml(entryFacts.join(" / ") || "尚無更多摘要")}</span>
+                    <div class="crew-work-hub-focus-item-main">
+                      <strong style="display:block;font-size:0.98rem;color:#0f172a;">${escapeHtml(entry?.vendor_name || "未命名廠商")}</strong>
+                      <span style="display:block;color:#475569;margin-top:4px;">${escapeHtml(entry?.work_content || "未提供施作內容")}</span>
+                      <span style="display:block;color:#64748b;margin-top:6px;font-size:0.88rem;">${escapeHtml(entryFacts.join(" / ") || "尚無更多摘要")}</span>
+                    </div>
+                    <span class="crew-work-hub-focus-item-arrow" aria-hidden="true">></span>
                   </li>
                 `;
               })
@@ -250,6 +255,7 @@ function renderCrewWorkHubFocusSections(data) {
             <div>
               <h3 style="margin:0;font-size:1rem;color:#0f172a;">${escapeHtml(section.title)}</h3>
               <p style="margin:6px 0 0;color:#64748b;font-size:0.9rem;">${escapeHtml(section.description)}</p>
+              <p class="crew-work-hub-focus-hint">點擊項目可定位到下方明細</p>
             </div>
             <strong data-testid="crew-work-hub-focus-count-${section.key}" style="font-size:1.35rem;line-height:1;color:#0f172a;">${escapeHtml(section.count)}</strong>
           </div>
@@ -317,6 +323,24 @@ function clearCrewWorkHubFocusedRow() {
     row.style.background = "";
     row.style.transition = "";
   });
+}
+
+function setCrewWorkHubFocusItemActiveState(item) {
+  if (!crewWorkHubFocusSections) return;
+  if (crewWorkHubFocusItemActiveTimeoutId) {
+    window.clearTimeout(crewWorkHubFocusItemActiveTimeoutId);
+    crewWorkHubFocusItemActiveTimeoutId = 0;
+  }
+  crewWorkHubFocusSections.querySelectorAll("[data-work-hub-item-active='true']").forEach((activeItem) => {
+    activeItem.removeAttribute("data-work-hub-item-active");
+  });
+  if (!item) return;
+  item.setAttribute("data-work-hub-item-active", "true");
+  crewWorkHubFocusItemActiveTimeoutId = window.setTimeout(() => {
+    if (item.getAttribute("data-work-hub-item-active") !== "true") return;
+    item.removeAttribute("data-work-hub-item-active");
+    crewWorkHubFocusItemActiveTimeoutId = 0;
+  }, 900);
 }
 
 function focusCrewWorkHubEntryRow(entryId, fallbackAction = "") {
@@ -1116,6 +1140,7 @@ document.addEventListener("click", (event) => {
 
   const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");
   if (crewWorkHubFocusItem) {
+    setCrewWorkHubFocusItemActiveState(crewWorkHubFocusItem);
     return focusCrewWorkHubEntryRow(
       crewWorkHubFocusItem.dataset.workHubEntryId,
       mapCrewWorkHubSectionKeyToAction(crewWorkHubFocusItem.dataset.workHubSectionKey),
