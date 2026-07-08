@@ -2693,6 +2693,49 @@ def build_scheduling_payload(
     }
 
 
+def build_work_hub_runtime_payload(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    business_date: str,
+) -> dict[str, object]:
+    dashboard_payload = build_dashboard_payload(
+        conn,
+        sheet_id=sheet_id,
+        business_date=business_date,
+    )
+    scheduling_payload = build_scheduling_payload(
+        conn,
+        sheet_id=sheet_id,
+        business_date=business_date,
+    )
+    dashboard_summary = dict(dashboard_payload.get("summary") or {})
+    scheduling_summary = dict(scheduling_payload.get("summary") or {})
+
+    return {
+        "sheet_id": int(sheet_id),
+        "business_date": business_date,
+        "dashboard": dashboard_payload,
+        "scheduling": scheduling_payload,
+        "work_hub": {
+            "summary": {
+                "blocked_count": int(scheduling_summary.get("blocked_count") or 0),
+                "schedulable_count": int(scheduling_summary.get("schedulable_count") or 0),
+                "pending_approval_count": int(dashboard_summary.get("pending_approval_count") or 0),
+                "pending_requirement_count": int(dashboard_summary.get("pending_requirement_count") or 0),
+                "today_entry_count": int(dashboard_summary.get("today_entry_count") or 0),
+                "scheduled_count": int(dashboard_summary.get("scheduled_count") or 0),
+                "today_schedule_count": int(dashboard_summary.get("today_schedule_count") or 0),
+            },
+            "blocked_entries": [entry.copy() for entry in scheduling_payload.get("blocked_entries", [])],
+            "schedulable_entries": [entry.copy() for entry in scheduling_payload.get("schedulable_entries", [])],
+            "today_entries": [entry.copy() for entry in dashboard_payload.get("today_entries", [])],
+            "scheduled_entries": [entry.copy() for entry in dashboard_payload.get("scheduled_entries", [])],
+            "today_schedule": [entry.copy() for entry in dashboard_payload.get("today_schedule", [])],
+        },
+    }
+
+
 def parse_planned_at_datetime(value: str) -> datetime | None:
     raw = value.strip()
     if not raw:

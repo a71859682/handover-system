@@ -3100,6 +3100,150 @@ print("work hub scheduled guardrail smoke PASS")
         raise AssertionError("work hub scheduled guardrail smoke subprocess did not report PASS.")
 
 
+def run_work_hub_runtime_helper_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+business_date = module.resolve_crew_business_date()
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    sheet_row = conn.execute("SELECT id FROM sheets ORDER BY id LIMIT 1").fetchone()
+    if sheet_row is None:
+        raise SystemExit("expected a default sheet for work hub runtime helper smoke")
+    sheet_id = int(sheet_row["id"])
+    blocked_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Helper", business_date, "2000-01-01 09:00", 2, 0, "Blocked Work", "Need permit", 0, 0),
+        ).fetchone()["id"]
+    )
+    approved_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Helper", business_date, "2000-01-01 10:00", 1, 0, "Approved Work", "", 0, 1),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        '''
+        INSERT INTO formal_approvals (
+            entry_id, sheet_id, action, approval_status, approved_by, approved_at, created_at, updated_at
+        ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (approved_entry_id, sheet_id, "helper_member"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO scheduling_entries (
+            entry_id, sheet_id, action, schedule_status, scheduled_date, scheduled_time,
+            scheduled_by, scheduled_at, created_at, updated_at
+        ) VALUES (?, ?, 'schedule_entry', 'scheduled', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (approved_entry_id, sheet_id, business_date, "09:30", "helper_member"),
+    )
+    conn.commit()
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    dashboard_payload = module.build_dashboard_payload(conn, sheet_id=sheet_id, business_date=business_date)
+    scheduling_payload = module.build_scheduling_payload(conn, sheet_id=sheet_id, business_date=business_date)
+    helper_payload = module.build_work_hub_runtime_payload(conn, sheet_id=sheet_id, business_date=business_date)
+
+if set(helper_payload.keys()) != {"sheet_id", "business_date", "dashboard", "scheduling", "work_hub"}:
+    raise SystemExit("work hub runtime helper should keep the expected top-level shape")
+if helper_payload["sheet_id"] != sheet_id or helper_payload["business_date"] != business_date:
+    raise SystemExit("work hub runtime helper should preserve sheet_id and business_date context")
+if helper_payload["dashboard"] != dashboard_payload:
+    raise SystemExit("work hub runtime helper should reuse dashboard payload without contract drift")
+if helper_payload["scheduling"] != scheduling_payload:
+    raise SystemExit("work hub runtime helper should reuse scheduling payload without contract drift")
+
+work_hub = helper_payload["work_hub"]
+if set(work_hub.keys()) != {
+    "summary",
+    "blocked_entries",
+    "schedulable_entries",
+    "today_entries",
+    "scheduled_entries",
+    "today_schedule",
+}:
+    raise SystemExit("work hub runtime helper should keep the expected internal work_hub shape")
+if set(work_hub["summary"].keys()) != {
+    "blocked_count",
+    "schedulable_count",
+    "pending_approval_count",
+    "pending_requirement_count",
+    "today_entry_count",
+    "scheduled_count",
+    "today_schedule_count",
+}:
+    raise SystemExit("work hub runtime helper should expose the expected summary shape")
+if work_hub["summary"]["blocked_count"] != scheduling_payload["summary"]["blocked_count"]:
+    raise SystemExit("work hub runtime helper should source blocked_count from scheduling summary")
+if work_hub["summary"]["schedulable_count"] != scheduling_payload["summary"]["schedulable_count"]:
+    raise SystemExit("work hub runtime helper should source schedulable_count from scheduling summary")
+if work_hub["summary"]["scheduled_count"] != dashboard_payload["summary"]["scheduled_count"]:
+    raise SystemExit("work hub runtime helper should source scheduled_count from dashboard summary")
+if work_hub["summary"]["today_schedule_count"] != dashboard_payload["summary"]["today_schedule_count"]:
+    raise SystemExit("work hub runtime helper should source today_schedule_count from dashboard summary")
+if {int(entry["id"]) for entry in work_hub["blocked_entries"]} != {int(entry["id"]) for entry in scheduling_payload["blocked_entries"]}:
+    raise SystemExit("work hub runtime helper should reuse scheduling blocked_entries membership")
+if {int(entry["id"]) for entry in work_hub["schedulable_entries"]} != {int(entry["id"]) for entry in scheduling_payload["schedulable_entries"]}:
+    raise SystemExit("work hub runtime helper should reuse scheduling schedulable_entries membership")
+if {int(entry["id"]) for entry in work_hub["scheduled_entries"]} != {int(entry["id"]) for entry in dashboard_payload["scheduled_entries"]}:
+    raise SystemExit("work hub runtime helper should reuse dashboard scheduled_entries membership")
+if {int(entry["id"]) for entry in work_hub["today_schedule"]} != {int(entry["id"]) for entry in dashboard_payload["today_schedule"]}:
+    raise SystemExit("work hub runtime helper should reuse dashboard today_schedule membership")
+if blocked_entry_id not in {int(entry["id"]) for entry in work_hub["blocked_entries"]}:
+    raise SystemExit("work hub runtime helper should include the blocked entry in blocked_entries")
+if approved_entry_id not in {int(entry["id"]) for entry in work_hub["scheduled_entries"]}:
+    raise SystemExit("work hub runtime helper should include the scheduled entry in scheduled_entries")
+
+print("work hub runtime helper smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "work hub runtime helper smoke PASS" not in result.stdout:
+        raise AssertionError("work hub runtime helper smoke subprocess did not report PASS.")
+
+
 def run_sheet_endpoint_smoke(app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -11103,6 +11247,7 @@ def main() -> int:
         run_work_hub_scheduling_smoke(Path(tmpdir) / "work-hub-scheduling-smoke.db")
         run_work_hub_scheduled_smoke(Path(tmpdir) / "work-hub-scheduled-smoke.db")
         run_work_hub_scheduled_guardrail_smoke(Path(tmpdir) / "work-hub-scheduled-guardrail-smoke.db")
+        run_work_hub_runtime_helper_smoke(Path(tmpdir) / "work-hub-runtime-helper-smoke.db")
         run_work_hub_quick_action_smoke(Path(tmpdir) / "work-hub-quick-action-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
