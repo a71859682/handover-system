@@ -845,3 +845,44 @@
 - Notification
 - Analytics
 - Mobile Experience
+
+## Product OS v1.x Production Live
+
+### 1. Production Status
+
+- Product OS v1.x Production Live
+
+### 2. Live Commit
+
+- `bbd2c76` - `Document work hub scheduled release baseline`
+
+### 3. Deploy Validation
+
+- Render live commit correct
+- Deploy PASS
+- Logs clean
+- no Traceback
+- no ERROR
+- no restart loop
+- Gunicorn normal
+
+### 4. Route Health
+
+- Page routes unauthenticated use `302` redirect
+  - `GET /` -> `302 /login`
+  - `GET /login` -> `200`
+  - `GET /vendor/work-entry` -> `302 /vendor/login`
+  - `GET /sheet` -> `302 /login`
+- Protected JSON APIs unauthenticated use `403`
+  - `GET /api/dashboard?sheet_id=1` -> `403`
+  - `GET /api/scheduling?sheet_id=1` -> `403`
+
+### 5. Auth Contract Note
+
+- Page route auth and protected JSON API auth use different conventions
+- This is not a production bug
+- The production validation checklist was corrected accordingly
+
+### 6. Final Assessment
+
+- Product OS v1.x can be formally marked Production Live
