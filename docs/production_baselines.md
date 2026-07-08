@@ -439,3 +439,45 @@
 - Scheduling engine
 - Permission model redesign
 - Bulk confirmation
+
+## Work Hub v1 Production Baseline
+
+### 1. Baseline Name
+
+- Work Hub v1 Production Baseline
+
+### 2. Completed Capability
+
+- Product Vision: Task-Driven / Role-Oriented
+- Dashboard v1 Design Baseline
+- Dashboard Read Contract Planning
+- Dashboard Aggregation API
+- Work Hub Cards
+- Work Hub Quick Actions
+
+### 3. Scope
+
+- read-only aggregation
+- mobile-first work cards
+- role-oriented work hub
+- quick action scroll targets
+- no write behavior
+- no new schema
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_dashboard_api_smoke(...)` - PASS
+- `run_work_hub_quick_action_smoke(...)` - PASS
+- `run_crew_readonly_render_smoke(...)` - PASS
+
+### 5. Explicit Out-of-Scope
+
+- full Dashboard UI
+- analytics
+- notification
+- scheduling engine
+- audit log
+- permission redesign
+- new persistence
