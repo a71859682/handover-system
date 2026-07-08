@@ -3564,11 +3564,23 @@ required_focus_section_snippets = (
     "function renderCrewWorkHubFocusSections(data) {",
     'data-testid="crew-work-hub-focus-section-${section.key}"',
     'data-testid="crew-work-hub-focus-count-${section.key}"',
+    'data-work-hub-entry-id="${escapeHtml(entry?.id ?? "")}"',
+    'data-work-hub-section-key="${escapeHtml(section.key)}"',
+    "function findCrewWorkHubEntryRow(entryId) {",
+    'function focusCrewWorkHubEntryRow(entryId, fallbackAction = "") {',
+    'row.setAttribute("data-work-hub-focus-active", "true");',
+    "window.setTimeout(() => {",
+    "if (!row) {",
+    "scrollCrewWorkHubToTarget(fallbackAction);",
+    'const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");',
+    "mapCrewWorkHubSectionKeyToAction(crewWorkHubFocusItem.dataset.workHubSectionKey)",
     "blocked_entries: Array.isArray(workHubRuntimeData?.work_hub?.blocked_entries)",
     "schedulable_entries: Array.isArray(workHubRuntimeData?.work_hub?.schedulable_entries)",
     "today_entries: Array.isArray(workHubRuntimeData?.work_hub?.today_entries)",
     "today_schedule: Array.isArray(workHubRuntimeData?.work_hub?.today_schedule)",
     "renderCrewWorkHubFocusSections(focusSections);",
+    "syncCrewScheduledRowMarkers();",
+    'data-work-hub-action="${card.action}"',
 )
 for snippet in required_focus_section_snippets:
     if snippet not in js_text:

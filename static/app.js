@@ -26,6 +26,7 @@ let pendingSaves = 0;
 const selectedTaskIds = new Set();
 let activeDateInput = null;
 let crewScheduledEntryIds = new Set();
+let crewWorkHubFocusHighlightTimeoutId = 0;
 
 function key(...parts) {
   return parts.join(":");
@@ -224,7 +225,12 @@ function renderCrewWorkHubFocusSections(data) {
               .map((entry) => {
                 const entryFacts = buildCrewWorkHubEntryFacts(entry, section.key);
                 return `
-                  <li data-testid="crew-work-hub-focus-entry-${section.key}" style="list-style:none;border-top:1px solid #e2e8f0;padding:10px 0 0;margin:10px 0 0;">
+                  <li
+                    data-testid="crew-work-hub-focus-entry-${section.key}"
+                    data-work-hub-entry-id="${escapeHtml(entry?.id ?? "")}"
+                    data-work-hub-section-key="${escapeHtml(section.key)}"
+                    style="list-style:none;border-top:1px solid #e2e8f0;padding:10px 0 0;margin:10px 0 0;cursor:pointer;"
+                  >
                     <strong style="display:block;font-size:0.98rem;color:#0f172a;">${escapeHtml(entry?.vendor_name || "未命名廠商")}</strong>
                     <span style="display:block;color:#475569;margin-top:4px;">${escapeHtml(entry?.work_content || "未提供施作內容")}</span>
                     <span style="display:block;color:#64748b;margin-top:6px;font-size:0.88rem;">${escapeHtml(entryFacts.join(" / ") || "尚無更多摘要")}</span>
@@ -282,6 +288,61 @@ function scrollCrewWorkHubToTarget(action) {
   const target = findCrewWorkHubTarget(action);
   if (!target) return;
   target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function mapCrewWorkHubSectionKeyToAction(sectionKey) {
+  if (sectionKey === "today-entries" || sectionKey === "today-schedule") {
+    return "today-entries";
+  }
+  return String(sectionKey || "").trim();
+}
+
+function findCrewWorkHubEntryRow(entryId) {
+  if (!crewVendorList) return null;
+  const normalizedEntryId = String(entryId || "").trim();
+  if (!normalizedEntryId) return null;
+  return crewVendorList.querySelector(`.crew-entry-row[data-entry-id="${normalizedEntryId}"]`);
+}
+
+function clearCrewWorkHubFocusedRow() {
+  if (!crewVendorList) return;
+  if (crewWorkHubFocusHighlightTimeoutId) {
+    window.clearTimeout(crewWorkHubFocusHighlightTimeoutId);
+    crewWorkHubFocusHighlightTimeoutId = 0;
+  }
+  crewVendorList.querySelectorAll(".crew-entry-row[data-work-hub-focus-active='true']").forEach((row) => {
+    row.removeAttribute("data-work-hub-focus-active");
+    row.style.outline = "";
+    row.style.outlineOffset = "";
+    row.style.background = "";
+    row.style.transition = "";
+  });
+}
+
+function focusCrewWorkHubEntryRow(entryId, fallbackAction = "") {
+  const row = findCrewWorkHubEntryRow(entryId);
+  if (!row) {
+    if (fallbackAction) {
+      scrollCrewWorkHubToTarget(fallbackAction);
+    }
+    return;
+  }
+  clearCrewWorkHubFocusedRow();
+  row.scrollIntoView({ behavior: "smooth", block: "center" });
+  row.setAttribute("data-work-hub-focus-active", "true");
+  row.style.outline = "2px solid #2563eb";
+  row.style.outlineOffset = "6px";
+  row.style.background = "rgba(37,99,235,0.08)";
+  row.style.transition = "background 0.2s ease, outline-color 0.2s ease";
+  crewWorkHubFocusHighlightTimeoutId = window.setTimeout(() => {
+    if (row.getAttribute("data-work-hub-focus-active") !== "true") return;
+    row.removeAttribute("data-work-hub-focus-active");
+    row.style.outline = "";
+    row.style.outlineOffset = "";
+    row.style.background = "";
+    row.style.transition = "";
+    crewWorkHubFocusHighlightTimeoutId = 0;
+  }, 1800);
 }
 
 function syncCrewScheduledRowMarkers() {
@@ -1052,6 +1113,14 @@ function updatePrintDate() {
 document.addEventListener("click", (event) => {
   const toggle = event.target.closest(".toggle");
   if (toggle) return toggleFloor(toggle.dataset.floorId);
+
+  const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");
+  if (crewWorkHubFocusItem) {
+    return focusCrewWorkHubEntryRow(
+      crewWorkHubFocusItem.dataset.workHubEntryId,
+      mapCrewWorkHubSectionKeyToAction(crewWorkHubFocusItem.dataset.workHubSectionKey),
+    );
+  }
 
   const crewWorkHubCard = event.target.closest("[data-work-hub-action]");
   if (crewWorkHubCard) return scrollCrewWorkHubToTarget(crewWorkHubCard.dataset.workHubAction);
