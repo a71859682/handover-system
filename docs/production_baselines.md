@@ -689,3 +689,66 @@
 - Override
 - Audit Log
 - Permission redesign
+
+## Scheduler Persistence v1 Release Baseline
+
+### 1. Release Name
+
+- Scheduler Persistence v1
+
+### 2. Capability Inventory
+
+- Product Design Baseline
+- Schema Evaluation
+- Runtime Write Contract
+- Read Contract Planning
+- Schema Baseline
+- Runtime Write
+- Guardrail Freeze
+- Production Baseline
+
+### 3. Baseline Commits
+
+- SP-001
+  - `3aa11f6` - `Document scheduler persistence product design baseline`
+- SP-002
+  - `dd083c0` - `Document scheduler persistence schema evaluation`
+- SP-003
+  - `f6ff7b1` - `Document scheduler persistence write contract`
+- SP-004
+  - `cb45cfa` - `Document scheduler persistence read contract planning`
+- SP-005
+  - `49dc2d1` - `Add scheduler persistence schema baseline`
+- SP-006
+  - `9339c71` - `Add scheduler persistence runtime write`
+- SP-007
+  - `d88c9f8` - `Freeze scheduler persistence guardrails`
+- SP-008
+  - `eae362c` - `Document scheduler persistence production baseline`
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_scheduler_schema_smoke(...)` - PASS
+- `run_scheduler_persistence_smoke(...)` - PASS
+- `run_scheduler_persistence_guardrail_smoke(...)` - PASS
+
+### 5. Production Scope
+
+- Scheduler Persistence
+- Runtime Write
+- Read Contract
+- No calendar
+- No notification
+- No analytics
+- No attendance
+- No override
+
+### 6. Future Product Lines
+
+- Calendar Integration
+- Notification Integration
+- Analytics
+- Attendance
+- Mobile Experience
