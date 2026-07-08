@@ -465,63 +465,80 @@ async function confirmCrewWorkEntryRequirement(button) {
 
 async function loadCrewWorkHubSummary(sheetId) {
   if (!crewWorkHubCards || !sheetId) return;
+  const emptySummary = {
+    blocked_count: 0,
+    schedulable_count: 0,
+    scheduled_count: 0,
+    pending_approval_count: 0,
+    pending_requirement_count: 0,
+    today_entry_count: 0,
+  };
   try {
-    const [dashboardResult, schedulingResult] = await Promise.allSettled([
-      fetch(`/api/dashboard?sheet_id=${encodeURIComponent(sheetId)}`),
-      fetch(`/api/scheduling?sheet_id=${encodeURIComponent(sheetId)}`),
-    ]);
+    const workHubRuntimeResponse = await fetch(`/api/work-hub-runtime?sheet_id=${encodeURIComponent(sheetId)}`);
+    const workHubRuntimeData = await workHubRuntimeResponse.json().catch(() => ({}));
+    if (!workHubRuntimeResponse.ok || !workHubRuntimeData?.work_hub?.summary) {
+      throw new Error(workHubRuntimeData?.error?.message || "work hub runtime request failed");
+    }
+    const workHubSummary = workHubRuntimeData.work_hub.summary;
     const summary = {
-      blocked_count: 0,
-      schedulable_count: 0,
-      scheduled_count: 0,
-      pending_approval_count: 0,
-      pending_requirement_count: 0,
-      today_entry_count: 0,
+      blocked_count: workHubSummary.blocked_count ?? 0,
+      schedulable_count: workHubSummary.schedulable_count ?? 0,
+      scheduled_count: workHubSummary.scheduled_count ?? 0,
+      pending_approval_count: workHubSummary.pending_approval_count ?? 0,
+      pending_requirement_count: workHubSummary.pending_requirement_count ?? 0,
+      today_entry_count: workHubSummary.today_entry_count ?? 0,
     };
-
-    if (dashboardResult.status === "fulfilled") {
-      const dashboardResponse = dashboardResult.value;
-      const dashboardData = await dashboardResponse.json().catch(() => ({}));
-      if (!dashboardResponse.ok || !dashboardData?.summary) {
-        throw new Error(dashboardData?.error?.message || "dashboard summary request failed");
-      }
-      summary.pending_approval_count = dashboardData.summary.pending_approval_count ?? 0;
-      summary.pending_requirement_count = dashboardData.summary.pending_requirement_count ?? 0;
-      summary.today_entry_count = dashboardData.summary.today_entry_count ?? 0;
-      summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;
-      crewScheduledEntryIds = new Set(
-        Array.isArray(dashboardData.scheduled_entries)
-          ? dashboardData.scheduled_entries.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean)
-          : [],
-      );
-      syncCrewScheduledRowMarkers();
-    } else {
-      throw dashboardResult.reason || new Error("dashboard summary request failed");
-    }
-
-    if (schedulingResult.status === "fulfilled") {
-      const schedulingResponse = schedulingResult.value;
-      const schedulingData = await schedulingResponse.json().catch(() => ({}));
-      if (schedulingResponse.ok && schedulingData?.summary) {
-        summary.blocked_count = schedulingData.summary.blocked_count ?? 0;
-        summary.schedulable_count = schedulingData.summary.schedulable_count ?? 0;
-      }
-    }
-
-    renderCrewWorkHubCards({ summary });
-  } catch {
-    renderCrewWorkHubCards({
-      summary: {
-        blocked_count: 0,
-        schedulable_count: 0,
-        scheduled_count: 0,
-        pending_approval_count: 0,
-        pending_requirement_count: 0,
-        today_entry_count: 0,
-      },
-    });
-    crewScheduledEntryIds = new Set();
+    crewScheduledEntryIds = new Set(
+      Array.isArray(workHubRuntimeData?.work_hub?.scheduled_entries)
+        ? workHubRuntimeData.work_hub.scheduled_entries.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean)
+        : [],
+    );
     syncCrewScheduledRowMarkers();
+    renderCrewWorkHubCards({ summary });
+    return;
+  } catch {
+    try {
+      const [dashboardResult, schedulingResult] = await Promise.allSettled([
+        fetch(`/api/dashboard?sheet_id=${encodeURIComponent(sheetId)}`),
+        fetch(`/api/scheduling?sheet_id=${encodeURIComponent(sheetId)}`),
+      ]);
+      const summary = { ...emptySummary };
+
+      if (dashboardResult.status === "fulfilled") {
+        const dashboardResponse = dashboardResult.value;
+        const dashboardData = await dashboardResponse.json().catch(() => ({}));
+        if (!dashboardResponse.ok || !dashboardData?.summary) {
+          throw new Error(dashboardData?.error?.message || "dashboard summary request failed");
+        }
+        summary.pending_approval_count = dashboardData.summary.pending_approval_count ?? 0;
+        summary.pending_requirement_count = dashboardData.summary.pending_requirement_count ?? 0;
+        summary.today_entry_count = dashboardData.summary.today_entry_count ?? 0;
+        summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;
+        crewScheduledEntryIds = new Set(
+          Array.isArray(dashboardData.scheduled_entries)
+            ? dashboardData.scheduled_entries.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean)
+            : [],
+        );
+        syncCrewScheduledRowMarkers();
+      } else {
+        throw dashboardResult.reason || new Error("dashboard summary request failed");
+      }
+
+      if (schedulingResult.status === "fulfilled") {
+        const schedulingResponse = schedulingResult.value;
+        const schedulingData = await schedulingResponse.json().catch(() => ({}));
+        if (schedulingResponse.ok && schedulingData?.summary) {
+          summary.blocked_count = schedulingData.summary.blocked_count ?? 0;
+          summary.schedulable_count = schedulingData.summary.schedulable_count ?? 0;
+        }
+      }
+
+      renderCrewWorkHubCards({ summary });
+    } catch {
+      renderCrewWorkHubCards({ summary: emptySummary });
+      crewScheduledEntryIds = new Set();
+      syncCrewScheduledRowMarkers();
+    }
   }
 }
 

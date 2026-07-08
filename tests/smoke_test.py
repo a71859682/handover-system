@@ -2476,6 +2476,7 @@ for required in (
     "function formatCrewDate",
     "function formatCrewDateTime",
     "async function loadCrewWorkHubSummary",
+    "/api/work-hub-runtime?sheet_id=",
     "/api/dashboard?sheet_id=",
     "/api/scheduling?sheet_id=",
     "/api/crew-forms?sheet_id=",
@@ -2758,8 +2759,13 @@ template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding
 js_text = (Path(root_dir) / "static" / "app.js").read_text(encoding="utf-8")
 
 required_js = (
+    "/api/work-hub-runtime?sheet_id=",
     "/api/dashboard?sheet_id=",
     "/api/scheduling?sheet_id=",
+    "const workHubRuntimeResponse = await fetch(",
+    "const workHubRuntimeData = await workHubRuntimeResponse.json().catch(() => ({}));",
+    "if (!workHubRuntimeResponse.ok || !workHubRuntimeData?.work_hub?.summary) {",
+    "const workHubSummary = workHubRuntimeData.work_hub.summary;",
     "Promise.allSettled([",
     'testId: "crew-work-hub-card-blocked"',
     'testId: "crew-work-hub-card-schedulable"',
@@ -2773,6 +2779,12 @@ required_js = (
     'summaryKey: "blocked_count"',
     'summaryKey: "schedulable_count"',
     'summaryKey: "scheduled_count"',
+    'blocked_count: workHubSummary.blocked_count ?? 0,',
+    'schedulable_count: workHubSummary.schedulable_count ?? 0,',
+    'scheduled_count: workHubSummary.scheduled_count ?? 0,',
+    'pending_approval_count: workHubSummary.pending_approval_count ?? 0,',
+    'pending_requirement_count: workHubSummary.pending_requirement_count ?? 0,',
+    'today_entry_count: workHubSummary.today_entry_count ?? 0,',
     'summary.pending_approval_count = dashboardData.summary.pending_approval_count ?? 0;',
     'summary.pending_requirement_count = dashboardData.summary.pending_requirement_count ?? 0;',
     'summary.today_entry_count = dashboardData.summary.today_entry_count ?? 0;',
@@ -2857,6 +2869,11 @@ required_js = (
     'title: "已正式排程"',
     'value: summary.scheduled_count ?? 0',
     'summaryKey: "scheduled_count"',
+    "/api/work-hub-runtime?sheet_id=",
+    "const workHubSummary = workHubRuntimeData.work_hub.summary;",
+    'scheduled_count: workHubSummary.scheduled_count ?? 0,',
+    'Array.isArray(workHubRuntimeData?.work_hub?.scheduled_entries)',
+    'workHubRuntimeData.work_hub.scheduled_entries.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean)',
     'summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;',
     'crewScheduledEntryIds = new Set(',
     'row.setAttribute("data-work-hub-scheduled", "true");',
@@ -3477,6 +3494,107 @@ print("work hub runtime api smoke PASS")
     )
     if "work hub runtime api smoke PASS" not in result.stdout:
         raise AssertionError("work hub runtime api smoke subprocess did not report PASS.")
+
+
+def run_work_hub_runtime_consumption_smoke(app_db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
+js_text = (Path(root_dir) / "static" / "app.js").read_text(encoding="utf-8")
+load_section = js_text.split("async function loadCrewWorkHubSummary", 1)[1].split("function setCrewFormalApproveFeedback", 1)[0]
+
+required_load_snippets = (
+    "/api/work-hub-runtime?sheet_id=",
+    "const workHubRuntimeResponse = await fetch(",
+    "const workHubRuntimeData = await workHubRuntimeResponse.json().catch(() => ({}));",
+    "if (!workHubRuntimeResponse.ok || !workHubRuntimeData?.work_hub?.summary) {",
+    "const workHubSummary = workHubRuntimeData.work_hub.summary;",
+    "blocked_count: workHubSummary.blocked_count ?? 0,",
+    "schedulable_count: workHubSummary.schedulable_count ?? 0,",
+    "scheduled_count: workHubSummary.scheduled_count ?? 0,",
+    "pending_approval_count: workHubSummary.pending_approval_count ?? 0,",
+    "pending_requirement_count: workHubSummary.pending_requirement_count ?? 0,",
+    "today_entry_count: workHubSummary.today_entry_count ?? 0,",
+    "Array.isArray(workHubRuntimeData?.work_hub?.scheduled_entries)",
+    'workHubRuntimeData.work_hub.scheduled_entries.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean)',
+    "Promise.allSettled([",
+    "/api/dashboard?sheet_id=",
+    "/api/scheduling?sheet_id=",
+    "summary.pending_approval_count = dashboardData.summary.pending_approval_count ?? 0;",
+    "summary.pending_requirement_count = dashboardData.summary.pending_requirement_count ?? 0;",
+    "summary.today_entry_count = dashboardData.summary.today_entry_count ?? 0;",
+    "summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;",
+    "summary.blocked_count = schedulingData.summary.blocked_count ?? 0;",
+    "summary.schedulable_count = schedulingData.summary.schedulable_count ?? 0;",
+    "crewScheduledEntryIds = new Set(",
+    "syncCrewScheduledRowMarkers();",
+    "renderCrewWorkHubCards({ summary });",
+)
+for snippet in required_load_snippets:
+    if snippet not in load_section:
+        raise SystemExit(f"work hub runtime consumption missing load path guardrail: {snippet}")
+
+for forbidden_snippet in (
+    "/api/crew-work-entry-requirement-confirm",
+    "/api/crew-work-entry/formal-approve",
+    'method: "POST"',
+    "method: 'POST'",
+):
+    if forbidden_snippet in load_section:
+        raise SystemExit(f"work hub runtime consumption load section should remain read-only: {forbidden_snippet}")
+
+if 'data-testid="crew-work-hub-cards"' not in template_text:
+    raise SystemExit("work hub runtime consumption should keep work hub cards mount container")
+
+with module.app.test_client() as client:
+    login_response = client.post(
+        "/login",
+        data={"username": "admin", "display_name": "Admin", "password": "admin"},
+        follow_redirects=False,
+    )
+    if login_response.status_code != 302:
+        raise SystemExit("login route did not redirect for work hub runtime consumption smoke")
+
+    sheet_response = client.get("/sheet")
+    if sheet_response.status_code != 200:
+        raise SystemExit("/sheet GET should render successfully for work hub runtime consumption smoke")
+    html = sheet_response.get_data(as_text=True)
+    for snippet in (
+        'data-testid="crew-work-hub-shell"',
+        'data-testid="crew-work-hub-cards"',
+        'data-testid="crew-work-hub-target-today-entries"',
+    ):
+        if snippet not in html:
+            raise SystemExit(f"rendered /sheet missing work hub runtime consumption shell: {snippet}")
+
+print("work hub runtime consumption smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "work hub runtime consumption smoke PASS" not in result.stdout:
+        raise AssertionError("work hub runtime consumption smoke subprocess did not report PASS.")
 
 
 def run_sheet_endpoint_smoke(app_db_path: Path) -> None:
@@ -11484,6 +11602,7 @@ def main() -> int:
         run_work_hub_scheduled_guardrail_smoke(Path(tmpdir) / "work-hub-scheduled-guardrail-smoke.db")
         run_work_hub_runtime_helper_smoke(Path(tmpdir) / "work-hub-runtime-helper-smoke.db")
         run_work_hub_runtime_api_smoke(Path(tmpdir) / "work-hub-runtime-api-smoke.db")
+        run_work_hub_runtime_consumption_smoke(Path(tmpdir) / "work-hub-runtime-consumption-smoke.db")
         run_work_hub_quick_action_smoke(Path(tmpdir) / "work-hub-quick-action-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
