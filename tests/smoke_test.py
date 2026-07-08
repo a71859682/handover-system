@@ -8415,6 +8415,15 @@ with module.db() as conn:
     )
     conn.execute(
         '''
+        INSERT INTO scheduling_entries (
+            entry_id, sheet_id, action, schedule_status, scheduled_date, scheduled_time,
+            scheduled_by, scheduled_at, created_at, updated_at
+        ) VALUES (?, ?, 'schedule_entry', 'scheduled', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (approved_entry_id, sheet_id, business_date, "09:30", "dashboard_member"),
+    )
+    conn.execute(
+        '''
         INSERT INTO vendor_work_entries (
             sheet_id, vendor_name, business_date, planned_at, planned_headcount,
             actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
@@ -8430,6 +8439,7 @@ def fetch_db_snapshot():
         return {
             "vendor_work_entries": int(conn.execute("SELECT COUNT(*) FROM vendor_work_entries").fetchone()[0]),
             "formal_approvals": int(conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0]),
+            "scheduling_entries": int(conn.execute("SELECT COUNT(*) FROM scheduling_entries").fetchone()[0]),
         }
 
 client = module.app.test_client()
@@ -8452,8 +8462,18 @@ success = client.get(f"/api/dashboard?sheet_id={sheet_id}")
 if success.status_code != 200:
     raise SystemExit("dashboard success path should return 200")
 payload = success.get_json()
-if set(payload.keys()) != {"summary", "blocked_items", "pending_approvals", "pending_requirements", "today_entries", "quick_actions"}:
-    raise SystemExit("dashboard success response should keep exact top-level contract")
+expected_top_level_keys = {
+    "summary",
+    "blocked_items",
+    "pending_approvals",
+    "pending_requirements",
+    "today_entries",
+    "scheduled_entries",
+    "today_schedule",
+    "quick_actions",
+}
+if set(payload.keys()) != expected_top_level_keys:
+    raise SystemExit("dashboard success response should preserve existing fields and append scheduled fact fields")
 summary = payload["summary"]
 expected_summary_keys = {
     "blocked_count",
@@ -8461,9 +8481,11 @@ expected_summary_keys = {
     "pending_requirement_count",
     "today_entry_count",
     "approved_today_count",
+    "scheduled_count",
+    "today_schedule_count",
 }
 if set(summary.keys()) != expected_summary_keys:
-    raise SystemExit("dashboard summary should keep exact first-baseline contract")
+    raise SystemExit("dashboard summary should preserve existing counts and append scheduled fact counts")
 if summary["blocked_count"] != 1:
     raise SystemExit("dashboard summary should count one blocked item")
 if summary["pending_approval_count"] != 1:
@@ -8474,6 +8496,10 @@ if summary["today_entry_count"] != 3:
     raise SystemExit("dashboard summary should count three today entries")
 if summary["approved_today_count"] != 1:
     raise SystemExit("dashboard summary should count one approved today entry")
+if summary["scheduled_count"] != 1:
+    raise SystemExit("dashboard summary should count one scheduled fact entry")
+if summary["today_schedule_count"] != 1:
+    raise SystemExit("dashboard summary should count one scheduled fact for today")
 if len(payload["blocked_items"]) != 1 or int(payload["blocked_items"][0]["id"]) != int(blocked_entry_id):
     raise SystemExit("dashboard blocked_items should surface the blocked entry")
 if payload["blocked_items"][0]["scheduling_gate_state"] != "warning" or payload["blocked_items"][0]["scheduling_gate_reason"] != "requirement_pending":
@@ -8486,6 +8512,12 @@ if len(payload["pending_requirements"]) != 1 or int(payload["pending_requirement
     raise SystemExit("dashboard pending_requirements should surface the blocked requirement-pending entry")
 if len(payload["today_entries"]) != 3:
     raise SystemExit("dashboard today_entries should include all in-scope entries")
+if len(payload["scheduled_entries"]) != 1 or int(payload["scheduled_entries"][0]["id"]) != int(approved_entry_id):
+    raise SystemExit("dashboard scheduled_entries should surface the scheduled fact entry")
+if payload["scheduled_entries"][0]["scheduled_date"] != business_date or payload["scheduled_entries"][0]["scheduled_time"] != "09:30":
+    raise SystemExit("dashboard scheduled_entries should preserve scheduled fact metadata")
+if len(payload["today_schedule"]) != 1 or int(payload["today_schedule"][0]["id"]) != int(approved_entry_id):
+    raise SystemExit("dashboard today_schedule should surface today's scheduled fact entry")
 if len(payload["quick_actions"]) != 3:
     raise SystemExit("dashboard quick_actions should expose the first-baseline action list")
 if fetch_db_snapshot() != success_before:

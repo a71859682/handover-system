@@ -2502,6 +2502,86 @@ def fetch_vendor_work_entries(
     return entries_by_vendor
 
 
+def fetch_dashboard_scheduled_entries(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT se.id AS schedule_id,
+               se.entry_id,
+               se.sheet_id,
+               se.action AS schedule_action,
+               se.schedule_status,
+               se.scheduled_date,
+               se.scheduled_time,
+               se.scheduled_by,
+               se.scheduled_at,
+               vwe.vendor_name,
+               vwe.business_date,
+               vwe.planned_at,
+               vwe.planned_headcount,
+               vwe.actual_headcount,
+               vwe.work_content,
+               vwe.pre_entry_requirement,
+               vwe.requirement_status,
+               vwe.requirement_confirmed_by,
+               vwe.requirement_confirmed_at,
+               vwe.work_headcount,
+               vwe.entry_order,
+               vwe.created_at,
+               vwe.updated_at,
+               fa.approval_status AS formal_approval_status,
+               fa.approved_by AS formal_approved_by,
+               fa.approved_at AS formal_approved_at
+        FROM scheduling_entries se
+        JOIN vendor_work_entries vwe
+          ON vwe.id = se.entry_id
+        LEFT JOIN formal_approvals fa
+          ON fa.entry_id = vwe.id
+         AND fa.action = 'crew_formal_approve_entry'
+        WHERE se.sheet_id = ?
+        ORDER BY se.scheduled_date, se.scheduled_time, se.id
+        """,
+        (sheet_id,),
+    ).fetchall()
+    scheduled_entries: list[dict[str, object]] = []
+    for row in rows:
+        entry = {
+            "id": int(row["entry_id"]),
+            "sheet_id": int(row["sheet_id"]),
+            "vendor_name": str(row["vendor_name"] or ""),
+            "business_date": str(row["business_date"] or ""),
+            "planned_at": str(row["planned_at"] or ""),
+            "planned_headcount": int(row["planned_headcount"] or 0),
+            "actual_headcount": int(row["actual_headcount"] or 0),
+            "work_content": str(row["work_content"] or ""),
+            "pre_entry_requirement": str(row["pre_entry_requirement"] or ""),
+            "requirement_status": str(row["requirement_status"] or ""),
+            "requirement_confirmed_by": str(row["requirement_confirmed_by"] or ""),
+            "requirement_confirmed_at": str(row["requirement_confirmed_at"] or ""),
+            "work_headcount": int(row["work_headcount"] or 0),
+            "entry_order": int(row["entry_order"] or 0),
+            "created_at": str(row["created_at"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+            "formal_approval_status": str(row["formal_approval_status"] or ""),
+            "formal_approved_by": str(row["formal_approved_by"] or ""),
+            "formal_approved_at": str(row["formal_approved_at"] or ""),
+            "schedule_id": int(row["schedule_id"]),
+            "schedule_action": str(row["schedule_action"] or ""),
+            "schedule_status": str(row["schedule_status"] or ""),
+            "scheduled_date": str(row["scheduled_date"] or ""),
+            "scheduled_time": str(row["scheduled_time"] or ""),
+            "scheduled_by": str(row["scheduled_by"] or ""),
+            "scheduled_at": str(row["scheduled_at"] or ""),
+        }
+        entry = apply_vendor_work_entry_gate_state(entry)
+        entry = apply_vendor_work_entry_formal_approval_state(entry)
+        scheduled_entries.append(entry)
+    return scheduled_entries
+
+
 def build_dashboard_payload(
     conn: sqlite3.Connection,
     *,
@@ -2509,6 +2589,12 @@ def build_dashboard_payload(
     business_date: str,
 ) -> dict[str, object]:
     entries_by_vendor = fetch_vendor_work_entries(conn, sheet_id=sheet_id, business_date=business_date)
+    scheduled_entries = fetch_dashboard_scheduled_entries(conn, sheet_id=sheet_id)
+    today_schedule = [
+        entry.copy()
+        for entry in scheduled_entries
+        if str(entry.get("scheduled_date")) == business_date
+    ]
     today_entries = [
         entry.copy()
         for vendor_entries in entries_by_vendor.values()
@@ -2535,11 +2621,15 @@ def build_dashboard_payload(
             "pending_requirement_count": len(pending_requirements),
             "today_entry_count": len(today_entries),
             "approved_today_count": approved_today_count,
+            "scheduled_count": len(scheduled_entries),
+            "today_schedule_count": len(today_schedule),
         },
         "blocked_items": blocked_items,
         "pending_approvals": pending_approvals,
         "pending_requirements": pending_requirements,
         "today_entries": today_entries,
+        "scheduled_entries": [entry.copy() for entry in scheduled_entries],
+        "today_schedule": today_schedule,
         "quick_actions": [
             {
                 "action": "review_blocked_items",
