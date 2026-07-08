@@ -24,6 +24,7 @@ const summaryCells = {
 let pendingSaves = 0;
 const selectedTaskIds = new Set();
 let activeDateInput = null;
+let crewScheduledEntryIds = new Set();
 
 function key(...parts) {
   return parts.join(":");
@@ -79,6 +80,13 @@ function buildCrewWorkHubCardMeta(summary = {}) {
       title: "可排程",
       value: summary.schedulable_count ?? 0,
       summaryKey: "schedulable_count",
+    },
+    {
+      action: "scheduled",
+      testId: "crew-work-hub-card-scheduled",
+      title: "已正式排程",
+      value: summary.scheduled_count ?? 0,
+      summaryKey: "scheduled_count",
     },
     {
       action: "pending-approval",
@@ -137,6 +145,9 @@ function findCrewWorkHubTarget(action) {
   if (action === "schedulable") {
     return crewVendorList.querySelector("[data-work-hub-schedulable='true']") || crewVendorList;
   }
+  if (action === "scheduled") {
+    return crewVendorList.querySelector("[data-work-hub-scheduled='true']") || crewVendorList;
+  }
   if (action === "pending-approval") {
     return crewVendorList.querySelector("[data-work-hub-pending-approval='true']") || crewVendorList;
   }
@@ -150,6 +161,18 @@ function scrollCrewWorkHubToTarget(action) {
   const target = findCrewWorkHubTarget(action);
   if (!target) return;
   target.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function syncCrewScheduledRowMarkers() {
+  if (!crewVendorList) return;
+  crewVendorList.querySelectorAll(".crew-entry-row").forEach((row) => {
+    const entryId = String(row.getAttribute("data-entry-id") || "").trim();
+    if (entryId && crewScheduledEntryIds.has(entryId)) {
+      row.setAttribute("data-work-hub-scheduled", "true");
+    } else {
+      row.removeAttribute("data-work-hub-scheduled");
+    }
+  });
 }
 
 function buildCrewRequirementMeta(entry) {
@@ -269,7 +292,7 @@ function renderCrewForms(data) {
               .map((entry) => {
                 const requirementMeta = buildCrewRequirementMeta(entry);
                 return `
-          <div class="crew-entry-row">
+          <div class="crew-entry-row" data-entry-id="${escapeHtml(entry.id ?? "")}">
             <div><span class="crew-label">預計進場</span><strong>${escapeHtml(formatCrewDateTime(entry.planned_at || "")) || "—"}</strong></div>
             <div><span class="crew-label">預計進場人數</span><strong>${escapeHtml(entry.planned_headcount ?? 0)}</strong></div>
             <div><span class="crew-label">實際進場人數</span><strong>${escapeHtml(entry.actual_headcount ?? 0)}</strong></div>
@@ -329,6 +352,9 @@ function renderCrewForms(data) {
       if (readinessMeta.readinessReason === "requirement_pending") {
         row.setAttribute("data-work-hub-pending-requirement", "true");
       }
+      if (crewScheduledEntryIds.has(String(entry?.id ?? "").trim())) {
+        row.setAttribute("data-work-hub-scheduled", "true");
+      }
 
       const requirementNode = document.createElement("div");
       requirementNode.setAttribute("data-testid", "crew-work-entry-pre-entry-requirement");
@@ -386,6 +412,7 @@ function renderCrewForms(data) {
       row.appendChild(formalApproveSlot);
     });
   });
+  syncCrewScheduledRowMarkers();
 }
 
 async function loadCrewForms(sheetId) {
@@ -446,6 +473,7 @@ async function loadCrewWorkHubSummary(sheetId) {
     const summary = {
       blocked_count: 0,
       schedulable_count: 0,
+      scheduled_count: 0,
       pending_approval_count: 0,
       pending_requirement_count: 0,
       today_entry_count: 0,
@@ -460,6 +488,13 @@ async function loadCrewWorkHubSummary(sheetId) {
       summary.pending_approval_count = dashboardData.summary.pending_approval_count ?? 0;
       summary.pending_requirement_count = dashboardData.summary.pending_requirement_count ?? 0;
       summary.today_entry_count = dashboardData.summary.today_entry_count ?? 0;
+      summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;
+      crewScheduledEntryIds = new Set(
+        Array.isArray(dashboardData.scheduled_entries)
+          ? dashboardData.scheduled_entries.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean)
+          : [],
+      );
+      syncCrewScheduledRowMarkers();
     } else {
       throw dashboardResult.reason || new Error("dashboard summary request failed");
     }
@@ -479,11 +514,14 @@ async function loadCrewWorkHubSummary(sheetId) {
       summary: {
         blocked_count: 0,
         schedulable_count: 0,
+        scheduled_count: 0,
         pending_approval_count: 0,
         pending_requirement_count: 0,
         today_entry_count: 0,
       },
     });
+    crewScheduledEntryIds = new Set();
+    syncCrewScheduledRowMarkers();
   }
 }
 

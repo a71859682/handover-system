@@ -2586,6 +2586,7 @@ for dashboard_required in (
     'data-testid="crew-work-hub-cards"',
     "crew-work-hub-card-blocked",
     "crew-work-hub-card-schedulable",
+    "crew-work-hub-card-scheduled",
     "crew-work-hub-card-pending-approval",
     "crew-work-hub-card-pending-requirement",
     "crew-work-hub-card-today-entry",
@@ -2677,11 +2678,13 @@ required_js = (
     'data-work-hub-action="${card.action}"',
     'row.setAttribute("data-work-hub-entry", "today-entry")',
     'row.setAttribute("data-work-hub-blocked", "true")',
+    'row.setAttribute("data-work-hub-scheduled", "true")',
     'row.setAttribute("data-work-hub-pending-approval", "true")',
     'row.setAttribute("data-work-hub-pending-requirement", "true")',
     'const crewWorkHubCard = event.target.closest("[data-work-hub-action]");',
     "if (crewWorkHubCard) return scrollCrewWorkHubToTarget(crewWorkHubCard.dataset.workHubAction);",
     'return crewVendorList.querySelector("[data-work-hub-blocked=\\\'true\\\']") || crewVendorList;',
+    'return crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
     'return crewVendorList.querySelector("[data-work-hub-pending-approval=\\\'true\\\']") || crewVendorList;',
     'return crewVendorList.querySelector("[data-work-hub-pending-requirement=\\\'true\\\']") || crewVendorList;',
     'target.scrollIntoView({ behavior: "smooth", block: "start" });',
@@ -2760,19 +2763,27 @@ required_js = (
     "Promise.allSettled([",
     'testId: "crew-work-hub-card-blocked"',
     'testId: "crew-work-hub-card-schedulable"',
+    'testId: "crew-work-hub-card-scheduled"',
     'title: "Blocked"',
     'title: "可排程"',
+    'title: "已正式排程"',
     'value: summary.blocked_count ?? 0',
     'value: summary.schedulable_count ?? 0',
+    'value: summary.scheduled_count ?? 0',
     'summaryKey: "blocked_count"',
     'summaryKey: "schedulable_count"',
+    'summaryKey: "scheduled_count"',
     'summary.pending_approval_count = dashboardData.summary.pending_approval_count ?? 0;',
     'summary.pending_requirement_count = dashboardData.summary.pending_requirement_count ?? 0;',
     'summary.today_entry_count = dashboardData.summary.today_entry_count ?? 0;',
+    'summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;',
     'summary.blocked_count = schedulingData.summary.blocked_count ?? 0;',
     'summary.schedulable_count = schedulingData.summary.schedulable_count ?? 0;',
     'schedulable_count: 0',
+    'scheduled_count: 0',
+    'crewScheduledEntryIds = new Set(',
     'row.setAttribute("data-work-hub-schedulable", "true");',
+    'row.setAttribute("data-work-hub-scheduled", "true");',
     'return crewVendorList.querySelector("[data-work-hub-schedulable=\\\'true\\\']") || crewVendorList;',
 )
 for snippet in required_js:
@@ -2822,6 +2833,85 @@ print("work hub scheduling smoke PASS")
     )
     if "work hub scheduling smoke PASS" not in result.stdout:
         raise AssertionError("work hub scheduling smoke subprocess did not report PASS.")
+
+
+def run_work_hub_scheduled_smoke(app_db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = app_db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
+js_text = (Path(root_dir) / "static" / "app.js").read_text(encoding="utf-8")
+
+required_js = (
+    'testId: "crew-work-hub-card-scheduled"',
+    'title: "已正式排程"',
+    'value: summary.scheduled_count ?? 0',
+    'summaryKey: "scheduled_count"',
+    'summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;',
+    'crewScheduledEntryIds = new Set(',
+    'row.setAttribute("data-work-hub-scheduled", "true");',
+    'return crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
+    'data-entry-id="${escapeHtml(entry.id ?? "")}"',
+)
+for snippet in required_js:
+    if snippet not in js_text:
+        raise SystemExit(f"work hub scheduled ui missing js guardrail: {snippet}")
+
+quick_action_helper = js_text.split("function findCrewWorkHubTarget", 1)[1].split("function buildCrewRequirementMeta", 1)[0]
+if "fetch(" in quick_action_helper:
+    raise SystemExit("work hub scheduled quick action must stay read-only and fetch-free")
+
+if 'data-testid="crew-work-hub-target-today-entries"' not in template_text:
+    raise SystemExit("work hub scheduled baseline should keep readonly list scroll target")
+
+with module.app.test_client() as client:
+    login_response = client.post(
+        "/login",
+        data={"username": "admin", "display_name": "Admin", "password": "admin"},
+        follow_redirects=False,
+    )
+    if login_response.status_code != 302:
+        raise SystemExit("login route did not redirect for work hub scheduled smoke")
+
+    sheet_response = client.get("/sheet")
+    if sheet_response.status_code != 200:
+        raise SystemExit("/sheet GET should render successfully for work hub scheduled smoke")
+    html = sheet_response.get_data(as_text=True)
+    for snippet in (
+        'data-testid="crew-work-hub-shell"',
+        'data-testid="crew-work-hub-cards"',
+        'data-testid="crew-work-hub-target-today-entries"',
+    ):
+        if snippet not in html:
+            raise SystemExit(f"rendered /sheet missing work hub scheduled shell: {snippet}")
+
+print("work hub scheduled smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(app_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "work hub scheduled smoke PASS" not in result.stdout:
+        raise AssertionError("work hub scheduled smoke subprocess did not report PASS.")
 
 
 def run_sheet_endpoint_smoke(app_db_path: Path) -> None:
@@ -10825,6 +10915,7 @@ def main() -> int:
         run_scheduling_guardrail_smoke(Path(tmpdir) / "scheduling-guardrail-smoke.db")
         run_crew_readonly_render_smoke(Path(tmpdir) / "crew-readonly-smoke.db")
         run_work_hub_scheduling_smoke(Path(tmpdir) / "work-hub-scheduling-smoke.db")
+        run_work_hub_scheduled_smoke(Path(tmpdir) / "work-hub-scheduled-smoke.db")
         run_work_hub_quick_action_smoke(Path(tmpdir) / "work-hub-quick-action-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()
