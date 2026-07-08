@@ -7614,6 +7614,365 @@ print("vendor-work-entry formal approve smoke PASS")
         raise AssertionError("vendor-work-entry formal approve smoke subprocess did not report PASS.")
 
 
+def run_scheduler_persistence_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+os.environ["APP_DB_PATH"] = db_path
+spec.loader.exec_module(module)
+module.app.testing = True
+
+business_date = module.resolve_crew_business_date()
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site_row = conn.execute("SELECT id, site_name FROM sites ORDER BY id LIMIT 1").fetchone()
+    if default_site_row is None:
+        raise SystemExit("expected a default site for scheduler persistence smoke")
+    default_site_id = int(default_site_row["id"])
+    default_site_name = str(default_site_row["site_name"])
+    sheet_row = conn.execute("SELECT id FROM sheets WHERE site_id = ? ORDER BY id LIMIT 1", (default_site_id,)).fetchone()
+    if sheet_row is None:
+        raise SystemExit("expected a default sheet for scheduler persistence smoke")
+    sheet_id = int(sheet_row["id"])
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+            ("__schedule_entry_site_b__", "schedule-entry-site-b"),
+        ).fetchone()["id"]
+    )
+    secondary_sheet_id = int(
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+            ("Schedule Entry Sheet B", 999, secondary_site_id),
+        ).fetchone()["id"]
+    )
+    member_password_hash = module.generate_password_hash("member-pass")
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("schedule_member", "schedule_member", member_password_hash, "member"),
+    )
+    member_id = int(conn.execute("SELECT id FROM users WHERE username = ?", ("schedule_member",)).fetchone()["id"])
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, default_site_id, "member"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
+        VALUES (?, ?, ?, ?)
+        ''',
+        ("vendor_schedule_only", module.generate_password_hash("vendor-pass"), "Vendor Schedule", 1),
+    )
+    vendor_account_id = int(
+        conn.execute("SELECT id FROM vendor_accounts WHERE username = ?", ("vendor_schedule_only",)).fetchone()["id"]
+    )
+    ready_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Schedule", business_date, "2000-01-01 09:00", 3, 0, "Ready Schedule Work", "", 0, 0),
+        ).fetchone()["id"]
+    )
+    blocked_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Schedule", business_date, "2000-01-01 10:00", 2, 0, "Blocked Schedule Work", "Need shutdown", 0, 1),
+        ).fetchone()["id"]
+    )
+    secondary_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (secondary_sheet_id, "Vendor Schedule", business_date, "2000-01-01 11:00", 1, 0, "Cross Site Schedule Work", "", 0, 0),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        '''
+        INSERT INTO formal_approvals (
+            entry_id, sheet_id, action, approval_status, approved_by, approved_at, created_at, updated_at
+        ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (ready_entry_id, sheet_id, "schedule_member"),
+    )
+    conn.commit()
+
+def fetch_schedule_count():
+    with module.db() as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM scheduling_entries").fetchone()[0])
+
+def fetch_schedule_row(entry_id):
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            '''
+            SELECT id, entry_id, sheet_id, action, schedule_status, scheduled_date, scheduled_time, scheduled_by, scheduled_at
+            FROM scheduling_entries
+            WHERE entry_id = ?
+            ''',
+            (entry_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+def fetch_db_snapshot():
+    with module.db() as conn:
+        return {
+            "scheduling_entries": int(conn.execute("SELECT COUNT(*) FROM scheduling_entries").fetchone()[0]),
+            "formal_approvals": int(conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0]),
+            "vendor_work_entries": int(conn.execute("SELECT COUNT(*) FROM vendor_work_entries").fetchone()[0]),
+        }
+
+client = module.app.test_client()
+
+def set_member_session(*, with_current_site=True):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = int(member_id)
+        session["username"] = "schedule_member"
+        session["display_name"] = "schedule_member"
+        session["role"] = "member"
+        if with_current_site:
+            session["current_site_id"] = int(default_site_id)
+            session["current_site_name"] = str(default_site_name)
+            session["site_selection_required"] = False
+
+with module.db() as conn:
+    ready_context = module.resolve_schedule_entry_context(conn, sheet_id=sheet_id, entry_id=ready_entry_id)
+    blocked_context = module.resolve_schedule_entry_context(conn, sheet_id=sheet_id, entry_id=blocked_entry_id)
+if ready_context["formal_approval_state"] != "approved" or ready_context["scheduling_gate_state"] != "allowed":
+    raise SystemExit("scheduler persistence ready entry should remain schedulable")
+if blocked_context["scheduling_gate_state"] != "warning":
+    raise SystemExit("scheduler persistence blocked entry should remain blocked by scheduling gate")
+
+success_before = fetch_db_snapshot()
+set_member_session()
+success_response = client.post(
+    "/api/schedule-entry",
+    json={
+        "entry_id": ready_entry_id,
+        "sheet_id": sheet_id,
+        "action": "schedule_entry",
+        "scheduled_date": "2026-07-08",
+        "scheduled_time": "09:30",
+    },
+)
+if success_response.status_code != 200 or not success_response.get_json().get("ok"):
+    raise SystemExit("schedulable entry should create schedule successfully")
+success_payload = success_response.get_json()
+if set(success_payload.keys()) != {"ok", "action", "schedule"}:
+    raise SystemExit("schedule entry success response should keep exact contract keys")
+if success_payload["action"] != "schedule_entry":
+    raise SystemExit("schedule entry success should preserve action=schedule_entry")
+if set(success_payload["schedule"].keys()) != {"id", "entry_id", "sheet_id", "scheduled_date", "scheduled_time"}:
+    raise SystemExit("schedule entry success should keep minimal schedule contract")
+if int(success_payload["schedule"]["entry_id"]) != int(ready_entry_id) or int(success_payload["schedule"]["sheet_id"]) != int(sheet_id):
+    raise SystemExit("schedule entry success should return acted-on schedule identity")
+if success_payload["schedule"]["scheduled_date"] != "2026-07-08" or success_payload["schedule"]["scheduled_time"] != "09:30":
+    raise SystemExit("schedule entry success should preserve scheduled date/time")
+if fetch_schedule_count() != success_before["scheduling_entries"] + 1:
+    raise SystemExit("schedule entry success should create exactly one scheduling_entries row")
+success_row = fetch_schedule_row(ready_entry_id)
+if success_row is None:
+    raise SystemExit("schedule entry success should persist scheduling row")
+if success_row["action"] != "schedule_entry" or success_row["schedule_status"] != "scheduled":
+    raise SystemExit("schedule entry row should persist action/status")
+if success_row["scheduled_by"] != "schedule_member":
+    raise SystemExit("schedule entry row should persist scheduling username")
+if not str(success_row["scheduled_at"] or "").strip():
+    raise SystemExit("schedule entry row should persist scheduled_at timestamp")
+
+duplicate_before = fetch_db_snapshot()
+set_member_session()
+duplicate_response = client.post(
+    "/api/schedule-entry",
+    json={
+        "entry_id": ready_entry_id,
+        "sheet_id": sheet_id,
+        "action": "schedule_entry",
+        "scheduled_date": "2026-07-08",
+        "scheduled_time": "10:00",
+    },
+)
+if duplicate_response.status_code != 409:
+    raise SystemExit("duplicate schedule should be rejected with 409")
+duplicate_payload = duplicate_response.get_json()
+if duplicate_payload.get("ok") is not False or duplicate_payload["error"]["code"] != "duplicate_schedule":
+    raise SystemExit("duplicate schedule should preserve duplicate_schedule error code")
+if fetch_db_snapshot() != duplicate_before:
+    raise SystemExit("duplicate schedule rejection must keep DB unchanged")
+
+blocked_before = fetch_db_snapshot()
+set_member_session()
+blocked_response = client.post(
+    "/api/schedule-entry",
+    json={
+        "entry_id": blocked_entry_id,
+        "sheet_id": sheet_id,
+        "action": "schedule_entry",
+        "scheduled_date": "2026-07-08",
+        "scheduled_time": "11:00",
+    },
+)
+if blocked_response.status_code != 409:
+    raise SystemExit("blocked schedule should be rejected with 409")
+blocked_payload = blocked_response.get_json()
+if blocked_payload.get("ok") is not False or blocked_payload["error"]["code"] != "entry_not_schedulable":
+    raise SystemExit("blocked schedule should preserve entry_not_schedulable")
+if fetch_db_snapshot() != blocked_before:
+    raise SystemExit("blocked schedule rejection must keep DB unchanged")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["identity_type"] = "vendor"
+    session["vendor_account_id"] = int(vendor_account_id)
+    session["vendor_username"] = "vendor_schedule_only"
+    session["vendor_name"] = "Vendor Schedule"
+vendor_before = fetch_db_snapshot()
+vendor_response = client.post(
+    "/api/schedule-entry",
+    json={
+        "entry_id": ready_entry_id,
+        "sheet_id": sheet_id,
+        "action": "schedule_entry",
+        "scheduled_date": "2026-07-08",
+        "scheduled_time": "12:00",
+    },
+)
+if vendor_response.status_code != 403:
+    raise SystemExit("vendor session should be forbidden from schedule entry API")
+vendor_payload = vendor_response.get_json()
+if vendor_payload.get("ok") is not False or vendor_payload["error"]["code"] != "vendor_auth_forbidden":
+    raise SystemExit("vendor schedule rejection should preserve vendor_auth_forbidden")
+if fetch_db_snapshot() != vendor_before:
+    raise SystemExit("vendor schedule rejection must keep DB unchanged")
+
+missing_site_before = fetch_db_snapshot()
+set_member_session(with_current_site=False)
+missing_site_response = client.post(
+    "/api/schedule-entry",
+    json={
+        "entry_id": ready_entry_id,
+        "sheet_id": sheet_id,
+        "action": "schedule_entry",
+        "scheduled_date": "2026-07-08",
+        "scheduled_time": "13:00",
+    },
+)
+if missing_site_response.status_code != 403:
+    raise SystemExit("missing current site should reject schedule entry API")
+missing_site_payload = missing_site_response.get_json()
+if missing_site_payload.get("ok") is not False or missing_site_payload["error"]["code"] != "site_context_invalid":
+    raise SystemExit("missing current site schedule rejection should preserve site_context_invalid")
+if fetch_db_snapshot() != missing_site_before:
+    raise SystemExit("missing current site schedule rejection must keep DB unchanged")
+
+cross_site_before = fetch_db_snapshot()
+set_member_session()
+cross_site_response = client.post(
+    "/api/schedule-entry",
+    json={
+        "entry_id": secondary_entry_id,
+        "sheet_id": secondary_sheet_id,
+        "action": "schedule_entry",
+        "scheduled_date": "2026-07-08",
+        "scheduled_time": "14:00",
+    },
+)
+if cross_site_response.status_code != 403:
+    raise SystemExit("cross-site schedule should be rejected with 403")
+cross_site_payload = cross_site_response.get_json()
+if cross_site_payload.get("ok") is not False or cross_site_payload["error"]["code"] != "write_target_not_in_current_site":
+    raise SystemExit("cross-site schedule rejection should preserve write_target_not_in_current_site")
+if fetch_db_snapshot() != cross_site_before:
+    raise SystemExit("cross-site schedule rejection must keep DB unchanged")
+
+sheet_mismatch_before = fetch_db_snapshot()
+set_member_session()
+sheet_mismatch_response = client.post(
+    "/api/schedule-entry",
+    json={
+        "entry_id": ready_entry_id,
+        "sheet_id": secondary_sheet_id,
+        "action": "schedule_entry",
+        "scheduled_date": "2026-07-08",
+        "scheduled_time": "15:00",
+    },
+)
+if sheet_mismatch_response.status_code != 409:
+    raise SystemExit("sheet mismatch schedule should be rejected with 409")
+sheet_mismatch_payload = sheet_mismatch_response.get_json()
+if sheet_mismatch_payload.get("ok") is not False or sheet_mismatch_payload["error"]["code"] != "sheet_mismatch":
+    raise SystemExit("sheet mismatch schedule rejection should preserve sheet_mismatch")
+if fetch_db_snapshot() != sheet_mismatch_before:
+    raise SystemExit("sheet mismatch schedule rejection must keep DB unchanged")
+
+missing_entry_before = fetch_db_snapshot()
+set_member_session()
+missing_entry_response = client.post(
+    "/api/schedule-entry",
+    json={
+        "entry_id": 999999,
+        "sheet_id": sheet_id,
+        "action": "schedule_entry",
+        "scheduled_date": "2026-07-08",
+        "scheduled_time": "16:00",
+    },
+)
+if missing_entry_response.status_code != 404:
+    raise SystemExit("missing entry schedule should be rejected with 404")
+missing_entry_payload = missing_entry_response.get_json()
+if missing_entry_payload.get("ok") is not False or missing_entry_payload["error"]["code"] != "entry_not_found":
+    raise SystemExit("missing entry schedule rejection should preserve entry_not_found")
+if fetch_db_snapshot() != missing_entry_before:
+    raise SystemExit("missing entry schedule rejection must keep DB unchanged")
+
+print("scheduler persistence smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "scheduler persistence smoke PASS" not in result.stdout:
+        raise AssertionError("scheduler persistence smoke subprocess did not report PASS.")
+
+
 def run_dashboard_api_smoke(db_path: Path) -> None:
     script = """
 import importlib.util
@@ -10098,6 +10457,7 @@ def main() -> int:
         run_crew_api_smoke(Path(tmpdir) / "crew-api-smoke.db")
         run_dashboard_api_smoke(Path(tmpdir) / "dashboard-api-smoke.db")
         run_scheduling_api_smoke(Path(tmpdir) / "scheduling-api-smoke.db")
+        run_scheduler_persistence_smoke(Path(tmpdir) / "scheduler-persistence-smoke.db")
         run_scheduling_guardrail_smoke(Path(tmpdir) / "scheduling-guardrail-smoke.db")
         run_crew_readonly_render_smoke(Path(tmpdir) / "crew-readonly-smoke.db")
         run_work_hub_scheduling_smoke(Path(tmpdir) / "work-hub-scheduling-smoke.db")

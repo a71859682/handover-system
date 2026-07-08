@@ -2077,6 +2077,55 @@ def apply_vendor_work_entry_formal_approval_state(entry: dict[str, object]) -> d
     return entry
 
 
+def resolve_schedule_entry_context(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    entry_id: int,
+) -> dict[str, object]:
+    sheet_row = conn.execute("SELECT id, site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+    if sheet_row is None:
+        raise LookupError("sheet_not_found")
+
+    existing_entry = conn.execute(
+        """
+        SELECT vwe.id,
+               vwe.sheet_id,
+               vwe.vendor_name,
+               vwe.pre_entry_requirement,
+               vwe.requirement_status,
+               fa.approval_status AS formal_approval_status,
+               fa.approved_by AS formal_approved_by,
+               fa.approved_at AS formal_approved_at
+        FROM vendor_work_entries vwe
+        LEFT JOIN formal_approvals fa
+               ON fa.entry_id = vwe.id
+              AND fa.action = 'crew_formal_approve_entry'
+        WHERE vwe.id = ?
+        """,
+        (entry_id,),
+    ).fetchone()
+    if existing_entry is None:
+        raise LookupError("entry_not_found")
+    if int(existing_entry["sheet_id"] or 0) != int(sheet_id):
+        raise LookupError("sheet_mismatch")
+
+    context = apply_vendor_work_entry_gate_state(
+        {
+            "sheet_id": int(sheet_row["id"]),
+            "site_id": int(sheet_row["site_id"]),
+            "entry_id": int(existing_entry["id"]),
+            "vendor_name": str(existing_entry["vendor_name"] or ""),
+            "pre_entry_requirement": str(existing_entry["pre_entry_requirement"] or ""),
+            "requirement_status": str(existing_entry["requirement_status"] or "pending"),
+            "formal_approval_status": str(existing_entry["formal_approval_status"] or ""),
+            "formal_approved_by": str(existing_entry["formal_approved_by"] or ""),
+            "formal_approved_at": str(existing_entry["formal_approved_at"] or ""),
+        }
+    )
+    return apply_vendor_work_entry_formal_approval_state(context)
+
+
 def resolve_vendor_work_entry_formal_approve_context(
     conn: sqlite3.Connection,
     *,
@@ -2141,6 +2190,34 @@ def authorize_vendor_work_entry_formal_approve(
     return context
 
 
+def authorize_schedule_entry_write(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    entry_id: int,
+) -> dict[str, object]:
+    context = resolve_schedule_entry_context(
+        conn,
+        sheet_id=sheet_id,
+        entry_id=entry_id,
+    )
+    user = _current_internal_user()
+    if user is None:
+        if current_vendor_account() is not None:
+            raise LookupError("vendor_auth_forbidden")
+        raise LookupError("auth_required")
+    if is_global_admin(user):
+        current_site_context = authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+        context["current_site_id"] = int(current_site_context["current_site_id"])
+        return context
+
+    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    if int(context["site_id"]) != int(current_site_id):
+        raise LookupError("write_target_not_in_current_site")
+    context["current_site_id"] = int(current_site_id)
+    return context
+
+
 def _handle_vendor_work_entry_formal_approve_lookup_error(exc: LookupError):
     code = str(exc)
     if code == "sheet_not_found":
@@ -2157,6 +2234,27 @@ def _handle_vendor_work_entry_formal_approve_lookup_error(exc: LookupError):
         return crew_api_error("write_target_not_in_current_site", "write target does not belong to the current site.", status=403)
     if code == "vendor_auth_forbidden":
         return crew_api_error("vendor_auth_forbidden", "vendor authentication cannot approve entries.", status=403)
+    if code == "auth_required":
+        return crew_api_error("auth_required", "authentication is required.", status=403)
+    raise exc
+
+
+def _handle_schedule_entry_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "sheet_not_found":
+        return crew_api_error("sheet_not_found", "sheet_id was not found.", status=404)
+    if code == "entry_not_found":
+        return crew_api_error("entry_not_found", "vendor work entry id was not found.", status=404)
+    if code == "sheet_mismatch":
+        return crew_api_error("sheet_mismatch", "vendor work entry belongs to a different sheet_id.", status=409)
+    if code == "site_context_invalid":
+        return crew_api_error("site_context_invalid", "current_site_id is missing or invalid.", status=403)
+    if code == "site_permission_missing":
+        return crew_api_error("site_permission_missing", "current user no longer has permission for the current site.", status=403)
+    if code == "write_target_not_in_current_site":
+        return crew_api_error("write_target_not_in_current_site", "write target does not belong to the current site.", status=403)
+    if code == "vendor_auth_forbidden":
+        return crew_api_error("vendor_auth_forbidden", "vendor authentication cannot create schedules.", status=403)
     if code == "auth_required":
         return crew_api_error("auth_required", "authentication is required.", status=403)
     raise exc
@@ -2515,6 +2613,28 @@ def parse_planned_at_datetime(value: str) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+def parse_schedule_date(value: object) -> str:
+    scheduled_date = str(value or "").strip()
+    if not scheduled_date:
+        raise ValueError("scheduled_date is required.")
+    try:
+        datetime.strptime(scheduled_date, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("scheduled_date must be in YYYY-MM-DD format.") from exc
+    return scheduled_date
+
+
+def parse_schedule_time(value: object) -> str:
+    scheduled_time = str(value or "").strip()
+    if not scheduled_time:
+        raise ValueError("scheduled_time is required.")
+    try:
+        datetime.strptime(scheduled_time, "%H:%M")
+    except ValueError as exc:
+        raise ValueError("scheduled_time must be in HH:MM format.") from exc
+    return scheduled_time
 
 
 def login_required(fn):
@@ -4262,6 +4382,22 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (sheet_id) REFERENCES sheets(id)
         );
 
+        CREATE TABLE IF NOT EXISTS scheduling_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL,
+            sheet_id INTEGER NOT NULL,
+            action TEXT NOT NULL DEFAULT 'schedule_entry',
+            schedule_status TEXT NOT NULL DEFAULT 'scheduled',
+            scheduled_date TEXT NOT NULL DEFAULT '',
+            scheduled_time TEXT NOT NULL DEFAULT '',
+            scheduled_by TEXT,
+            scheduled_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (entry_id) REFERENCES vendor_work_entries(id),
+            FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_vendor_work_entries_sheet_business_date
         ON vendor_work_entries (sheet_id, business_date);
 
@@ -5403,6 +5539,104 @@ def api_crew_work_entry_formal_approve():
             "entry": {
                 "id": int(approval_context["entry_id"]),
                 "sheet_id": int(approval_context["sheet_id"]),
+            },
+        }
+    )
+
+
+@app.route("/api/schedule-entry", methods=["POST"])
+def api_schedule_entry():
+    data = request.get_json(silent=True) or {}
+    try:
+        entry_id = parse_non_negative_int(data.get("entry_id"), field_name="entry_id")
+        sheet_id = parse_non_negative_int(data.get("sheet_id"), field_name="sheet_id")
+        action = str(data.get("action") or "").strip()
+        scheduled_date = parse_schedule_date(data.get("scheduled_date"))
+        scheduled_time = parse_schedule_time(data.get("scheduled_time"))
+        if entry_id <= 0:
+            raise ValueError("entry_id must be a positive integer.")
+        if sheet_id <= 0:
+            raise ValueError("sheet_id must be a positive integer.")
+        if action != "schedule_entry":
+            raise ValueError("action must be schedule_entry.")
+    except ValueError as exc:
+        return crew_api_error("invalid_request", str(exc))
+
+    with db() as conn:
+        try:
+            schedule_context = authorize_schedule_entry_write(
+                conn,
+                sheet_id=sheet_id,
+                entry_id=entry_id,
+            )
+        except LookupError as exc:
+            return _handle_schedule_entry_lookup_error(exc)
+
+        if not (
+            str(schedule_context.get("formal_approval_state")) == "approved"
+            and str(schedule_context.get("scheduling_gate_state")) == "allowed"
+        ):
+            return crew_api_error("entry_not_schedulable", "Entry is not schedulable for this action.", status=409)
+
+        existing_schedule = conn.execute(
+            """
+            SELECT id
+            FROM scheduling_entries
+            WHERE entry_id = ? AND action = ?
+            """,
+            (int(schedule_context["entry_id"]), action),
+        ).fetchone()
+        if existing_schedule is not None:
+            return crew_api_error(
+                "duplicate_schedule",
+                "Schedule already exists for this entry.",
+                status=409,
+            )
+
+        user = _current_internal_user()
+        scheduled_by = str(user["username"] if user is not None else "")
+        try:
+            row = conn.execute(
+                """
+                INSERT INTO scheduling_entries (
+                    entry_id,
+                    sheet_id,
+                    action,
+                    schedule_status,
+                    scheduled_date,
+                    scheduled_time,
+                    scheduled_by,
+                    scheduled_at,
+                    updated_at
+                ) VALUES (?, ?, ?, 'scheduled', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id, entry_id, sheet_id, scheduled_date, scheduled_time
+                """,
+                (
+                    int(schedule_context["entry_id"]),
+                    int(schedule_context["sheet_id"]),
+                    action,
+                    scheduled_date,
+                    scheduled_time,
+                    scheduled_by,
+                ),
+            ).fetchone()
+        except sqlite3.IntegrityError:
+            return crew_api_error(
+                "duplicate_schedule",
+                "Schedule already exists for this entry.",
+                status=409,
+            )
+
+    return jsonify(
+        {
+            "ok": True,
+            "action": "schedule_entry",
+            "schedule": {
+                "id": int(row["id"]),
+                "entry_id": int(row["entry_id"]),
+                "sheet_id": int(row["sheet_id"]),
+                "scheduled_date": str(row["scheduled_date"]),
+                "scheduled_time": str(row["scheduled_time"]),
             },
         }
     )
