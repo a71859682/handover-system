@@ -3285,9 +3285,6 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 business_date = module.resolve_crew_business_date()
-app_source = Path(root_dir, "app.py").read_text(encoding="utf-8")
-if "/api/management-read-model" in app_source or "/api/management-read-models" in app_source:
-    raise SystemExit("management read model helper prototype should not add a dedicated API route")
 
 with module.db() as conn:
     conn.row_factory = sqlite3.Row
@@ -3463,6 +3460,249 @@ print("management read model helper smoke PASS")
     )
     if "management read model helper smoke PASS" not in result.stdout:
         raise AssertionError("management read model helper smoke subprocess did not report PASS.")
+
+
+def run_management_read_model_api_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+business_date = module.resolve_crew_business_date()
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site = conn.execute("SELECT id, site_name FROM sites ORDER BY id LIMIT 1").fetchone()
+    if default_site is None:
+        raise SystemExit("expected a default site for management read model api smoke")
+    default_site_id = int(default_site["id"])
+    default_site_name = str(default_site["site_name"])
+    sheet_row = conn.execute("SELECT id FROM sheets WHERE site_id = ? ORDER BY id LIMIT 1", (default_site_id,)).fetchone()
+    if sheet_row is None:
+        raise SystemExit("expected a default sheet for management read model api smoke")
+    sheet_id = int(sheet_row["id"])
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+            ("__management_read_model_site_b__", "management-read-model-site-b"),
+        ).fetchone()["id"]
+    )
+    secondary_sheet_id = int(
+        conn.execute(
+            '''
+            INSERT INTO sheets (name, sort_order, created_at, site_id)
+            VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+            RETURNING id
+            ''',
+            ("Management Read Model Sheet B", 2, secondary_site_id),
+        ).fetchone()["id"]
+    )
+    member_password_hash = module.generate_password_hash("member-pass")
+    conn.execute(
+        '''
+        INSERT INTO users (username, display_name, password_hash, role)
+        VALUES (?, ?, ?, ?)
+        ''',
+        ("management_read_model_member", "management_read_model_member", member_password_hash, "member"),
+    )
+    member_id = int(
+        conn.execute("SELECT id FROM users WHERE username = ?", ("management_read_model_member",)).fetchone()["id"]
+    )
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, default_site_id, "member"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
+        VALUES (?, ?, ?, ?)
+        ''',
+        ("management_read_model_vendor", module.generate_password_hash("vendor-pass"), "Vendor Management Read Model", 1),
+    )
+    vendor_account_id = int(
+        conn.execute(
+            "SELECT id FROM vendor_accounts WHERE username = ?",
+            ("management_read_model_vendor",),
+        ).fetchone()["id"]
+    )
+    blocked_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Management Read Model", business_date, "2000-01-01 09:00", 2, 0, "Blocked Work", "Need permit", 0, 0),
+        ).fetchone()["id"]
+    )
+    approved_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Management Read Model", business_date, "2000-01-01 10:00", 1, 0, "Approved Work", "", 0, 1),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        '''
+        INSERT INTO formal_approvals (
+            entry_id, sheet_id, action, approval_status, approved_by, approved_at, created_at, updated_at
+        ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (approved_entry_id, sheet_id, "management_read_model_member"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO scheduling_entries (
+            entry_id, sheet_id, action, schedule_status, scheduled_date, scheduled_time,
+            scheduled_by, scheduled_at, created_at, updated_at
+        ) VALUES (?, ?, 'schedule_entry', 'scheduled', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (approved_entry_id, sheet_id, business_date, "09:45", "management_read_model_member"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO vendor_work_entries (
+            sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+            actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (secondary_sheet_id, "Vendor Management Read Model", business_date, "2000-01-01 11:00", 1, 0, "Cross Site Work", "", 0, 0),
+    )
+    conn.commit()
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    expected_payload = module.build_management_read_model_payload(conn, sheet_id=sheet_id, business_date=business_date)
+
+def fetch_db_snapshot():
+    with module.db() as conn:
+        return {
+            "vendor_work_entries": int(conn.execute("SELECT COUNT(*) FROM vendor_work_entries").fetchone()[0]),
+            "formal_approvals": int(conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0]),
+            "scheduling_entries": int(conn.execute("SELECT COUNT(*) FROM scheduling_entries").fetchone()[0]),
+        }
+
+client = module.app.test_client()
+
+def set_member_session(*, with_current_site=True):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = int(member_id)
+        session["username"] = "management_read_model_member"
+        session["display_name"] = "management_read_model_member"
+        session["role"] = "member"
+        if with_current_site:
+            session["current_site_id"] = int(default_site_id)
+            session["current_site_name"] = str(default_site_name)
+            session["site_selection_required"] = False
+
+success_before = fetch_db_snapshot()
+set_member_session()
+success = client.get(f"/api/management-read-model?sheet_id={sheet_id}")
+if success.status_code != 200:
+    raise SystemExit("management read model success path should return 200")
+payload = success.get_json()
+if set(payload.keys()) != {
+    "management_summary",
+    "scheduling_overview",
+    "approval_overview",
+    "requirement_overview",
+    "operational_risk_overview",
+    "drilldown_refs",
+}:
+    raise SystemExit("management read model API should keep the exact top-level response contract")
+if payload != expected_payload:
+    raise SystemExit("management read model API should match build_management_read_model_payload output without contract drift")
+if payload["management_summary"] != expected_payload["management_summary"]:
+    raise SystemExit("management read model API should preserve management_summary without recomposition drift")
+if payload["scheduling_overview"] != expected_payload["scheduling_overview"]:
+    raise SystemExit("management read model API should preserve scheduling_overview without recomposition drift")
+if blocked_entry_id not in payload["operational_risk_overview"]["blocked_entry_ids"]:
+    raise SystemExit("management read model API should include blocked entry risk refs")
+if approved_entry_id not in payload["scheduling_overview"]["scheduled_entry_ids"]:
+    raise SystemExit("management read model API should include scheduled entry refs")
+if fetch_db_snapshot() != success_before:
+    raise SystemExit("management read model API must not modify DB state")
+
+unauthenticated = module.app.test_client().get(f"/api/management-read-model?sheet_id={sheet_id}")
+if unauthenticated.status_code != 403:
+    raise SystemExit("unauthenticated protected management read model API should reject with 403")
+unauthenticated_payload = unauthenticated.get_json()
+if unauthenticated_payload.get("ok") is not False or unauthenticated_payload["error"]["code"] != "auth_required":
+    raise SystemExit("unauthenticated management read model rejection should preserve auth_required")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["identity_type"] = "vendor"
+    session["vendor_account_id"] = int(vendor_account_id)
+    session["vendor_username"] = "management_read_model_vendor"
+    session["vendor_name"] = "Vendor Management Read Model"
+vendor_response = client.get(f"/api/management-read-model?sheet_id={sheet_id}")
+if vendor_response.status_code != 403:
+    raise SystemExit("vendor session should be forbidden from management read model API")
+vendor_payload = vendor_response.get_json()
+if vendor_payload.get("ok") is not False or vendor_payload["error"]["code"] != "vendor_auth_forbidden":
+    raise SystemExit("vendor management read model rejection should preserve vendor_auth_forbidden")
+
+set_member_session(with_current_site=False)
+missing_site_before = fetch_db_snapshot()
+missing_site = client.get(f"/api/management-read-model?sheet_id={sheet_id}")
+if missing_site.status_code != 403:
+    raise SystemExit("missing current site should reject management read model API with 403")
+missing_site_payload = missing_site.get_json()
+if missing_site_payload.get("ok") is not False or missing_site_payload["error"]["code"] != "site_context_invalid":
+    raise SystemExit("missing current site management read model rejection should preserve site_context_invalid")
+if fetch_db_snapshot() != missing_site_before:
+    raise SystemExit("missing current site management read model rejection must not modify DB state")
+
+set_member_session()
+cross_site_before = fetch_db_snapshot()
+cross_site = client.get(f"/api/management-read-model?sheet_id={secondary_sheet_id}")
+if cross_site.status_code != 403:
+    raise SystemExit("cross-site management read model read should be rejected with 403")
+cross_site_payload = cross_site.get_json()
+if cross_site_payload.get("ok") is not False or cross_site_payload["error"]["code"] != "sheet_not_in_current_site":
+    raise SystemExit("cross-site management read model rejection should preserve sheet_not_in_current_site")
+if fetch_db_snapshot() != cross_site_before:
+    raise SystemExit("cross-site management read model rejection must not modify DB state")
+
+print("management read model api smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "management read model api smoke PASS" not in result.stdout:
+        raise AssertionError("management read model api smoke subprocess did not report PASS.")
 
 
 def run_work_hub_runtime_api_smoke(db_path: Path) -> None:
@@ -11998,6 +12238,7 @@ def main() -> int:
         run_work_hub_scheduled_guardrail_smoke(Path(tmpdir) / "work-hub-scheduled-guardrail-smoke.db")
         run_work_hub_runtime_helper_smoke(Path(tmpdir) / "work-hub-runtime-helper-smoke.db")
         run_management_read_model_helper_smoke(Path(tmpdir) / "management-read-model-helper-smoke.db")
+        run_management_read_model_api_smoke(Path(tmpdir) / "management-read-model-api-smoke.db")
         run_work_hub_runtime_api_smoke(Path(tmpdir) / "work-hub-runtime-api-smoke.db")
         run_work_hub_runtime_consumption_smoke(Path(tmpdir) / "work-hub-runtime-consumption-smoke.db")
         run_work_hub_quick_action_smoke(Path(tmpdir) / "work-hub-quick-action-smoke.db")
