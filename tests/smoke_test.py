@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import inspect
 import shutil
 import sqlite3
 import subprocess
@@ -3268,6 +3269,7 @@ print("work hub runtime helper smoke PASS")
 
 def run_management_read_model_helper_smoke(db_path: Path) -> None:
     script = """
+import inspect
 import importlib.util
 import os
 import sqlite3
@@ -3348,6 +3350,7 @@ with module.db() as conn:
     dashboard_payload = module.build_dashboard_payload(conn, sheet_id=sheet_id, business_date=business_date)
     scheduling_payload = module.build_scheduling_payload(conn, sheet_id=sheet_id, business_date=business_date)
     helper_payload = module.build_management_read_model_payload(conn, sheet_id=sheet_id, business_date=business_date)
+    helper_source = inspect.getsource(module.build_management_read_model_payload)
     after_counts = {
         "vendor_work_entries": conn.execute("SELECT COUNT(*) FROM vendor_work_entries").fetchone()[0],
         "formal_approvals": conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0],
@@ -3356,6 +3359,12 @@ with module.db() as conn:
 
 if before_counts != after_counts:
     raise SystemExit("management read model helper prototype should stay read-only and preserve DB counts")
+if "build_dashboard_payload(" not in helper_source or "build_scheduling_payload(" not in helper_source:
+    raise SystemExit("management read model helper should depend on dashboard and scheduling payload helpers")
+if "build_work_hub_runtime_payload(" in helper_source:
+    raise SystemExit("management read model helper should not depend on work hub runtime payload")
+if any(term in helper_source for term in ('label', 'title', 'priority', 'ranking', 'prediction', 'format', 'html', 'aria')):
+    raise SystemExit("management read model helper should stay free of presentation, ranking, and prediction semantics")
 if set(helper_payload.keys()) != {
     "management_summary",
     "scheduling_overview",
