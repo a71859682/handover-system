@@ -3266,6 +3266,196 @@ print("work hub runtime helper smoke PASS")
         raise AssertionError("work hub runtime helper smoke subprocess did not report PASS.")
 
 
+def run_management_read_model_helper_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+business_date = module.resolve_crew_business_date()
+app_source = Path(root_dir, "app.py").read_text(encoding="utf-8")
+if "/api/management-read-model" in app_source or "/api/management-read-models" in app_source:
+    raise SystemExit("management read model helper prototype should not add a dedicated API route")
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    sheet_row = conn.execute("SELECT id FROM sheets ORDER BY id LIMIT 1").fetchone()
+    if sheet_row is None:
+        raise SystemExit("expected a default sheet for management read model helper smoke")
+    sheet_id = int(sheet_row["id"])
+    blocked_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Management Helper", business_date, "2000-01-01 09:00", 2, 0, "Blocked Work", "Need permit", 0, 0),
+        ).fetchone()["id"]
+    )
+    approved_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Management Helper", business_date, "2000-01-01 10:00", 1, 0, "Approved Work", "", 0, 1),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        '''
+        INSERT INTO formal_approvals (
+            entry_id, sheet_id, action, approval_status, approved_by, approved_at, created_at, updated_at
+        ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (approved_entry_id, sheet_id, "management_helper_member"),
+    )
+    conn.execute(
+        '''
+        INSERT INTO scheduling_entries (
+            entry_id, sheet_id, action, schedule_status, scheduled_date, scheduled_time,
+            scheduled_by, scheduled_at, created_at, updated_at
+        ) VALUES (?, ?, 'schedule_entry', 'scheduled', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (approved_entry_id, sheet_id, business_date, "09:45", "management_helper_member"),
+    )
+    conn.commit()
+    before_counts = {
+        "vendor_work_entries": conn.execute("SELECT COUNT(*) FROM vendor_work_entries").fetchone()[0],
+        "formal_approvals": conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0],
+        "scheduling_entries": conn.execute("SELECT COUNT(*) FROM scheduling_entries").fetchone()[0],
+    }
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    dashboard_payload = module.build_dashboard_payload(conn, sheet_id=sheet_id, business_date=business_date)
+    scheduling_payload = module.build_scheduling_payload(conn, sheet_id=sheet_id, business_date=business_date)
+    helper_payload = module.build_management_read_model_payload(conn, sheet_id=sheet_id, business_date=business_date)
+    after_counts = {
+        "vendor_work_entries": conn.execute("SELECT COUNT(*) FROM vendor_work_entries").fetchone()[0],
+        "formal_approvals": conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0],
+        "scheduling_entries": conn.execute("SELECT COUNT(*) FROM scheduling_entries").fetchone()[0],
+    }
+
+if before_counts != after_counts:
+    raise SystemExit("management read model helper prototype should stay read-only and preserve DB counts")
+if set(helper_payload.keys()) != {
+    "management_summary",
+    "scheduling_overview",
+    "approval_overview",
+    "requirement_overview",
+    "operational_risk_overview",
+    "drilldown_refs",
+}:
+    raise SystemExit("management read model helper should expose the expected prototype top-level shape")
+if helper_payload["management_summary"] != {
+    "today_entry_count": dashboard_payload["summary"]["today_entry_count"],
+    "scheduled_count": dashboard_payload["summary"]["scheduled_count"],
+    "today_schedule_count": dashboard_payload["summary"]["today_schedule_count"],
+    "schedulable_count": scheduling_payload["summary"]["schedulable_count"],
+    "blocked_count": scheduling_payload["summary"]["blocked_count"],
+    "pending_approval_count": dashboard_payload["summary"]["pending_approval_count"],
+    "pending_requirement_count": dashboard_payload["summary"]["pending_requirement_count"],
+}:
+    raise SystemExit("management_summary should only project existing dashboard and scheduling summary counts")
+
+scheduling_overview = helper_payload["scheduling_overview"]
+if scheduling_overview["schedulable_count"] != scheduling_payload["summary"]["schedulable_count"]:
+    raise SystemExit("scheduling_overview should source schedulable_count from scheduling summary")
+if scheduling_overview["blocked_count"] != scheduling_payload["summary"]["blocked_count"]:
+    raise SystemExit("scheduling_overview should source blocked_count from scheduling summary")
+if scheduling_overview["scheduled_count"] != dashboard_payload["summary"]["scheduled_count"]:
+    raise SystemExit("scheduling_overview should source scheduled_count from dashboard summary")
+if scheduling_overview["today_schedule_count"] != dashboard_payload["summary"]["today_schedule_count"]:
+    raise SystemExit("scheduling_overview should source today_schedule_count from dashboard summary")
+if set(scheduling_overview["schedulable_entry_ids"]) != {int(entry["id"]) for entry in scheduling_payload["schedulable_entries"]}:
+    raise SystemExit("scheduling_overview should reuse scheduling schedulable entry membership")
+if set(scheduling_overview["scheduled_entry_ids"]) != {int(entry["id"]) for entry in dashboard_payload["scheduled_entries"]}:
+    raise SystemExit("scheduling_overview should reuse dashboard scheduled entry membership")
+
+approval_overview = helper_payload["approval_overview"]
+if approval_overview["pending_approval_count"] != dashboard_payload["summary"]["pending_approval_count"]:
+    raise SystemExit("approval_overview should source pending_approval_count from dashboard summary")
+if approval_overview["approved_today_count"] != dashboard_payload["summary"]["approved_today_count"]:
+    raise SystemExit("approval_overview should source approved_today_count from dashboard summary")
+if set(approval_overview["pending_approval_entry_ids"]) != {int(entry["id"]) for entry in dashboard_payload["pending_approvals"]}:
+    raise SystemExit("approval_overview should reuse dashboard pending_approvals membership")
+
+requirement_overview = helper_payload["requirement_overview"]
+if requirement_overview["pending_requirement_count"] != dashboard_payload["summary"]["pending_requirement_count"]:
+    raise SystemExit("requirement_overview should source pending_requirement_count from dashboard summary")
+if set(requirement_overview["pending_requirement_entry_ids"]) != {int(entry["id"]) for entry in dashboard_payload["pending_requirements"]}:
+    raise SystemExit("requirement_overview should reuse dashboard pending_requirements membership")
+
+operational_risk_overview = helper_payload["operational_risk_overview"]
+if operational_risk_overview["blocked_count"] != scheduling_payload["summary"]["blocked_count"]:
+    raise SystemExit("operational_risk_overview should source blocked_count from scheduling summary")
+if operational_risk_overview["pending_approval_count"] != dashboard_payload["summary"]["pending_approval_count"]:
+    raise SystemExit("operational_risk_overview should source pending_approval_count from dashboard summary")
+if operational_risk_overview["pending_requirement_count"] != dashboard_payload["summary"]["pending_requirement_count"]:
+    raise SystemExit("operational_risk_overview should source pending_requirement_count from dashboard summary")
+if any(key in operational_risk_overview for key in ("priority", "rank", "ranking", "top_risk", "primary_risk")):
+    raise SystemExit("operational_risk_overview should not introduce priority or ranking semantics")
+
+drilldown_refs = helper_payload["drilldown_refs"]
+expected_targets = {
+    "blocked": "blocked",
+    "schedulable": "schedulable",
+    "scheduled": "scheduled",
+    "pending_approval": "pending-approval",
+    "pending_requirement": "pending-requirement",
+    "today_entries": "today-entries",
+    "today_schedule": "today-schedule",
+}
+if set(drilldown_refs.keys()) != set(expected_targets.keys()):
+    raise SystemExit("drilldown_refs should expose only the expected read-side references")
+for key, target in expected_targets.items():
+    if set(drilldown_refs[key].keys()) != {"target", "count"}:
+        raise SystemExit("drilldown_refs should stay as read-side target/count references only")
+    if drilldown_refs[key]["target"] != target:
+        raise SystemExit("drilldown_refs should keep the expected static drilldown target mapping")
+
+if blocked_entry_id not in operational_risk_overview["blocked_entry_ids"]:
+    raise SystemExit("operational_risk_overview should include the blocked entry as a read-side risk reference")
+if approved_entry_id not in scheduling_overview["scheduled_entry_ids"]:
+    raise SystemExit("scheduling_overview should include the scheduled entry as a read-side reference")
+
+print("management read model helper smoke PASS")
+"""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "management read model helper smoke PASS" not in result.stdout:
+        raise AssertionError("management read model helper smoke subprocess did not report PASS.")
+
+
 def run_work_hub_runtime_api_smoke(db_path: Path) -> None:
     script = """
 import importlib.util
@@ -11798,6 +11988,7 @@ def main() -> int:
         run_work_hub_scheduled_smoke(Path(tmpdir) / "work-hub-scheduled-smoke.db")
         run_work_hub_scheduled_guardrail_smoke(Path(tmpdir) / "work-hub-scheduled-guardrail-smoke.db")
         run_work_hub_runtime_helper_smoke(Path(tmpdir) / "work-hub-runtime-helper-smoke.db")
+        run_management_read_model_helper_smoke(Path(tmpdir) / "management-read-model-helper-smoke.db")
         run_work_hub_runtime_api_smoke(Path(tmpdir) / "work-hub-runtime-api-smoke.db")
         run_work_hub_runtime_consumption_smoke(Path(tmpdir) / "work-hub-runtime-consumption-smoke.db")
         run_work_hub_quick_action_smoke(Path(tmpdir) / "work-hub-quick-action-smoke.db")

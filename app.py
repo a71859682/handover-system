@@ -2745,6 +2745,95 @@ def build_work_hub_runtime_payload(
     }
 
 
+def build_management_read_model_payload(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    business_date: str,
+) -> dict[str, object]:
+    dashboard_payload = build_dashboard_payload(
+        conn,
+        sheet_id=sheet_id,
+        business_date=business_date,
+    )
+    scheduling_payload = build_scheduling_payload(
+        conn,
+        sheet_id=sheet_id,
+        business_date=business_date,
+    )
+    dashboard_summary = dict(dashboard_payload.get("summary") or {})
+    scheduling_summary = dict(scheduling_payload.get("summary") or {})
+
+    blocked_entries = [entry.copy() for entry in scheduling_payload.get("blocked_entries", [])]
+    schedulable_entries = [entry.copy() for entry in scheduling_payload.get("schedulable_entries", [])]
+    scheduled_entries = [entry.copy() for entry in dashboard_payload.get("scheduled_entries", [])]
+    today_schedule = [entry.copy() for entry in dashboard_payload.get("today_schedule", [])]
+    pending_approvals = [entry.copy() for entry in dashboard_payload.get("pending_approvals", [])]
+    pending_requirements = [entry.copy() for entry in dashboard_payload.get("pending_requirements", [])]
+
+    return {
+        "management_summary": {
+            "today_entry_count": int(dashboard_summary.get("today_entry_count") or 0),
+            "scheduled_count": int(dashboard_summary.get("scheduled_count") or 0),
+            "today_schedule_count": int(dashboard_summary.get("today_schedule_count") or 0),
+            "schedulable_count": int(scheduling_summary.get("schedulable_count") or 0),
+            "blocked_count": int(scheduling_summary.get("blocked_count") or 0),
+            "pending_approval_count": int(dashboard_summary.get("pending_approval_count") or 0),
+            "pending_requirement_count": int(dashboard_summary.get("pending_requirement_count") or 0),
+        },
+        "scheduling_overview": {
+            "scheduled_count": int(dashboard_summary.get("scheduled_count") or 0),
+            "today_schedule_count": int(dashboard_summary.get("today_schedule_count") or 0),
+            "schedulable_count": int(scheduling_summary.get("schedulable_count") or 0),
+            "blocked_count": int(scheduling_summary.get("blocked_count") or 0),
+            "scheduled_entry_ids": [int(entry.get("id") or 0) for entry in scheduled_entries if entry.get("id") is not None],
+            "today_schedule_entry_ids": [int(entry.get("id") or 0) for entry in today_schedule if entry.get("id") is not None],
+            "schedulable_entry_ids": [int(entry.get("id") or 0) for entry in schedulable_entries if entry.get("id") is not None],
+            "blocked_entry_ids": [int(entry.get("id") or 0) for entry in blocked_entries if entry.get("id") is not None],
+        },
+        "approval_overview": {
+            "pending_approval_count": int(dashboard_summary.get("pending_approval_count") or 0),
+            "approved_today_count": int(dashboard_summary.get("approved_today_count") or 0),
+            "pending_approval_entry_ids": [int(entry.get("id") or 0) for entry in pending_approvals if entry.get("id") is not None],
+        },
+        "requirement_overview": {
+            "pending_requirement_count": int(dashboard_summary.get("pending_requirement_count") or 0),
+            "pending_requirement_entry_ids": [
+                int(entry.get("id") or 0)
+                for entry in pending_requirements
+                if entry.get("id") is not None
+            ],
+        },
+        "operational_risk_overview": {
+            "blocked_count": int(scheduling_summary.get("blocked_count") or 0),
+            "pending_approval_count": int(dashboard_summary.get("pending_approval_count") or 0),
+            "pending_requirement_count": int(dashboard_summary.get("pending_requirement_count") or 0),
+            "blocked_entry_ids": [int(entry.get("id") or 0) for entry in blocked_entries if entry.get("id") is not None],
+            "pending_approval_entry_ids": [int(entry.get("id") or 0) for entry in pending_approvals if entry.get("id") is not None],
+            "pending_requirement_entry_ids": [
+                int(entry.get("id") or 0)
+                for entry in pending_requirements
+                if entry.get("id") is not None
+            ],
+        },
+        "drilldown_refs": {
+            "blocked": {"target": "blocked", "count": int(scheduling_summary.get("blocked_count") or 0)},
+            "schedulable": {"target": "schedulable", "count": int(scheduling_summary.get("schedulable_count") or 0)},
+            "scheduled": {"target": "scheduled", "count": int(dashboard_summary.get("scheduled_count") or 0)},
+            "pending_approval": {
+                "target": "pending-approval",
+                "count": int(dashboard_summary.get("pending_approval_count") or 0),
+            },
+            "pending_requirement": {
+                "target": "pending-requirement",
+                "count": int(dashboard_summary.get("pending_requirement_count") or 0),
+            },
+            "today_entries": {"target": "today-entries", "count": int(dashboard_summary.get("today_entry_count") or 0)},
+            "today_schedule": {"target": "today-schedule", "count": int(dashboard_summary.get("today_schedule_count") or 0)},
+        },
+    }
+
+
 def parse_planned_at_datetime(value: str) -> datetime | None:
     raw = value.strip()
     if not raw:
