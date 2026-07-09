@@ -117,49 +117,53 @@ function buildCrewWorkHubCardMeta(summary = {}) {
   ];
 }
 
-function buildCrewManagementInsightMetricMeta(summary = {}) {
+function buildCrewManagementInsightMetricMeta(summary = {}, drilldownRefs = {}) {
+  const resolveTargetAction = (key, fallbackAction) => {
+    const target = String(drilldownRefs?.[key]?.target || "").trim();
+    return target || fallbackAction;
+  };
   return [
     {
       label: "今日進場總數",
       value: summary.today_entry_count ?? 0,
       summaryKey: "today_entry_count",
-      targetAction: "today-entries",
+      targetAction: resolveTargetAction("today_entries", "today-entries"),
     },
     {
       label: "已正式排程數",
       value: summary.scheduled_count ?? 0,
       summaryKey: "scheduled_count",
-      targetAction: "scheduled",
+      targetAction: resolveTargetAction("scheduled", "scheduled"),
     },
     {
       label: "今日排程數",
       value: summary.today_schedule_count ?? 0,
       summaryKey: "today_schedule_count",
-      targetAction: "today-schedule",
+      targetAction: resolveTargetAction("today_schedule", "today-schedule"),
     },
     {
       label: "可排程數",
       value: summary.schedulable_count ?? 0,
       summaryKey: "schedulable_count",
-      targetAction: "schedulable",
+      targetAction: resolveTargetAction("schedulable", "schedulable"),
     },
     {
       label: "Blocked 數",
       value: summary.blocked_count ?? 0,
       summaryKey: "blocked_count",
-      targetAction: "blocked",
+      targetAction: resolveTargetAction("blocked", "blocked"),
     },
     {
       label: "待正式核准數",
       value: summary.pending_approval_count ?? 0,
       summaryKey: "pending_approval_count",
-      targetAction: "pending-approval",
+      targetAction: resolveTargetAction("pending_approval", "pending-approval"),
     },
     {
       label: "待需求確認數",
       value: summary.pending_requirement_count ?? 0,
       summaryKey: "pending_requirement_count",
-      targetAction: "pending-requirement",
+      targetAction: resolveTargetAction("pending_requirement", "pending-requirement"),
     },
   ];
 }
@@ -183,13 +187,14 @@ function buildCrewManagementInsightNotes(summary = {}) {
 function renderCrewManagementInsightSummary(data) {
   if (!crewManagementInsightSummary) return;
   const summary = data?.summary || {};
-  const metrics = buildCrewManagementInsightMetricMeta(summary);
+  const drilldownRefs = data?.drilldown_refs || {};
+  const metrics = buildCrewManagementInsightMetricMeta(summary, drilldownRefs);
   const insightNotes = buildCrewManagementInsightNotes(summary);
   crewManagementInsightSummary.innerHTML = `
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
       <div>
         <h2 style="margin:0;font-size:1.05rem;color:#0f172a;">Management Insight Summary</h2>
-        <p style="margin:6px 0 0;color:#64748b;font-size:0.9rem;">使用既有 dashboard / runtime count，整理排程、核准與需求確認的只讀管理摘要。</p>
+        <p style="margin:6px 0 0;color:#64748b;font-size:0.9rem;">優先使用 management read model API，整理排程、核准與需求確認的只讀管理摘要。</p>
       </div>
       <span class="crew-label" data-testid="crew-management-insight-mode">read-only</span>
     </div>
@@ -923,20 +928,26 @@ async function loadCrewWorkHubSummary(sheetId) {
     today_schedule_count: 0,
   };
   try {
+    const managementReadModelResponse = await fetch(`/api/management-read-model?sheet_id=${encodeURIComponent(sheetId)}`);
+    const managementReadModelData = await managementReadModelResponse.json().catch(() => ({}));
+    if (!managementReadModelResponse.ok || !managementReadModelData?.management_summary) {
+      throw new Error(managementReadModelData?.error?.message || "management read model request failed");
+    }
     const workHubRuntimeResponse = await fetch(`/api/work-hub-runtime?sheet_id=${encodeURIComponent(sheetId)}`);
     const workHubRuntimeData = await workHubRuntimeResponse.json().catch(() => ({}));
     if (!workHubRuntimeResponse.ok || !workHubRuntimeData?.work_hub?.summary) {
       throw new Error(workHubRuntimeData?.error?.message || "work hub runtime request failed");
     }
+    const managementSummary = managementReadModelData.management_summary;
     const workHubSummary = workHubRuntimeData.work_hub.summary;
     const summary = {
-      blocked_count: workHubSummary.blocked_count ?? 0,
-      schedulable_count: workHubSummary.schedulable_count ?? 0,
-      scheduled_count: workHubSummary.scheduled_count ?? 0,
-      pending_approval_count: workHubSummary.pending_approval_count ?? 0,
-      pending_requirement_count: workHubSummary.pending_requirement_count ?? 0,
-      today_entry_count: workHubSummary.today_entry_count ?? 0,
-      today_schedule_count: workHubSummary.today_schedule_count ?? 0,
+      blocked_count: managementSummary.blocked_count ?? 0,
+      schedulable_count: managementSummary.schedulable_count ?? 0,
+      scheduled_count: managementSummary.scheduled_count ?? 0,
+      pending_approval_count: managementSummary.pending_approval_count ?? 0,
+      pending_requirement_count: managementSummary.pending_requirement_count ?? 0,
+      today_entry_count: managementSummary.today_entry_count ?? 0,
+      today_schedule_count: managementSummary.today_schedule_count ?? 0,
     };
     const focusSections = {
       summary,
@@ -962,7 +973,10 @@ async function loadCrewWorkHubSummary(sheetId) {
         : [],
     );
     syncCrewScheduledRowMarkers();
-    renderCrewManagementInsightSummary({ summary });
+    renderCrewManagementInsightSummary({
+      summary,
+      drilldown_refs: managementReadModelData.drilldown_refs,
+    });
     renderCrewWorkHubCards({ summary });
     renderCrewWorkHubFocusSections(focusSections);
     return;
@@ -982,7 +996,7 @@ async function loadCrewWorkHubSummary(sheetId) {
         today_schedule: [],
       };
 
-      if (dashboardResult.status === "fulfilled") {
+        if (dashboardResult.status === "fulfilled") {
         const dashboardResponse = dashboardResult.value;
         const dashboardData = await dashboardResponse.json().catch(() => ({}));
         if (!dashboardResponse.ok || !dashboardData?.summary) {
@@ -1019,11 +1033,11 @@ async function loadCrewWorkHubSummary(sheetId) {
         }
       }
 
-      renderCrewManagementInsightSummary({ summary });
+      renderCrewManagementInsightSummary({ summary, drilldown_refs: {} });
       renderCrewWorkHubCards({ summary });
       renderCrewWorkHubFocusSections(focusSections);
     } catch {
-      renderCrewManagementInsightSummary({ summary: emptySummary });
+      renderCrewManagementInsightSummary({ summary: emptySummary, drilldown_refs: {} });
       renderCrewWorkHubCards({ summary: emptySummary });
       renderCrewWorkHubFocusSections({ summary: emptySummary });
       crewScheduledEntryIds = new Set();
