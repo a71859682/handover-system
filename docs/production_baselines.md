@@ -846,6 +846,134 @@
 - Analytics
 - Mobile Experience
 
+## Work Hub Product Freeze Baseline
+
+### 1. Baseline Name
+
+- Work Hub Product Freeze Baseline
+
+### 2. Completed Capability
+
+- Work Hub Runtime Helper
+- Work Hub Runtime API
+- Single API Consumption
+- Runtime fallback
+- Work Hub Cards
+- Focus Sections
+- Focus Item Navigation
+- Focus Item Affordance
+- Summary Density
+- Accessibility Freeze
+- Smoke Guardrail Freeze
+
+### 3. Scope
+
+- unified read-only runtime
+- cards + focus sections
+- entry-level row navigation
+- mobile-first affordance
+- summary density
+- keyboard accessibility
+- no write behavior
+- no schema change
+- no API contract change
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- `run_work_hub_runtime_helper_smoke(...)` - PASS
+- `run_work_hub_runtime_api_smoke(...)` - PASS
+- `run_work_hub_runtime_consumption_smoke(...)` - PASS
+- `run_work_hub_quick_action_smoke(...)` - PASS
+- `run_work_hub_scheduling_smoke(...)` - PASS
+- `run_work_hub_scheduled_smoke(...)` - PASS
+- `run_work_hub_scheduled_guardrail_smoke(...)` - PASS
+
+### 5. Explicit Out-of-Scope
+
+- new work hub write actions
+- modal / drawer action flows
+- workflow redesign
+- permission redesign
+- calendar
+- notification
+- analytics
+- attendance
+
+### 6. Production Decision
+
+- M1 Product Freeze achieved
+- Work Hub can be treated as a Product OS v1 Frozen Module
+
+### 7. Baseline Commits
+
+- `ec47960` - `Add work hub runtime aggregation API baseline`
+- `3fe7285` - `Switch work hub to single API consumption`
+- `6195bca` - `Add work hub focus sections baseline`
+- `7b57183` - `Add work hub focus item row navigation baseline`
+- `530be16` - `Add work hub focus item affordance baseline`
+- `b4b2b1d` - `Add work hub focus item summary density baseline`
+- `ad828de` - `Add work hub accessibility freeze baseline`
+- `M1-IMP-005` - `docs/work_hub_product_freeze_baseline.md`
+
+## Product OS v1.0 Milestone Baseline
+
+### 1. Baseline Name
+
+- Product OS v1.0 Milestone Baseline
+
+### 2. Completed Capability
+
+- Vendor Work Entry
+- Requirement Confirmation
+- Formal Approval
+- Scheduling Integration
+- Work Hub Runtime
+- Work Hub UI
+- Site Isolation
+- Runtime Guardrails
+- Production Verification
+
+### 3. Scope
+
+- milestone-level product consolidation
+- frozen module inventory
+- architecture snapshot
+- Product OS v1.0 capability view
+- no runtime behavior change
+- no UI behavior change
+- no API contract change
+- no schema change
+
+### 4. Verification
+
+- `python -m compileall app.py tests` - PASS
+- `python tests/smoke_test.py` - PASS
+- current production baseline live at `ad828de`
+- Render deploy / logs / runtime health PASS
+
+### 5. Explicit Out-of-Scope
+
+- new feature implementation
+- new action entry behavior
+- analytics
+- notifications
+- calendar
+- attendance
+- AI Engineering Intelligence
+
+### 6. Milestone Decision
+
+- Product OS v1.0 has reached its first formal milestone baseline
+- future expansion should be treated as controlled Product OS v1.x work
+
+### 7. Baseline Artifacts
+
+- `docs/product_os_v1_release_baseline.md`
+- `docs/work_hub_product_freeze_baseline.md`
+- `docs/product_os_v1_milestone_baseline.md`
+
 ## Product OS v1.x Production Live
 
 ### 1. Production Status
@@ -854,7 +982,7 @@
 
 ### 2. Live Commit
 
-- `bbd2c76` - `Document work hub scheduled release baseline`
+- `ad828de` - `Add work hub accessibility freeze baseline`
 
 ### 3. Deploy Validation
 
@@ -876,6 +1004,7 @@
 - Protected JSON APIs unauthenticated use `403`
   - `GET /api/dashboard?sheet_id=1` -> `403`
   - `GET /api/scheduling?sheet_id=1` -> `403`
+  - `GET /api/work-hub-runtime?sheet_id=1` -> `403`
 
 ### 5. Auth Contract Note
 
@@ -886,3 +1015,4 @@
 ### 6. Final Assessment
 
 - Product OS v1.x can be formally marked Production Live
+- Work Hub is now frozen at the M1 Product Freeze baseline
