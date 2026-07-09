@@ -3571,6 +3571,9 @@ for snippet in (
     ".crew-management-insight-summary",
     ".crew-management-insight-summary-grid",
     ".crew-management-insight-metric",
+    ".crew-management-insight-metric:hover",
+    ".crew-management-insight-metric:focus-visible",
+    '.crew-management-insight-metric[data-management-insight-active="true"]',
     ".crew-management-insight-note",
     ".crew-work-hub-focus-hint",
     ".crew-work-hub-focus-item",
@@ -3596,6 +3599,26 @@ required_focus_section_snippets = (
     'data-testid="crew-management-insight-metric-${metric.summaryKey}"',
     'data-testid="crew-management-insight-value-${metric.summaryKey}"',
     'data-testid="crew-management-insight-note-${index + 1}"',
+    'data-management-insight-action="${escapeHtml(metric.targetAction)}"',
+    'tabindex="0"',
+    'role="button"',
+    '按 Enter 可查看對應 Work Hub 明細',
+    'targetAction: "today-entries"',
+    'targetAction: "scheduled"',
+    'targetAction: "today-schedule"',
+    'targetAction: "schedulable"',
+    'targetAction: "blocked"',
+    'targetAction: "pending-approval"',
+    'targetAction: "pending-requirement"',
+    "function setCrewManagementInsightMetricActiveState(metric) {",
+    "function activateCrewManagementInsightMetric(metric) {",
+    'metric.setAttribute("data-management-insight-active", "true");',
+    'const managementInsightMetric = event.target.closest("[data-management-insight-action]");',
+    "activateCrewManagementInsightMetric(managementInsightMetric);",
+    "scrollCrewWorkHubToTarget(metric.dataset.managementInsightAction);",
+    'if (action === "today-schedule") {',
+    'crewWorkHubFocusSections?.querySelector(\\\'[data-testid="crew-work-hub-focus-section-today-schedule"]\\\') ||',
+    'crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") ||',
     "summary.today_schedule_count ?? 0,",
     "summary.schedulable_count ?? 0,",
     "summary.blocked_count ?? 0,",
@@ -3701,6 +3724,15 @@ for required_snippet in (
 ):
     if required_snippet not in js_text:
         raise SystemExit(f"management insight summary should reuse existing dashboard/work hub counts: {required_snippet}")
+
+for forbidden_snippet in (
+    "build_dashboard_payload(",
+    "build_work_hub_runtime_payload(",
+    "Array.isArray(workHubRuntimeData?.work_hub?.today_entries) ? workHubRuntimeData.work_hub.today_entries.filter(",
+    "Array.isArray(workHubRuntimeData?.work_hub?.scheduled_entries) ? workHubRuntimeData.work_hub.scheduled_entries.filter(",
+):
+    if forbidden_snippet in js_text:
+        raise SystemExit(f"management insight drilldown should not derive new rules or reach into backend helpers: {forbidden_snippet}")
 
 for forbidden_snippet in (
     "fetch(`/api/analytics",

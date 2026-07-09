@@ -29,6 +29,7 @@ let activeDateInput = null;
 let crewScheduledEntryIds = new Set();
 let crewWorkHubFocusHighlightTimeoutId = 0;
 let crewWorkHubFocusItemActiveTimeoutId = 0;
+let crewManagementInsightActiveTimeoutId = 0;
 
 function key(...parts) {
   return parts.join(":");
@@ -122,36 +123,43 @@ function buildCrewManagementInsightMetricMeta(summary = {}) {
       label: "今日進場總數",
       value: summary.today_entry_count ?? 0,
       summaryKey: "today_entry_count",
+      targetAction: "today-entries",
     },
     {
       label: "已正式排程數",
       value: summary.scheduled_count ?? 0,
       summaryKey: "scheduled_count",
+      targetAction: "scheduled",
     },
     {
       label: "今日排程數",
       value: summary.today_schedule_count ?? 0,
       summaryKey: "today_schedule_count",
+      targetAction: "today-schedule",
     },
     {
       label: "可排程數",
       value: summary.schedulable_count ?? 0,
       summaryKey: "schedulable_count",
+      targetAction: "schedulable",
     },
     {
       label: "Blocked 數",
       value: summary.blocked_count ?? 0,
       summaryKey: "blocked_count",
+      targetAction: "blocked",
     },
     {
       label: "待正式核准數",
       value: summary.pending_approval_count ?? 0,
       summaryKey: "pending_approval_count",
+      targetAction: "pending-approval",
     },
     {
       label: "待需求確認數",
       value: summary.pending_requirement_count ?? 0,
       summaryKey: "pending_requirement_count",
+      targetAction: "pending-requirement",
     },
   ];
 }
@@ -191,7 +199,14 @@ function renderCrewManagementInsightSummary(data) {
       ${metrics
         .map(
           (metric) => `
-            <article class="crew-management-insight-metric" data-testid="crew-management-insight-metric-${metric.summaryKey}">
+            <article
+              class="crew-management-insight-metric"
+              data-testid="crew-management-insight-metric-${metric.summaryKey}"
+              data-management-insight-action="${escapeHtml(metric.targetAction)}"
+              tabindex="0"
+              role="button"
+              aria-label="${escapeHtml(`${metric.label} ${metric.value}，按 Enter 可查看對應 Work Hub 明細`)}"
+            >
               <span class="crew-management-insight-label">${escapeHtml(metric.label)}</span>
               <strong class="crew-management-insight-value" data-testid="crew-management-insight-value-${metric.summaryKey}">${escapeHtml(metric.value)}</strong>
             </article>
@@ -470,6 +485,13 @@ function renderCrewWorkHubFocusSections(data) {
 
 function findCrewWorkHubTarget(action) {
   if (!crewVendorList) return null;
+  if (action === "today-schedule") {
+    return (
+      crewWorkHubFocusSections?.querySelector('[data-testid="crew-work-hub-focus-section-today-schedule"]') ||
+      crewVendorList.querySelector("[data-work-hub-scheduled='true']") ||
+      crewVendorList
+    );
+  }
   if (action === "blocked") {
     return crewVendorList.querySelector("[data-work-hub-blocked='true']") || crewVendorList;
   }
@@ -486,6 +508,30 @@ function findCrewWorkHubTarget(action) {
     return crewVendorList.querySelector("[data-work-hub-pending-requirement='true']") || crewVendorList;
   }
   return crewVendorList;
+}
+
+function setCrewManagementInsightMetricActiveState(metric) {
+  if (!crewManagementInsightSummary) return;
+  if (crewManagementInsightActiveTimeoutId) {
+    window.clearTimeout(crewManagementInsightActiveTimeoutId);
+    crewManagementInsightActiveTimeoutId = 0;
+  }
+  crewManagementInsightSummary.querySelectorAll("[data-management-insight-active='true']").forEach((activeMetric) => {
+    activeMetric.removeAttribute("data-management-insight-active");
+  });
+  if (!metric) return;
+  metric.setAttribute("data-management-insight-active", "true");
+  crewManagementInsightActiveTimeoutId = window.setTimeout(() => {
+    if (metric.getAttribute("data-management-insight-active") !== "true") return;
+    metric.removeAttribute("data-management-insight-active");
+    crewManagementInsightActiveTimeoutId = 0;
+  }, 900);
+}
+
+function activateCrewManagementInsightMetric(metric) {
+  if (!metric) return;
+  setCrewManagementInsightMetricActiveState(metric);
+  scrollCrewWorkHubToTarget(metric.dataset.managementInsightAction);
 }
 
 function scrollCrewWorkHubToTarget(action) {
@@ -1339,6 +1385,11 @@ document.addEventListener("click", (event) => {
   const toggle = event.target.closest(".toggle");
   if (toggle) return toggleFloor(toggle.dataset.floorId);
 
+  const managementInsightMetric = event.target.closest("[data-management-insight-action]");
+  if (managementInsightMetric) {
+    return activateCrewManagementInsightMetric(managementInsightMetric);
+  }
+
   const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");
   if (crewWorkHubFocusItem) {
     return activateCrewWorkHubFocusItem(crewWorkHubFocusItem);
@@ -1378,6 +1429,14 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  const managementInsightMetric = event.target.closest("[data-management-insight-action]");
+  if (managementInsightMetric) {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    activateCrewManagementInsightMetric(managementInsightMetric);
+    return;
+  }
+
   const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");
   if (!crewWorkHubFocusItem) return;
   if (event.key !== "Enter" && event.key !== " ") return;
