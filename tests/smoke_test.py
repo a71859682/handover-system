@@ -3952,6 +3952,7 @@ def run_work_hub_runtime_consumption_smoke(app_db_path: Path) -> None:
     script = """
 import importlib.util
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -4000,16 +4001,53 @@ required_load_snippets = (
     "crewScheduledEntryIds = new Set(",
     "syncCrewScheduledRowMarkers();",
     "renderCrewWorkHubCards({ summary });",
+    'renderCrewManagementInsightSummary({ summary, drilldown_refs: {} });',
+    'renderCrewManagementInsightSummary({ summary: emptySummary, drilldown_refs: {} });',
+    "crewScheduledEntryIds = new Set();",
 )
 for snippet in required_load_snippets:
     if snippet not in load_section:
         raise SystemExit(f"work hub runtime consumption missing load path guardrail: {snippet}")
+
+allowed_fetch_targets = {
+    "/api/management-read-model?sheet_id=${encodeURIComponent(sheetId)}",
+    "/api/work-hub-runtime?sheet_id=${encodeURIComponent(sheetId)}",
+    "/api/dashboard?sheet_id=${encodeURIComponent(sheetId)}",
+    "/api/scheduling?sheet_id=${encodeURIComponent(sheetId)}",
+}
+actual_fetch_targets = {
+    target
+    for target in re.findall(r"fetch\\(`/api/([^`]+)`\\)", load_section)
+}
+normalized_fetch_targets = {f"/api/{target}" for target in actual_fetch_targets}
+if normalized_fetch_targets != allowed_fetch_targets:
+    raise SystemExit(
+        "work hub runtime consumption should keep exact API dependency set: "
+        f"{sorted(normalized_fetch_targets)}"
+    )
+
+if load_section.count("fetch(`/api/") != 4:
+    raise SystemExit("work hub runtime consumption should keep exactly four API fetch callsites")
+
+if "Promise.allSettled([" not in load_section:
+    raise SystemExit("work hub runtime consumption should keep dashboard+scheduling fallback boundary")
+
+if "managementReadModelData.management_summary" not in load_section:
+    raise SystemExit("management insight primary consumer should depend on public management_summary shape")
+
+if "workHubRuntimeData.work_hub.summary" not in load_section:
+    raise SystemExit("work hub primary consumer should depend on public work_hub.summary shape")
 
 for forbidden_snippet in (
     "/api/crew-work-entry-requirement-confirm",
     "/api/crew-work-entry/formal-approve",
     'method: "POST"',
     "method: 'POST'",
+    "fetch(`/api/analytics",
+    "build_dashboard_payload(",
+    "build_scheduling_payload(",
+    "build_work_hub_runtime_payload(",
+    "build_management_read_model_payload(",
 ):
     if forbidden_snippet in load_section:
         raise SystemExit(f"work hub runtime consumption load section should remain read-only: {forbidden_snippet}")
@@ -4198,6 +4236,10 @@ for forbidden_snippet in (
     "build_management_read_model_payload(",
     "Array.isArray(workHubRuntimeData?.work_hub?.today_entries) ? workHubRuntimeData.work_hub.today_entries.filter(",
     "Array.isArray(workHubRuntimeData?.work_hub?.scheduled_entries) ? workHubRuntimeData.work_hub.scheduled_entries.filter(",
+    "managementReadModelData.management_summary.blocked_entries",
+    "managementReadModelData.management_summary.schedulable_entries",
+    "managementReadModelData.management_summary.scheduled_entries",
+    "managementReadModelData.management_summary.today_entries",
 ):
     if forbidden_snippet in js_text:
         raise SystemExit(f"management insight drilldown should not derive new rules or reach into backend helpers: {forbidden_snippet}")
@@ -4207,6 +4249,8 @@ for forbidden_snippet in (
     "blocked_items.length",
     "schedulable_entries.filter(",
     "today_entries.filter(",
+    "scheduled_entries.filter(",
+    "drilldown_refs.filter(",
 ):
     if forbidden_snippet in js_text:
         raise SystemExit(f"management insight summary should not introduce new analytics APIs or frontend rule re-derivation: {forbidden_snippet}")
