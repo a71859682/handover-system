@@ -3594,7 +3594,7 @@ required_focus_section_snippets = (
     "function buildCrewManagementInsightNotes(summary = {}) {",
     "function renderCrewManagementInsightSummary(data) {",
     "Management Insight Summary",
-    "使用既有 dashboard / runtime count 的第一版只讀管理摘要。",
+    "使用既有 dashboard / runtime count，整理排程、核准與需求確認的只讀管理摘要。",
     'data-testid="crew-management-insight-mode"',
     'data-testid="crew-management-insight-metric-${metric.summaryKey}"',
     'data-testid="crew-management-insight-value-${metric.summaryKey}"',
@@ -3713,19 +3713,28 @@ for forbidden_snippet in (
         raise SystemExit(f"work hub focus summary density should remain read-only and fetch-free: {forbidden_snippet}")
 
 for required_snippet in (
+    "const todayEntryCount = Number(summary.today_entry_count ?? 0);",
     "const scheduledCount = Number(summary.scheduled_count ?? 0);",
     "const todayScheduleCount = Number(summary.today_schedule_count ?? 0);",
     "const schedulableCount = Number(summary.schedulable_count ?? 0);",
+    "const blockedCount = Number(summary.blocked_count ?? 0);",
     "const pendingApprovalCount = Number(summary.pending_approval_count ?? 0);",
     "const pendingRequirementCount = Number(summary.pending_requirement_count ?? 0);",
-    "排程轉換摘要：已正式排程",
-    "核准瓶頸摘要：",
-    "需求確認瓶頸摘要：",
+    "排程進度：今日進場",
+    "核准狀態：待正式核准",
+    "需求確認狀態：待確認需求",
 ):
     if required_snippet not in js_text:
         raise SystemExit(f"management insight summary should reuse existing dashboard/work hub counts: {required_snippet}")
 
 for forbidden_snippet in (
+    "最大瓶頸",
+    "最優先處理",
+    "風險最高",
+    "priority",
+    "bottleneck",
+    "KPI",
+    "sorting",
     "build_dashboard_payload(",
     "build_work_hub_runtime_payload(",
     "Array.isArray(workHubRuntimeData?.work_hub?.today_entries) ? workHubRuntimeData.work_hub.today_entries.filter(",

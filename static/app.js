@@ -165,20 +165,18 @@ function buildCrewManagementInsightMetricMeta(summary = {}) {
 }
 
 function buildCrewManagementInsightNotes(summary = {}) {
+  const todayEntryCount = Number(summary.today_entry_count ?? 0);
   const scheduledCount = Number(summary.scheduled_count ?? 0);
   const todayScheduleCount = Number(summary.today_schedule_count ?? 0);
   const schedulableCount = Number(summary.schedulable_count ?? 0);
+  const blockedCount = Number(summary.blocked_count ?? 0);
   const pendingApprovalCount = Number(summary.pending_approval_count ?? 0);
   const pendingRequirementCount = Number(summary.pending_requirement_count ?? 0);
 
   return [
-    `排程轉換摘要：已正式排程 ${scheduledCount} 項，今日排程 ${todayScheduleCount} 項，仍有 ${schedulableCount} 項可排程。`,
-    pendingApprovalCount > 0
-      ? `核准瓶頸摘要：目前仍有 ${pendingApprovalCount} 項待正式核准。`
-      : "核准瓶頸摘要：目前沒有待正式核准項目。",
-    pendingRequirementCount > 0
-      ? `需求確認瓶頸摘要：目前仍有 ${pendingRequirementCount} 項待需求確認。`
-      : "需求確認瓶頸摘要：目前沒有待需求確認項目。",
+    `排程進度：今日進場 ${todayEntryCount} 項，已正式排程 ${scheduledCount} 項，今日排程 ${todayScheduleCount} 項，可排程 ${schedulableCount} 項。`,
+    `核准狀態：待正式核准 ${pendingApprovalCount} 項，blocked ${blockedCount} 項。`,
+    `需求確認狀態：待確認需求 ${pendingRequirementCount} 項。`,
   ];
 }
 
@@ -191,7 +189,7 @@ function renderCrewManagementInsightSummary(data) {
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
       <div>
         <h2 style="margin:0;font-size:1.05rem;color:#0f172a;">Management Insight Summary</h2>
-        <p style="margin:6px 0 0;color:#64748b;font-size:0.9rem;">使用既有 dashboard / runtime count 的第一版只讀管理摘要。</p>
+        <p style="margin:6px 0 0;color:#64748b;font-size:0.9rem;">使用既有 dashboard / runtime count，整理排程、核准與需求確認的只讀管理摘要。</p>
       </div>
       <span class="crew-label" data-testid="crew-management-insight-mode">read-only</span>
     </div>
