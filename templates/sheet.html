@@ -157,6 +157,7 @@
   </div>
 
   <section class="crew-work-hub-shell" data-testid="crew-work-hub-shell">
+    <section class="crew-management-insight-summary" id="crewManagementInsightSummary" data-testid="crew-management-insight-summary"></section>
     <div class="crew-work-hub-cards" id="crewWorkHubCards" data-testid="crew-work-hub-cards"></div>
     <div class="crew-work-hub-focus-sections" id="crewWorkHubFocusSections" data-testid="crew-work-hub-focus-sections"></div>
   </section>
@@ -173,6 +174,62 @@
 </div>
 
 <style>
+  .crew-management-insight-summary {
+    margin: 0 0 16px;
+    border: 1px solid #d9e2ec;
+    border-radius: 18px;
+    padding: 16px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.05);
+  }
+
+  .crew-management-insight-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px;
+    margin-top: 14px;
+  }
+
+  .crew-management-insight-metric {
+    min-height: 78px;
+    border-radius: 14px;
+    padding: 12px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+  }
+
+  .crew-management-insight-label {
+    display: block;
+    color: #475569;
+    font-size: 0.82rem;
+  }
+
+  .crew-management-insight-value {
+    display: block;
+    margin-top: 8px;
+    color: #0f172a;
+    font-size: 1.45rem;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+
+  .crew-management-insight-notes {
+    margin: 14px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+  }
+
+  .crew-management-insight-note {
+    list-style: none;
+    color: #334155;
+    font-size: 0.88rem;
+    line-height: 1.45;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: rgba(37, 99, 235, 0.06);
+  }
+
   .crew-work-hub-focus-hint {
     margin: 8px 0 0;
     color: #2563eb;
@@ -279,6 +336,18 @@
   }
 
   @media (max-width: 720px) {
+    .crew-management-insight-summary {
+      padding: 14px;
+    }
+
+    .crew-management-insight-summary-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .crew-management-insight-note {
+      font-size: 0.84rem;
+    }
+
     .crew-work-hub-focus-item {
       min-height: 88px;
       padding: 14px 14px 0;

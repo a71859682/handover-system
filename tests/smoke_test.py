@@ -2439,6 +2439,8 @@ if 'data-mode="readonly"' not in template_text:
     raise SystemExit("crew readonly shell should expose data-mode=readonly")
 if 'data-testid="crew-work-hub-shell"' not in template_text:
     raise SystemExit("sheet.html should render a crew work hub shell")
+if 'data-testid="crew-management-insight-summary"' not in template_text:
+    raise SystemExit("sheet.html should render a management insight summary container")
 if 'data-testid="crew-work-hub-cards"' not in template_text:
     raise SystemExit("sheet.html should render a crew work hub cards container")
 if not re.search(r'<section class="table-shell">.*?</section>\\s*<section class="crew-form-shell"', template_text, re.S):
@@ -2468,6 +2470,9 @@ for required in (
     "function buildCrewReadinessMeta",
     "function buildCrewSchedulingGateMeta",
     "function buildCrewWorkHubCardMeta",
+    "function buildCrewManagementInsightMetricMeta",
+    "function buildCrewManagementInsightNotes",
+    "function renderCrewManagementInsightSummary",
     "function renderCrewWorkHubCards",
     "function buildCrewFormalApprovalIndicatorMeta",
     "function buildCrewFormalApproveMeta",
@@ -3558,9 +3563,15 @@ for forbidden_snippet in (
 
 if 'data-testid="crew-work-hub-cards"' not in template_text:
     raise SystemExit("work hub runtime consumption should keep work hub cards mount container")
+if 'data-testid="crew-management-insight-summary"' not in template_text:
+    raise SystemExit("work hub runtime consumption should keep management insight summary mount container")
 if 'data-testid="crew-work-hub-focus-sections"' not in template_text:
     raise SystemExit("work hub runtime consumption should keep work hub focus sections mount container")
 for snippet in (
+    ".crew-management-insight-summary",
+    ".crew-management-insight-summary-grid",
+    ".crew-management-insight-metric",
+    ".crew-management-insight-note",
     ".crew-work-hub-focus-hint",
     ".crew-work-hub-focus-item",
     ".crew-work-hub-focus-primary-timeline",
@@ -3575,6 +3586,23 @@ for snippet in (
         raise SystemExit(f"work hub runtime consumption should keep focus item affordance styling: {snippet}")
 
 required_focus_section_snippets = (
+    'const crewManagementInsightSummary = document.getElementById("crewManagementInsightSummary");',
+    "function buildCrewManagementInsightMetricMeta(summary = {}) {",
+    "function buildCrewManagementInsightNotes(summary = {}) {",
+    "function renderCrewManagementInsightSummary(data) {",
+    "Management Insight Summary",
+    "使用既有 dashboard / runtime count 的第一版只讀管理摘要。",
+    'data-testid="crew-management-insight-mode"',
+    'data-testid="crew-management-insight-metric-${metric.summaryKey}"',
+    'data-testid="crew-management-insight-value-${metric.summaryKey}"',
+    'data-testid="crew-management-insight-note-${index + 1}"',
+    "summary.today_schedule_count ?? 0,",
+    "summary.schedulable_count ?? 0,",
+    "summary.blocked_count ?? 0,",
+    "summary.pending_approval_count ?? 0,",
+    "summary.pending_requirement_count ?? 0,",
+    "renderCrewManagementInsightSummary({ summary });",
+    "renderCrewManagementInsightSummary({ summary: emptySummary });",
     'const crewWorkHubFocusSections = document.getElementById("crewWorkHubFocusSections");',
     "function renderCrewWorkHubFocusSections(data) {",
     'data-testid="crew-work-hub-focus-section-${section.key}"',
@@ -3661,6 +3689,28 @@ for forbidden_snippet in (
     if forbidden_snippet in focus_summary_section:
         raise SystemExit(f"work hub focus summary density should remain read-only and fetch-free: {forbidden_snippet}")
 
+for required_snippet in (
+    "const scheduledCount = Number(summary.scheduled_count ?? 0);",
+    "const todayScheduleCount = Number(summary.today_schedule_count ?? 0);",
+    "const schedulableCount = Number(summary.schedulable_count ?? 0);",
+    "const pendingApprovalCount = Number(summary.pending_approval_count ?? 0);",
+    "const pendingRequirementCount = Number(summary.pending_requirement_count ?? 0);",
+    "排程轉換摘要：已正式排程",
+    "核准瓶頸摘要：",
+    "需求確認瓶頸摘要：",
+):
+    if required_snippet not in js_text:
+        raise SystemExit(f"management insight summary should reuse existing dashboard/work hub counts: {required_snippet}")
+
+for forbidden_snippet in (
+    "fetch(`/api/analytics",
+    "blocked_items.length",
+    "schedulable_entries.filter(",
+    "today_entries.filter(",
+):
+    if forbidden_snippet in js_text:
+        raise SystemExit(f"management insight summary should not introduce new analytics APIs or frontend rule re-derivation: {forbidden_snippet}")
+
 with module.app.test_client() as client:
     login_response = client.post(
         "/login",
@@ -3676,6 +3726,7 @@ with module.app.test_client() as client:
     html = sheet_response.get_data(as_text=True)
     for snippet in (
         'data-testid="crew-work-hub-shell"',
+        'data-testid="crew-management-insight-summary"',
         'data-testid="crew-work-hub-cards"',
         'data-testid="crew-work-hub-focus-sections"',
         'data-testid="crew-work-hub-target-today-entries"',

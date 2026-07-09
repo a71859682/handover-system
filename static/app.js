@@ -5,6 +5,7 @@ const crewFormShell = document.querySelector(".crew-form-shell");
 const crewVendorList = document.getElementById("crewVendorList");
 const crewBusinessDate = document.getElementById("crewBusinessDate");
 const crewFormError = document.getElementById("crewFormError");
+const crewManagementInsightSummary = document.getElementById("crewManagementInsightSummary");
 const crewWorkHubCards = document.getElementById("crewWorkHubCards");
 const crewWorkHubFocusSections = document.getElementById("crewWorkHubFocusSections");
 const progressControls = new Map();
@@ -113,6 +114,101 @@ function buildCrewWorkHubCardMeta(summary = {}) {
       summaryKey: "today_entry_count",
     },
   ];
+}
+
+function buildCrewManagementInsightMetricMeta(summary = {}) {
+  return [
+    {
+      label: "今日進場總數",
+      value: summary.today_entry_count ?? 0,
+      summaryKey: "today_entry_count",
+    },
+    {
+      label: "已正式排程數",
+      value: summary.scheduled_count ?? 0,
+      summaryKey: "scheduled_count",
+    },
+    {
+      label: "今日排程數",
+      value: summary.today_schedule_count ?? 0,
+      summaryKey: "today_schedule_count",
+    },
+    {
+      label: "可排程數",
+      value: summary.schedulable_count ?? 0,
+      summaryKey: "schedulable_count",
+    },
+    {
+      label: "Blocked 數",
+      value: summary.blocked_count ?? 0,
+      summaryKey: "blocked_count",
+    },
+    {
+      label: "待正式核准數",
+      value: summary.pending_approval_count ?? 0,
+      summaryKey: "pending_approval_count",
+    },
+    {
+      label: "待需求確認數",
+      value: summary.pending_requirement_count ?? 0,
+      summaryKey: "pending_requirement_count",
+    },
+  ];
+}
+
+function buildCrewManagementInsightNotes(summary = {}) {
+  const scheduledCount = Number(summary.scheduled_count ?? 0);
+  const todayScheduleCount = Number(summary.today_schedule_count ?? 0);
+  const schedulableCount = Number(summary.schedulable_count ?? 0);
+  const pendingApprovalCount = Number(summary.pending_approval_count ?? 0);
+  const pendingRequirementCount = Number(summary.pending_requirement_count ?? 0);
+
+  return [
+    `排程轉換摘要：已正式排程 ${scheduledCount} 項，今日排程 ${todayScheduleCount} 項，仍有 ${schedulableCount} 項可排程。`,
+    pendingApprovalCount > 0
+      ? `核准瓶頸摘要：目前仍有 ${pendingApprovalCount} 項待正式核准。`
+      : "核准瓶頸摘要：目前沒有待正式核准項目。",
+    pendingRequirementCount > 0
+      ? `需求確認瓶頸摘要：目前仍有 ${pendingRequirementCount} 項待需求確認。`
+      : "需求確認瓶頸摘要：目前沒有待需求確認項目。",
+  ];
+}
+
+function renderCrewManagementInsightSummary(data) {
+  if (!crewManagementInsightSummary) return;
+  const summary = data?.summary || {};
+  const metrics = buildCrewManagementInsightMetricMeta(summary);
+  const insightNotes = buildCrewManagementInsightNotes(summary);
+  crewManagementInsightSummary.innerHTML = `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+      <div>
+        <h2 style="margin:0;font-size:1.05rem;color:#0f172a;">Management Insight Summary</h2>
+        <p style="margin:6px 0 0;color:#64748b;font-size:0.9rem;">使用既有 dashboard / runtime count 的第一版只讀管理摘要。</p>
+      </div>
+      <span class="crew-label" data-testid="crew-management-insight-mode">read-only</span>
+    </div>
+    <div class="crew-management-insight-summary-grid">
+      ${metrics
+        .map(
+          (metric) => `
+            <article class="crew-management-insight-metric" data-testid="crew-management-insight-metric-${metric.summaryKey}">
+              <span class="crew-management-insight-label">${escapeHtml(metric.label)}</span>
+              <strong class="crew-management-insight-value" data-testid="crew-management-insight-value-${metric.summaryKey}">${escapeHtml(metric.value)}</strong>
+            </article>
+          `,
+        )
+        .join("")}
+    </div>
+    <ul class="crew-management-insight-notes">
+      ${insightNotes
+        .map(
+          (note, index) => `
+            <li class="crew-management-insight-note" data-testid="crew-management-insight-note-${index + 1}">${escapeHtml(note)}</li>
+          `,
+        )
+        .join("")}
+    </ul>
+  `;
 }
 
 function renderCrewWorkHubCards(data) {
@@ -772,7 +868,7 @@ async function confirmCrewWorkEntryRequirement(button) {
 }
 
 async function loadCrewWorkHubSummary(sheetId) {
-  if ((!crewWorkHubCards && !crewWorkHubFocusSections) || !sheetId) return;
+  if ((!crewManagementInsightSummary && !crewWorkHubCards && !crewWorkHubFocusSections) || !sheetId) return;
   const emptySummary = {
     blocked_count: 0,
     schedulable_count: 0,
@@ -822,6 +918,7 @@ async function loadCrewWorkHubSummary(sheetId) {
         : [],
     );
     syncCrewScheduledRowMarkers();
+    renderCrewManagementInsightSummary({ summary });
     renderCrewWorkHubCards({ summary });
     renderCrewWorkHubFocusSections(focusSections);
     return;
@@ -878,9 +975,11 @@ async function loadCrewWorkHubSummary(sheetId) {
         }
       }
 
+      renderCrewManagementInsightSummary({ summary });
       renderCrewWorkHubCards({ summary });
       renderCrewWorkHubFocusSections(focusSections);
     } catch {
+      renderCrewManagementInsightSummary({ summary: emptySummary });
       renderCrewWorkHubCards({ summary: emptySummary });
       renderCrewWorkHubFocusSections({ summary: emptySummary });
       crewScheduledEntryIds = new Set();
