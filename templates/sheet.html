@@ -76,7 +76,10 @@
       <tr class="unit-row hidden" data-floor-id="{{ item.floor.id }}" data-unit-id="{{ unit.id }}">
         <td></td>
         <td>1</td>
-        <td data-unit-name>{{ unit.name }}</td>
+        <td data-unit-name>
+          <span>{{ unit.name }}</span>
+          <a class="unit-report-link" data-testid="unit-report-link-{{ unit.id }}" href="{{ url_for('unit_handover_report', unit_id=unit.id) }}">單戶報表</a>
+        </td>
         {% for task in grid.tasks %}
         {% set value = grid.progress.get((unit.id, task.id), 'X') %}
         <td class="task-col task-col-{{ task.id }}">

@@ -4513,6 +4513,310 @@ print("sheet endpoint smoke PASS")
         raise AssertionError("sheet endpoint smoke subprocess did not report PASS.")
 
 
+def run_unit_handover_report_smoke(app_db_path: Path) -> None:
+    script = """
+import importlib.util
+import inspect
+import os
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = app_db_path
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+module.bootstrap()
+
+template_text = (Path(root_dir) / "templates" / "unit_handover_report.html").read_text(encoding="utf-8")
+sheet_template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
+styles_text = (Path(root_dir) / "static" / "styles.css").read_text(encoding="utf-8")
+helper_source = inspect.getsource(module.build_unit_handover_report_context)
+route_source = inspect.getsource(module.unit_handover_report)
+
+for snippet in (
+    'data-testid="unit-handover-report"',
+    'data-testid="unit-report-task-table"',
+    'data-testid="unit-report-extra-table"',
+    'data-testid="unit-report-no-tasks"',
+    'data-testid="unit-report-no-extra-fields"',
+    'data-testid="unit-report-print-button"',
+    "本報表反映產出當下系統狀態，並非不可變歷史證明。",
+    "未填寫",
+    "window.print()",
+):
+    if snippet not in template_text:
+        raise SystemExit(f"unit report template missing guardrail: {snippet}")
+
+for snippet in (
+    'class="unit-report-link"',
+    "url_for('unit_handover_report', unit_id=unit.id)",
+    'id="controlTable"',
+    'data-unit-id="{{ unit.id }}"',
+):
+    if snippet not in sheet_template_text:
+        raise SystemExit(f"sheet unit report entry should preserve grid contract: {snippet}")
+
+for snippet in (
+    ".unit-report-page",
+    ".unit-report-card",
+    ".unit-report-table",
+    ".unit-report-empty",
+    ".unit-report-link,",
+    ".unit-report-actions",
+    "table-layout: fixed",
+    "overflow-wrap: anywhere",
+    "word-break: break-word",
+    "display: table-header-group",
+    "@media print",
+):
+    if snippet not in styles_text:
+        raise SystemExit(f"unit report print CSS missing guardrail: {snippet}")
+
+for forbidden_snippet in (
+    "INSERT ",
+    "UPDATE ",
+    "DELETE ",
+    "CREATE TABLE",
+    "ALTER TABLE",
+    "DROP TABLE",
+    "vendor_work_entries",
+    "build_management_read_model_payload",
+    "build_dashboard_payload",
+    "completion_percentage",
+    "score",
+    "ranking",
+):
+    if forbidden_snippet in helper_source:
+        raise SystemExit(f"unit report context must remain read-only and unit-scoped: {forbidden_snippet}")
+
+for snippet in (
+    "FROM units u",
+    "JOIN floors f ON f.id = u.floor_id",
+    "JOIN sheets s ON s.id = f.sheet_id",
+    "JOIN sites st ON st.id = s.site_id",
+    'authorize_dashboard_read(conn, sheet_id=int(unit_context["sheet_id"]))',
+    "LEFT JOIN progress p",
+    "WHERE sheet_id = ? AND active = 1",
+    "ORDER BY sort_order, id",
+    "SELECT * FROM unit_extra WHERE unit_id = ?",
+    "SELECT field_key, value FROM unit_extra_values WHERE unit_id = ?",
+):
+    if snippet not in helper_source:
+        raise SystemExit(f"unit report context missing source or authorization boundary: {snippet}")
+
+if 'methods=["GET"]' not in route_source:
+    raise SystemExit("unit report route should remain explicit GET-only HTML")
+for forbidden_snippet in ("jsonify(", 'methods=["POST"]', "localStorage", "sessionStorage"):
+    if forbidden_snippet in route_source or forbidden_snippet in template_text:
+        raise SystemExit(f"unit report route must not add API, write, or persisted client state: {forbidden_snippet}")
+for forbidden_snippet in ("WeasyPrint", "weasyprint", "jsPDF", "jspdf", "pdfkit", "management_summary"):
+    if forbidden_snippet in template_text or forbidden_snippet in route_source or forbidden_snippet in helper_source:
+        raise SystemExit(f"unit report baseline must not add PDF or management summary dependency: {forbidden_snippet}")
+for forbidden_snippet in ("|safe", "fetch(", "<form", 'type="hidden"', "localStorage", "sessionStorage", "history.pushState"):
+    if forbidden_snippet in template_text:
+        raise SystemExit(f"unit report template must remain escaped, readonly, and non-persistent: {forbidden_snippet}")
+
+with module.db() as conn:
+    default_site = conn.execute("SELECT id, site_name FROM sites WHERE is_active = 1 ORDER BY id LIMIT 1").fetchone()
+    same_sheet = conn.execute("SELECT id, name FROM sheets WHERE site_id = ? ORDER BY id LIMIT 1", (default_site["id"],)).fetchone()
+    same_unit = conn.execute(
+        "SELECT u.id, u.name, f.id AS floor_id, f.name AS floor_name, f.block_name FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ? ORDER BY u.id LIMIT 1",
+        (same_sheet["id"],),
+    ).fetchone()
+    if same_unit is None:
+        raise SystemExit("unit report smoke requires a seeded same-site unit")
+
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("report_member", "Report Member", module.generate_password_hash("member-pass"), "member"),
+    )
+    member_id = int(conn.execute("SELECT id FROM users WHERE username = ?", ("report_member",)).fetchone()["id"])
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, int(default_site["id"]), "member"),
+    )
+
+    task = conn.execute("SELECT id FROM tasks WHERE sheet_id = ? ORDER BY id LIMIT 1", (same_sheet["id"],)).fetchone()
+    if task is None:
+        next_col = int(conn.execute("SELECT COALESCE(MAX(col_index), 0) + 1 AS value FROM tasks").fetchone()["value"])
+        conn.execute(
+            "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)",
+            (same_sheet["id"], next_col, "", "Report Location", "Report Task"),
+        )
+        task = conn.execute("SELECT id FROM tasks WHERE sheet_id = ? ORDER BY id LIMIT 1", (same_sheet["id"],)).fetchone()
+    conn.execute("UPDATE tasks SET vendor = ?, location = ?, name = ? WHERE id = ?", ("", "Report Location", "Report Task", task["id"]))
+    conn.execute(
+        "INSERT OR REPLACE INTO progress (unit_id, task_id, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+        (same_unit["id"], task["id"], module.DONE_VALUE),
+    )
+    active_field = conn.execute("SELECT field_key FROM extra_fields WHERE sheet_id = ? AND active = 1 ORDER BY id LIMIT 1", (same_sheet["id"],)).fetchone()
+    if active_field is None:
+        conn.execute(
+            "INSERT INTO extra_fields (sheet_id, field_key, name, field_type, sort_order, is_builtin, active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (same_sheet["id"], "report_note", "Report Note", "date", 900, 0, 1),
+        )
+        active_field = conn.execute("SELECT field_key FROM extra_fields WHERE sheet_id = ? AND active = 1 ORDER BY id LIMIT 1", (same_sheet["id"],)).fetchone()
+    conn.execute(
+        "INSERT OR REPLACE INTO unit_extra_values (unit_id, field_key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+        (same_unit["id"], active_field["field_key"], ""),
+    )
+    conn.execute(
+        "INSERT INTO extra_fields (sheet_id, field_key, name, field_type, sort_order, is_builtin, active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (same_sheet["id"], "report_raw", "Report Raw Value", "date", 899, 0, 1),
+    )
+    conn.execute(
+        "INSERT INTO unit_extra_values (unit_id, field_key, value, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+        (same_unit["id"], "report_raw", "REPORT_RAW_VALUE_TOKEN"),
+    )
+    conn.execute(
+        "INSERT INTO extra_fields (sheet_id, field_key, name, field_type, sort_order, is_builtin, active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (same_sheet["id"], "report_hidden", "REPORT_HIDDEN_FIELD_SECRET", "date", 901, 0, 0),
+    )
+
+    empty_sheet_id = int(conn.execute("SELECT COALESCE(MAX(id), 0) + 1 AS value FROM sheets").fetchone()["value"])
+    conn.execute("INSERT INTO sheets (id, name, sort_order, site_id) VALUES (?, ?, ?, ?)", (empty_sheet_id, "Empty Report Sheet", 990, default_site["id"]))
+    next_floor_order = int(conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 AS value FROM floors").fetchone()["value"])
+    conn.execute(
+        "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, ?)",
+        (empty_sheet_id, next_floor_order, "Empty Floor", "", 1),
+    )
+    empty_floor_id = int(conn.execute("SELECT id FROM floors WHERE sheet_id = ?", (empty_sheet_id,)).fetchone()["id"])
+    conn.execute("INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?)", (empty_floor_id, 1, "Empty Unit"))
+    empty_unit_id = int(conn.execute("SELECT id FROM units WHERE floor_id = ?", (empty_floor_id,)).fetchone()["id"])
+
+    conn.execute("INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1)", ("REPORT_SECRET_SITE", "REPORT_SECRET_CODE"))
+    cross_site_id = int(conn.execute("SELECT id FROM sites WHERE site_name = ?", ("REPORT_SECRET_SITE",)).fetchone()["id"])
+    cross_sheet_id = empty_sheet_id + 1
+    conn.execute("INSERT INTO sheets (id, name, sort_order, site_id) VALUES (?, ?, ?, ?)", (cross_sheet_id, "REPORT_SECRET_SHEET", 991, cross_site_id))
+    conn.execute(
+        "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, ?)",
+        (cross_sheet_id, next_floor_order + 1, "REPORT_SECRET_FLOOR", "REPORT_SECRET_BLOCK", 1),
+    )
+    cross_floor_id = int(conn.execute("SELECT id FROM floors WHERE sheet_id = ?", (cross_sheet_id,)).fetchone()["id"])
+    conn.execute("INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?)", (cross_floor_id, 1, "REPORT_SECRET_UNIT"))
+    cross_unit_id = int(conn.execute("SELECT id FROM units WHERE floor_id = ?", (cross_floor_id,)).fetchone()["id"])
+    conn.commit()
+
+same_unit_id = int(same_unit["id"])
+same_sheet_id = int(same_sheet["id"])
+default_site_id = int(default_site["id"])
+
+with module.app.test_client() as client:
+    unauthenticated = client.get(f"/reports/unit/{same_unit_id}")
+    if unauthenticated.status_code != 302 or not unauthenticated.headers.get("Location", "").endswith("/login"):
+        raise SystemExit("unit report should redirect unauthenticated users to internal login")
+
+with module.app.test_client() as client:
+    vendor_session = client.session_transaction()
+    with vendor_session as session:
+        session["identity_type"] = "vendor"
+        session["vendor_account_id"] = 77
+        session["vendor_username"] = "report_vendor"
+        session["vendor_name"] = "Report Vendor"
+    vendor_response = client.get(f"/reports/unit/{same_unit_id}")
+    if vendor_response.status_code != 403:
+        raise SystemExit("unit report should forbid vendor identity")
+
+with module.app.test_client() as client:
+    member_login = client.post("/login", data={"username": "report_member", "password": "member-pass"}, follow_redirects=False)
+    if member_login.status_code != 302:
+        raise SystemExit("unit report same-site member login should redirect")
+    member_report = client.get(f"/reports/unit/{same_unit_id}")
+    if member_report.status_code != 200:
+        raise SystemExit("unit report should allow same-site member")
+    member_cross_site = client.get(f"/reports/unit/{cross_unit_id}")
+    member_cross_body = member_cross_site.get_data(as_text=True)
+    if member_cross_site.status_code != 403:
+        raise SystemExit("unit report should enforce selected current-site boundary for member")
+    for leaked_value in ("REPORT_SECRET_SITE", "REPORT_SECRET_SHEET", "REPORT_SECRET_FLOOR", "REPORT_SECRET_BLOCK", "REPORT_SECRET_UNIT"):
+        if leaked_value in member_cross_body:
+            raise SystemExit(f"member cross-site unit report response leaked identity: {leaked_value}")
+
+with module.app.test_client() as client:
+    admin_login = client.post("/login", data={"username": "admin", "password": "admin"}, follow_redirects=False)
+    if admin_login.status_code != 302:
+        raise SystemExit("unit report same-site admin login should redirect")
+    admin_report = client.get(f"/reports/unit/{same_unit_id}")
+    if admin_report.status_code != 200:
+        raise SystemExit("unit report should allow same-site admin")
+    report_html = admin_report.get_data(as_text=True)
+    for snippet in (
+        'data-testid="unit-handover-report"',
+        str(default_site["site_name"]),
+        str(same_sheet["name"]),
+        str(same_unit["floor_name"]),
+        str(same_unit["name"]),
+        "Report Task",
+        "Report Location",
+        "REPORT_RAW_VALUE_TOKEN",
+        module.DONE_VALUE,
+        "未填寫",
+        "本報表反映產出當下系統狀態，並非不可變歷史證明。",
+    ):
+        if snippet not in report_html:
+            raise SystemExit(f"unit report rendered content missing: {snippet}")
+    if "REPORT_HIDDEN_FIELD_SECRET" in report_html:
+        raise SystemExit("unit report should not render inactive extra fields")
+
+    before_report_get = None
+    with module.db() as conn:
+        before_report_get = "\\n".join(conn.iterdump())
+    repeated_report = client.get(f"/reports/unit/{same_unit_id}")
+    with module.db() as conn:
+        after_report_get = "\\n".join(conn.iterdump())
+    if repeated_report.status_code != 200 or before_report_get != after_report_get:
+        raise SystemExit("unit report GET must not modify database state")
+
+    grid_response = client.get(f"/api/grid?sheet_id={same_sheet_id}")
+    sheet_response = client.get(f"/sheet/{same_sheet_id}")
+    if grid_response.status_code != 200 or sheet_response.status_code != 200:
+        raise SystemExit("unit report baseline should preserve existing /sheet and /api/grid contracts")
+    if f'/reports/unit/{same_unit_id}' not in sheet_response.get_data(as_text=True):
+        raise SystemExit("sheet should expose readonly single-unit report entry")
+
+    cross_site = client.get(f"/reports/unit/{cross_unit_id}")
+    cross_body = cross_site.get_data(as_text=True)
+    if cross_site.status_code != 403:
+        raise SystemExit("unit report should enforce selected current-site boundary for admin")
+    for leaked_value in ("REPORT_SECRET_SITE", "REPORT_SECRET_SHEET", "REPORT_SECRET_FLOOR", "REPORT_SECRET_BLOCK", "REPORT_SECRET_UNIT"):
+        if leaked_value in cross_body:
+            raise SystemExit(f"cross-site unit report response leaked identity: {leaked_value}")
+
+    missing_unit = client.get("/reports/unit/999999999")
+    if missing_unit.status_code != 404:
+        raise SystemExit("unit report missing unit should return 404")
+
+    empty_report = client.get(f"/reports/unit/{empty_unit_id}")
+    empty_html = empty_report.get_data(as_text=True)
+    if empty_report.status_code != 200:
+        raise SystemExit("unit report empty unit should render successfully")
+    if 'data-testid="unit-report-no-tasks"' not in empty_html:
+        raise SystemExit("unit report should render explicit no-tasks state")
+    if 'data-testid="unit-report-no-extra-fields"' not in empty_html:
+        raise SystemExit("unit report should render explicit no-extra-fields state")
+
+    with client.session_transaction() as session:
+        session.pop("current_site_id", None)
+        session.pop("current_site_name", None)
+    missing_site = client.get(f"/reports/unit/{same_unit_id}")
+    if missing_site.status_code != 302 or not missing_site.headers.get("Location", "").endswith("/site-selector"):
+        raise SystemExit("unit report missing current site should redirect to site selector")
+
+print("unit handover report smoke PASS")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(app_db_path), str(ROOT_DIR)],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "unit handover report smoke PASS" not in result.stdout:
+        raise AssertionError("unit handover report smoke subprocess did not report PASS.")
+
+
 def run_table_admin_endpoint_and_formula_smoke(app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -12451,6 +12755,7 @@ def main() -> int:
         run_sqlite_db_path_resolver_smoke()
         run_users_template_delete_ui_smoke()
         run_sheet_endpoint_smoke(Path(tmpdir) / "app-smoke.db")
+        run_unit_handover_report_smoke(Path(tmpdir) / "unit-handover-report-smoke.db")
         run_table_admin_endpoint_and_formula_smoke(Path(tmpdir) / "app-smoke.db")
         run_admin_current_site_sheet_write_smoke(Path(tmpdir) / "admin-current-site-sheet-write.db")
         run_admin_current_site_task_write_smoke(Path(tmpdir) / "admin-current-site-task-write.db")

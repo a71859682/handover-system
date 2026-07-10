@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ report.unit.name or "未填寫" }} 單戶報表｜{{ report.site.name or "未填寫" }}{% endblock %}
+{% block main_class %}page unit-report-page{% endblock %}
+{% macro value_or_empty(value) -%}
+  {%- if value is none or value|string|trim == "" -%}未填寫{%- else -%}{{ value }}{%- endif -%}
+{%- endmacro %}
+{% block content %}
+<article class="unit-report" data-testid="unit-handover-report">
+  <header class="unit-report-header">
+    <div>
+      <p class="unit-report-kicker">Single Unit Handover Report</p>
+      <h1>{{ value_or_empty(report.unit.name) }} 單戶交屋報表</h1>
+      <p class="unit-report-subtitle">{{ value_or_empty(report.site.name) }}／{{ value_or_empty(report.sheet.name) }}</p>
+    </div>
+    <div class="unit-report-actions">
+      <a class="unit-report-back" href="{{ url_for('sheet', sheet_id=report.sheet.id) }}">返回管制表</a>
+      <button type="button" id="unitReportPrintBtn" data-testid="unit-report-print-button">列印／另存 PDF</button>
+    </div>
+  </header>
+
+  <p class="unit-report-disclaimer" data-testid="unit-report-current-state-disclaimer">本報表反映產出當下系統狀態，並非不可變歷史證明。</p>
+
+  <section class="unit-report-card" aria-labelledby="unit-report-context-title">
+    <h2 id="unit-report-context-title">戶別資料</h2>
+    <dl class="unit-report-context-grid">
+      <div><dt>工地</dt><dd data-testid="unit-report-site-name">{{ value_or_empty(report.site.name) }}</dd></div>
+      <div><dt>工地代碼</dt><dd>{{ value_or_empty(report.site.code) }}</dd></div>
+      <div><dt>表單</dt><dd data-testid="unit-report-sheet-name">{{ value_or_empty(report.sheet.name) }}</dd></div>
+      <div><dt>樓層</dt><dd data-testid="unit-report-floor-name">{{ value_or_empty(report.floor.name) }}</dd></div>
+      <div><dt>棟別</dt><dd data-testid="unit-report-block-name">{{ value_or_empty(report.floor.block_name) }}</dd></div>
+      <div><dt>戶別</dt><dd data-testid="unit-report-unit-name">{{ value_or_empty(report.unit.name) }}</dd></div>
+      <div><dt>產出時間</dt><dd data-testid="unit-report-generated-at">{{ value_or_empty(report.generated_at) }}</dd></div>
+      <div><dt>製表人</dt><dd data-testid="unit-report-generated-by">{{ value_or_empty(report.generated_by) }}</dd></div>
+    </dl>
+  </section>
+
+  <section class="unit-report-card" aria-labelledby="unit-report-task-title">
+    <h2 id="unit-report-task-title">工項完成狀態</h2>
+    {% if report.tasks %}
+    <div class="unit-report-table-shell">
+      <table class="unit-report-table" data-testid="unit-report-task-table">
+        <thead><tr><th>工項</th><th>廠商</th><th>位置</th><th>狀態</th></tr></thead>
+        <tbody>
+          {% for task in report.tasks %}
+          <tr data-testid="unit-report-task-row">
+            <td>{{ value_or_empty(task.name) }}</td>
+            <td>{{ value_or_empty(task.vendor) }}</td>
+            <td>{{ value_or_empty(task.location) }}</td>
+            <td><span class="unit-report-status {{ 'is-done' if task.progress_value == done_value else 'is-open' }}" data-testid="unit-report-task-status">{{ task.progress_value }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="unit-report-empty" data-testid="unit-report-no-tasks">目前沒有可顯示的工項。</p>
+    {% endif %}
+  </section>
+
+  <section class="unit-report-card" aria-labelledby="unit-report-extra-title">
+    <h2 id="unit-report-extra-title">單戶附加欄位</h2>
+    {% if report.extra_fields %}
+    <div class="unit-report-table-shell">
+      <table class="unit-report-table" data-testid="unit-report-extra-table">
+        <thead><tr><th>欄位</th><th>目前值</th></tr></thead>
+        <tbody>
+          {% for field in report.extra_fields %}
+          <tr data-testid="unit-report-extra-row">
+            <td>{{ value_or_empty(field.name) }}</td>
+            <td data-testid="unit-report-extra-value">{{ value_or_empty(report.extra_values.get(field.field_key)) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="unit-report-empty" data-testid="unit-report-no-extra-fields">目前沒有啟用的單戶附加欄位。</p>
+    {% endif %}
+  </section>
+</article>
+
+<script>
+  document.getElementById("unitReportPrintBtn")?.addEventListener("click", () => window.print());
+</script>
+{% endblock %}
