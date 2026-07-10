@@ -1,10 +1,19 @@
 {% extends "base.html" %}
 {% block title %}{{ grid.settings.sheet_title }}｜{{ grid.settings.site_title }}{% endblock %}
+{% block main_class %}page sheet-page{% endblock %}
 {% block content %}
 <section class="sheet-header">
   <div>
     <h1>{{ grid.settings.sheet_title }}</h1>
     <p>{{ grid.settings.instruction_text }}</p>
+    <div class="sheet-mobile-work-hub-access" data-testid="sheet-mobile-work-hub-access">
+      <a
+        class="sheet-mobile-work-hub-access-link"
+        data-testid="sheet-mobile-work-hub-access-link"
+        href="#sheet-work-hub-overview"
+        aria-label="前往工作總覽：Management Insight 與 Work Hub"
+      >前往工作總覽</a>
+    </div>
   </div>
   <div class="sheet-actions">
     <div class="sync-state" id="syncState">已同步</div>
@@ -160,7 +169,13 @@
     <span class="crew-toolbar-note">readonly preview，&#19979;&#19968;&#38542;&#27573;&#21855;&#29992;</span>
   </div>
 
-  <section class="crew-work-hub-shell" data-testid="crew-work-hub-shell">
+  <section
+    class="crew-work-hub-shell"
+    id="sheet-work-hub-overview"
+    data-testid="crew-work-hub-shell"
+    tabindex="-1"
+    aria-label="工作總覽：Management Insight 與 Work Hub"
+  >
     <section class="crew-management-insight-summary" id="crewManagementInsightSummary" data-testid="crew-management-insight-summary"></section>
     <div class="crew-work-hub-cards" id="crewWorkHubCards" data-testid="crew-work-hub-cards"></div>
     <div class="crew-work-hub-focus-sections" id="crewWorkHubFocusSections" data-testid="crew-work-hub-focus-sections"></div>

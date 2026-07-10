@@ -1157,6 +1157,10 @@ tfoot tr:nth-child(3) td {
   display: none;
 }
 
+.sheet-page .sheet-mobile-work-hub-access {
+  display: none;
+}
+
 @media (max-width: 760px) {
   .topbar,
   .sheet-header,
@@ -1192,6 +1196,40 @@ tfoot tr:nth-child(3) td {
 
   .floor-report-context-grid {
     grid-template-columns: 1fr;
+  }
+
+  .sheet-page .sheet-mobile-work-hub-access {
+    display: flex;
+    margin-top: 12px;
+  }
+
+  .sheet-page .sheet-mobile-work-hub-access-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 0 14px;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: #eef8f6;
+    color: var(--accent-dark);
+    font-weight: 800;
+    text-decoration: none;
+  }
+
+  .sheet-page .sheet-mobile-work-hub-access-link:focus-visible {
+    outline: 3px solid rgba(15, 118, 110, 0.35);
+    outline-offset: 3px;
+  }
+
+  .sheet-page .crew-work-hub-shell#sheet-work-hub-overview {
+    scroll-margin-top: 16px;
+  }
+
+  .sheet-page .crew-work-hub-shell#sheet-work-hub-overview:target,
+  .sheet-page .crew-work-hub-shell#sheet-work-hub-overview:focus-visible {
+    outline: 3px solid rgba(15, 118, 110, 0.35);
+    outline-offset: 4px;
   }
 
   .vendor-work-entry-page .vendor-mobile-quick-entry {

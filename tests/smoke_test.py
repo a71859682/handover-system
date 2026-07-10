@@ -3970,6 +3970,7 @@ spec.loader.exec_module(module)
 module.app.testing = True
 
 template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
+styles_text = (Path(root_dir) / "static" / "styles.css").read_text(encoding="utf-8")
 js_text = (Path(root_dir) / "static" / "app.js").read_text(encoding="utf-8")
 load_section = js_text.split("async function loadCrewWorkHubSummary", 1)[1].split("function setCrewFormalApproveFeedback", 1)[0]
 status_meta_section = js_text.split("function buildCrewManagementInsightStatusMeta", 1)[1].split("function renderCrewManagementInsightSummary", 1)[0]
@@ -4090,6 +4091,100 @@ if 'data-testid="crew-work-hub-focus-sections"' not in template_text:
     raise SystemExit("work hub runtime consumption should keep work hub focus sections mount container")
 if '<section class="crew-form-shell" data-mode="readonly"' not in template_text:
     raise SystemExit("work hub runtime consumption should keep readonly crew shell container")
+
+for snippet in (
+    '{% block main_class %}page sheet-page{% endblock %}',
+    'data-testid="sheet-mobile-work-hub-access"',
+    'data-testid="sheet-mobile-work-hub-access-link"',
+    'href="#sheet-work-hub-overview"',
+    '>前往工作總覽</a>',
+    'id="sheet-work-hub-overview"',
+    'tabindex="-1"',
+    'aria-label="工作總覽：Management Insight 與 Work Hub"',
+):
+    if snippet not in template_text:
+        raise SystemExit(f"sheet mobile work hub top access missing template guardrail: {snippet}")
+
+if template_text.count('id="sheet-work-hub-overview"') != 1:
+    raise SystemExit("sheet mobile work hub top access target must remain unique")
+if template_text.count('data-testid="crew-work-hub-shell"') != 1:
+    raise SystemExit("sheet mobile work hub top access must not duplicate the work hub shell")
+if template_text.count('data-testid="crew-management-insight-summary"') != 1:
+    raise SystemExit("sheet mobile work hub top access must not duplicate management insight")
+if template_text.count('data-testid="crew-work-hub-cards"') != 1:
+    raise SystemExit("sheet mobile work hub top access must not duplicate work hub cards")
+if template_text.count('data-testid="crew-work-hub-focus-sections"') != 1:
+    raise SystemExit("sheet mobile work hub top access must not duplicate work hub focus sections")
+
+top_access_start = template_text.index('<div class="sheet-mobile-work-hub-access"')
+top_access_end = template_text.index("</div>", top_access_start)
+top_access_source = template_text[top_access_start:top_access_end]
+for forbidden_snippet in (
+    "<script",
+    "<form",
+    "<button",
+    "fetch(",
+    "localStorage",
+    "sessionStorage",
+    "history.",
+    "url_for(",
+    "onclick=",
+    "method=",
+):
+    if forbidden_snippet in top_access_source:
+        raise SystemExit(
+            f"sheet mobile work hub top access must remain readonly anchor navigation: {forbidden_snippet}"
+        )
+
+top_access_href = re.search(r'href="#([^"]+)"', top_access_source)
+if not top_access_href or top_access_href.group(1) != "sheet-work-hub-overview":
+    raise SystemExit("sheet mobile work hub top access href must exactly match its stable target id")
+
+ordered_template_markers = (
+    'data-testid="sheet-mobile-work-hub-access"',
+    '<section class="table-shell">',
+    'id="sheet-work-hub-overview"',
+    'data-testid="crew-management-insight-summary"',
+    'data-testid="crew-work-hub-cards"',
+    'data-testid="crew-work-hub-focus-sections"',
+)
+ordered_template_positions = [template_text.index(marker) for marker in ordered_template_markers]
+if ordered_template_positions != sorted(ordered_template_positions):
+    raise SystemExit("sheet mobile work hub top access must preserve the existing shell and render order")
+
+for marker in ("sheet-mobile-work-hub-access", "sheet-work-hub-overview"):
+    if marker in js_text:
+        raise SystemExit(f"sheet mobile work hub top access must not add a JavaScript dependency: {marker}")
+
+mobile_styles_start = styles_text.index("@media (max-width: 760px)")
+mobile_styles_end = styles_text.index("@media print", mobile_styles_start)
+mobile_styles = styles_text[mobile_styles_start:mobile_styles_end]
+desktop_styles = styles_text[:mobile_styles_start]
+if ".sheet-page .sheet-mobile-work-hub-access {\\n  display: none;\\n}" not in desktop_styles:
+    raise SystemExit("sheet mobile work hub top access must remain hidden by default on desktop")
+
+sheet_mobile_styles_start = mobile_styles.index(".sheet-page .sheet-mobile-work-hub-access")
+sheet_mobile_styles_end = mobile_styles.index(".vendor-work-entry-page", sheet_mobile_styles_start)
+sheet_mobile_styles = mobile_styles[sheet_mobile_styles_start:sheet_mobile_styles_end]
+for snippet in (
+    ".sheet-page .sheet-mobile-work-hub-access",
+    "display: flex;",
+    ".sheet-page .sheet-mobile-work-hub-access-link",
+    ".sheet-page .sheet-mobile-work-hub-access-link:focus-visible",
+    ".sheet-page .crew-work-hub-shell#sheet-work-hub-overview",
+    ".sheet-page .crew-work-hub-shell#sheet-work-hub-overview:target",
+    ".sheet-page .crew-work-hub-shell#sheet-work-hub-overview:focus-visible",
+    "min-height: 44px;",
+    "scroll-margin-top: 16px;",
+):
+    if snippet not in sheet_mobile_styles:
+        raise SystemExit(f"sheet mobile work hub top access missing mobile CSS guardrail: {snippet}")
+
+for line in styles_text.splitlines():
+    if "sheet-mobile-work-hub-access" in line or "sheet-work-hub-overview" in line:
+        if not line.strip().startswith(".sheet-page "):
+            raise SystemExit(f"sheet mobile work hub top access CSS must remain page-scoped: {line}")
+
 for snippet in (
     ".crew-management-insight-summary",
     ".crew-management-insight-summary-grid",
