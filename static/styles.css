@@ -1166,6 +1166,48 @@ tfoot tr:nth-child(3) td {
   display: none;
 }
 
+.sheet-page .sheet-bidirectional-floating-navigation {
+  position: fixed;
+  right: calc(12px + env(safe-area-inset-right));
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  z-index: 30;
+  display: grid;
+  gap: 6px;
+}
+
+.sheet-page .sheet-bidirectional-floating-navigation-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid rgba(15, 118, 110, 0.58);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 22px rgba(31, 42, 46, 0.18);
+  color: var(--accent-dark);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-decoration: none;
+  transition: box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.sheet-page .sheet-bidirectional-floating-navigation-link:hover {
+  box-shadow: 0 10px 26px rgba(31, 42, 46, 0.24);
+  transform: translateY(-1px);
+}
+
+.sheet-page .sheet-bidirectional-floating-navigation-link:focus-visible {
+  outline: 3px solid var(--accent-dark);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.96), 0 10px 26px rgba(31, 42, 46, 0.24);
+  transform: translateY(-2px);
+}
+
 @media (max-width: 760px) {
   .topbar,
   .sheet-header,
@@ -1401,6 +1443,7 @@ tfoot tr:nth-child(3) td {
   .topbar,
   .tabs,
   .sheet-actions,
+  .sheet-page .sheet-bidirectional-floating-navigation,
   .toggle,
   .date-popover,
   .progress-select,

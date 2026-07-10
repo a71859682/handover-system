@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import inspect
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -4529,6 +4530,91 @@ print("work hub runtime consumption smoke PASS")
     )
     if "work hub runtime consumption smoke PASS" not in result.stdout:
         raise AssertionError("work hub runtime consumption smoke subprocess did not report PASS.")
+
+
+def run_sheet_bidirectional_floating_navigation_guardrail_smoke() -> None:
+    template_text = (ROOT_DIR / "templates" / "sheet.html").read_text(encoding="utf-8")
+    styles_text = (ROOT_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+    js_text = (ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+    def parse_attrs(tag: str) -> dict[str, str]:
+        return dict(re.findall(r'([:\w-]+)="([^"]*)"', tag))
+
+    nav_marker = 'data-testid="sheet-bidirectional-floating-navigation"'
+    if template_text.count(nav_marker) != 1:
+        raise AssertionError("sheet bidirectional floating navigation container must remain unique")
+    nav_marker_pos = template_text.index(nav_marker)
+    nav_start = template_text.rfind("<nav", 0, nav_marker_pos)
+    nav_end = template_text.index("</nav>", nav_marker_pos) + len("</nav>")
+    nav_source = template_text[nav_start:nav_end]
+    anchors = re.findall(r"<a\b[^>]*>.*?</a>", nav_source, re.S)
+    if len(anchors) != 2:
+        raise AssertionError("sheet bidirectional floating navigation must contain exactly two anchors")
+    anchor_attrs = [parse_attrs(anchor.split(">", 1)[0]) for anchor in anchors]
+    anchor_contracts = [(attrs.get("href"), attrs.get("aria-label")) for attrs in anchor_attrs]
+    if anchor_contracts != [("#top", "回到最上方"), ("#sheet-lower-table-start", "回到下方表格首")]:
+        raise AssertionError("sheet bidirectional floating navigation anchor order or semantics changed")
+    if any("title" in attrs for attrs in anchor_attrs) or "sheet-bidirectional-floating-navigation-label" in nav_source:
+        raise AssertionError("sheet bidirectional floating navigation must not duplicate accessible names")
+    if any(anchor.count('aria-hidden="true"') != 1 for anchor in anchors):
+        raise AssertionError("each sheet floating navigation icon must remain hidden from assistive technology")
+    if template_text.count('id="sheet-lower-table-start"') != 1 or 'id="sheet-page-top"' in template_text:
+        raise AssertionError("sheet floating navigation must use the native top fragment and readonly shell target")
+    crew_shell_tag = re.search(r'<section\b[^>]*class="crew-form-shell"[^>]*>', template_text)
+    if not crew_shell_tag or parse_attrs(crew_shell_tag.group(0)).get("id") != "sheet-lower-table-start":
+        raise AssertionError("sheet lower-table target must remain on the existing readonly crew shell")
+    if any(token in nav_source for token in ("<form", "<button", "<script", "fetch(", "POST", "Storage", "history.", "onclick=")):
+        raise AssertionError("sheet bidirectional floating navigation must remain readonly native navigation")
+
+    toolbar_start = template_text.index('<div class="crew-form-toolbar">')
+    toolbar_source = template_text[toolbar_start:template_text.index("</div>", toolbar_start)]
+    toolbar_buttons = re.findall(r"<button\b[^>]*>", toolbar_source)
+    toolbar_ids = [parse_attrs(button).get("id") for button in toolbar_buttons]
+    if toolbar_ids != ["crewFollowupsBtn", "crewDailySummaryBtn", "crewMissingBtn"]:
+        raise AssertionError("sheet floating navigation must preserve readonly preview button count and order")
+    if any(not re.search(r"\bdisabled(?:\s|>)", button) for button in toolbar_buttons):
+        raise AssertionError("sheet floating navigation must preserve readonly preview disabled semantics")
+    for testid in (
+        'data-testid="crew-work-hub-shell"',
+        'data-testid="crew-management-insight-summary"',
+        'data-testid="crew-work-hub-cards"',
+        'data-testid="crew-work-hub-focus-sections"',
+    ):
+        if template_text.count(testid) != 1:
+            raise AssertionError(f"sheet bidirectional floating navigation must preserve one existing shell: {testid}")
+    if any(marker in js_text for marker in ("sheet-bidirectional-floating-navigation", "sheet-floating-navigation")):
+        raise AssertionError("sheet bidirectional floating navigation must not add JavaScript wiring")
+
+    container_match = re.search(r"\.sheet-page \.sheet-bidirectional-floating-navigation \{(.*?)\}", styles_text, re.S)
+    link_match = re.search(r"\.sheet-page \.sheet-bidirectional-floating-navigation-link \{(.*?)\}", styles_text, re.S)
+    if not container_match or not link_match:
+        raise AssertionError("sheet bidirectional floating navigation CSS blocks are missing")
+    container_css, link_css = container_match.group(1), link_match.group(1)
+    if any(
+        marker not in container_css
+        for marker in (
+            "position: fixed",
+            "display: grid",
+            "safe-area-inset-right",
+            "bottom: calc(24px + env(safe-area-inset-bottom))",
+        )
+    ):
+        raise AssertionError("sheet floating navigation fixed safe-area contract is missing")
+    z_index_match = re.search(r"z-index:\s*(\d+)", container_css)
+    if not z_index_match or int(z_index_match.group(1)) >= 32:
+        raise AssertionError("sheet floating navigation must remain below the matrix sticky header")
+    if any(marker not in link_css for marker in ("width: 44px", "height: 44px", "min-width: 44px", "min-height: 44px")):
+        raise AssertionError("sheet floating navigation touch target must remain at least 44px")
+    if ".sheet-page .sheet-bidirectional-floating-navigation-link:focus-visible" not in styles_text:
+        raise AssertionError("sheet floating navigation focus-visible guardrail is missing")
+
+    if "grid-template-columns" in container_css or "grid-template-columns: repeat(2, max-content);" in styles_text:
+        raise AssertionError("sheet bidirectional floating navigation must remain vertically stacked in landscape")
+
+    print_styles = styles_text[styles_text.index("@media print"):]
+    print_hidden_selector_group = print_styles.split("display: none !important;", 1)[0]
+    if ".sheet-page .sheet-bidirectional-floating-navigation," not in print_hidden_selector_group:
+        raise AssertionError("sheet bidirectional floating navigation must remain hidden in print")
 
 
 def run_sheet_endpoint_smoke(app_db_path: Path) -> None:
@@ -13503,6 +13589,7 @@ def main() -> int:
         run_management_read_model_api_smoke(Path(tmpdir) / "management-read-model-api-smoke.db")
         run_work_hub_runtime_api_smoke(Path(tmpdir) / "work-hub-runtime-api-smoke.db")
         run_work_hub_runtime_consumption_smoke(Path(tmpdir) / "work-hub-runtime-consumption-smoke.db")
+        run_sheet_bidirectional_floating_navigation_guardrail_smoke()
         run_work_hub_quick_action_smoke(Path(tmpdir) / "work-hub-quick-action-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()

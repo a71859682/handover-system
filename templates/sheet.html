@@ -29,6 +29,25 @@
   </div>
 </section>
 
+<nav
+  class="sheet-bidirectional-floating-navigation"
+  data-testid="sheet-bidirectional-floating-navigation"
+  aria-label="頁面快速導覽"
+>
+  <a
+    class="sheet-bidirectional-floating-navigation-link"
+    data-testid="sheet-floating-navigation-top"
+    href="#top"
+    aria-label="回到最上方"
+  ><span aria-hidden="true">↑</span></a>
+  <a
+    class="sheet-bidirectional-floating-navigation-link"
+    data-testid="sheet-floating-navigation-lower-table"
+    href="#sheet-lower-table-start"
+    aria-label="回到下方表格首"
+  ><span aria-hidden="true">↓</span></a>
+</nav>
+
 <div class="print-meta">
   <div class="print-date">列表日期：<span id="printDate"></span></div>
   <div class="print-maker">製表人：{{ session.get("display_name") or session.get("username") }}</div>
@@ -153,7 +172,7 @@
   </table>
 </section>
 
-<section class="crew-form-shell" data-mode="readonly" data-sheet-id="{{ grid.current_sheet.id }}">
+<section class="crew-form-shell" data-mode="readonly" data-sheet-id="{{ grid.current_sheet.id }}" id="sheet-lower-table-start">
   <div class="crew-form-header">
     <div>
       <h2>&#24037;&#29677;&#36914;&#22580;&#34920;</h2>
