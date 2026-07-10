@@ -1368,7 +1368,8 @@ tfoot tr:nth-child(3) td {
   }
 }
 
-@media (max-width: 900px) and (orientation: landscape) {
+@media (max-width: 900px) and (orientation: landscape),
+       (orientation: landscape) and (max-height: 600px) and (hover: none) and (pointer: coarse) {
   .sheet-page .table-shell {
     --sheet-matrix-viewport-offset: 5rem;
     --sheet-matrix-viewport-offset: clamp(3rem, 16dvh, 6rem);
@@ -1387,6 +1388,7 @@ tfoot tr:nth-child(3) td {
   .sheet-page .control-table tfoot th,
   .sheet-page .control-table tfoot td {
     position: static;
+    top: auto;
     bottom: auto;
   }
 }

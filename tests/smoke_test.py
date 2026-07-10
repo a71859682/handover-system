@@ -4657,6 +4657,10 @@ def run_mobile_sheet_frozen_region_guardrail_smoke() -> None:
 
     portrait_marker = "@media (max-width: 760px) and (orientation: portrait)"
     landscape_marker = "@media (max-width: 900px) and (orientation: landscape)"
+    android_landscape_marker = (
+        "(orientation: landscape) and (max-height: 600px) "
+        "and (hover: none) and (pointer: coarse)"
+    )
     portrait_start = styles_text.index(portrait_marker)
     landscape_start = styles_text.index(landscape_marker, portrait_start)
     print_start = styles_text.index("@media print", landscape_start)
@@ -4710,6 +4714,7 @@ def run_mobile_sheet_frozen_region_guardrail_smoke() -> None:
 
     for snippet in (
         landscape_marker,
+        android_landscape_marker,
         ".sheet-page .table-shell",
         "--sheet-matrix-viewport-offset: 5rem;",
         "--sheet-matrix-viewport-offset: clamp(3rem, 16dvh, 6rem);",
@@ -4726,6 +4731,7 @@ def run_mobile_sheet_frozen_region_guardrail_smoke() -> None:
         ".sheet-page .control-table tfoot th,",
         ".sheet-page .control-table tfoot td",
         "position: static;",
+        "top: auto;",
         "bottom: auto;",
     ):
         if snippet not in landscape_styles:
@@ -4734,6 +4740,19 @@ def run_mobile_sheet_frozen_region_guardrail_smoke() -> None:
         raise AssertionError("landscape footer release must not alter portrait column behavior")
     if "display: none" in landscape_styles or "visibility: hidden" in landscape_styles:
         raise AssertionError("landscape footer rows must remain available through vertical scrolling")
+    if "!important" in landscape_styles:
+        raise AssertionError("landscape footer release should not require important overrides")
+    if landscape_styles.count(".sheet-page .table-shell") != 1:
+        raise AssertionError("landscape viewport fit should have one shared capability boundary")
+    for forbidden_snippet in (
+        "navigator.userAgent",
+        "navigator.platform",
+        "matchMedia(",
+        'includes("Android")',
+        'includes("iPhone")',
+    ):
+        if forbidden_snippet in js_text:
+            raise AssertionError(f"mobile footer compatibility must not use JS device detection: {forbidden_snippet}")
 
     base_table_shell_start = base_styles.index(".table-shell {")
     base_table_shell_end = base_styles.index(".crew-form-shell", base_table_shell_start)
