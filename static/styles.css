@@ -1328,6 +1328,30 @@ tfoot tr:nth-child(3) td {
   }
 }
 
+@media (max-width: 760px) and (orientation: portrait) {
+  .sheet-page .control-table .count {
+    display: none;
+    width: 0;
+    min-width: 0;
+    max-width: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .sheet-page .control-table .unit,
+  .sheet-page .control-table tbody td:nth-child(3) {
+    left: 92px;
+  }
+}
+
+@media (max-width: 900px) and (orientation: landscape) {
+  .sheet-page .control-table tfoot th,
+  .sheet-page .control-table tfoot td {
+    position: static;
+    bottom: auto;
+  }
+}
+
 @media print {
   body {
     background: #fff;

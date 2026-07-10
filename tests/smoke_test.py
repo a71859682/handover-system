@@ -4608,6 +4608,110 @@ print("sheet endpoint smoke PASS")
         raise AssertionError("sheet endpoint smoke subprocess did not report PASS.")
 
 
+def run_mobile_sheet_frozen_region_guardrail_smoke() -> None:
+    template_text = (ROOT_DIR / "templates" / "sheet.html").read_text(encoding="utf-8")
+    styles_text = (ROOT_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+    js_text = (ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+    if template_text.count('<th class="count"') != 2:
+        raise AssertionError("sheet count column should keep both existing header cells")
+    if template_text.count('<td class="count"') != 2:
+        raise AssertionError("sheet count column should use one shared selector for both body row sources")
+    for snippet in (
+        '<td class="count">{{ item.floor.unit_count }}</td>',
+        '<td class="count">1</td>',
+        '<th colspan="3">未完成戶數</th>',
+        '<th colspan="3">已完成戶數</th>',
+        '<th colspan="3">總戶數</th>',
+    ):
+        if snippet not in template_text:
+            raise AssertionError(f"mobile frozen region template guardrail missing: {snippet}")
+
+    portrait_marker = "@media (max-width: 760px) and (orientation: portrait)"
+    landscape_marker = "@media (max-width: 900px) and (orientation: landscape)"
+    portrait_start = styles_text.index(portrait_marker)
+    landscape_start = styles_text.index(landscape_marker, portrait_start)
+    print_start = styles_text.index("@media print", landscape_start)
+    base_styles = styles_text[:portrait_start]
+    portrait_styles = styles_text[portrait_start:landscape_start]
+    landscape_styles = styles_text[landscape_start:print_start]
+
+    base_count_start = base_styles.index(".control-table .count")
+    base_count_end = base_styles.index(".control-table .unit", base_count_start)
+    base_count_styles = base_styles[base_count_start:base_count_end]
+    for snippet in ("left: 92px;", "width: 58px;", "min-width: 58px;", "max-width: 58px;"):
+        if snippet not in base_count_styles:
+            raise AssertionError(f"desktop count column contract missing: {snippet}")
+    if "display: none" in base_count_styles:
+        raise AssertionError("desktop count column must remain visible")
+
+    for snippet in (
+        portrait_marker,
+        ".sheet-page .control-table .count",
+        "display: none;",
+        "width: 0;",
+        "min-width: 0;",
+        "max-width: 0;",
+        "padding: 0;",
+        "border: 0;",
+        ".sheet-page .control-table .unit,",
+        ".sheet-page .control-table tbody td:nth-child(3)",
+        "left: 92px;",
+    ):
+        if snippet not in portrait_styles:
+            raise AssertionError(f"portrait frozen region CSS guardrail missing: {snippet}")
+    if "tfoot" in portrait_styles:
+        raise AssertionError("portrait count-column rule must not alter footer sticky behavior")
+
+    for snippet in (
+        landscape_marker,
+        ".sheet-page .control-table tfoot th,",
+        ".sheet-page .control-table tfoot td",
+        "position: static;",
+        "bottom: auto;",
+    ):
+        if snippet not in landscape_styles:
+            raise AssertionError(f"landscape frozen region CSS guardrail missing: {snippet}")
+    if ".count" in landscape_styles or ".unit" in landscape_styles:
+        raise AssertionError("landscape footer release must not alter portrait column behavior")
+
+    for snippet in (
+        "tfoot th,\n",
+        "tfoot td {\n  position: sticky;",
+        "tfoot tr:nth-child(1) th,",
+        "bottom: 64px;",
+        "tfoot tr:nth-child(2) th,",
+        "bottom: 32px;",
+        "tfoot tr:nth-child(3) th,",
+        "bottom: 0;",
+    ):
+        if snippet not in base_styles:
+            raise AssertionError(f"desktop footer sticky contract missing: {snippet}")
+
+    grid_control_sources = (
+        ('class="toggle" type="button" data-floor-id="{{ item.floor.id }}"', 1),
+        ('class="progress-select" data-unit-id="{{ unit.id }}" data-task-id="{{ task.id }}"', 1),
+        ('class="extra-select" data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}"', 1),
+        ('class="extra-input" type="date" data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}"', 1),
+    )
+    for snippet, expected_count in grid_control_sources:
+        if snippet not in template_text:
+            raise AssertionError(f"mobile frozen region must preserve grid write control: {snippet}")
+        if template_text.count(snippet) != expected_count:
+            raise AssertionError(f"mobile frozen region must not duplicate grid write control: {snippet}")
+    for snippet in (
+        'return postJson("/api/progress", {',
+        'return postJson("/api/unit-extra", {',
+        'const progress = event.target.closest(".progress-select");',
+        'const extra = event.target.closest(".extra-select");',
+    ):
+        if snippet not in js_text:
+            raise AssertionError(f"mobile frozen region must preserve existing write handler: {snippet}")
+    for forbidden_snippet in (portrait_marker, landscape_marker):
+        if forbidden_snippet in js_text:
+            raise AssertionError("mobile frozen region responsiveness must remain CSS-only")
+
+
 def run_unit_handover_report_smoke(app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -13302,6 +13406,7 @@ def main() -> int:
         run_sqlite_db_path_resolver_smoke()
         run_users_template_delete_ui_smoke()
         run_sheet_endpoint_smoke(Path(tmpdir) / "app-smoke.db")
+        run_mobile_sheet_frozen_region_guardrail_smoke()
         run_unit_handover_report_smoke(Path(tmpdir) / "unit-handover-report-smoke.db")
         run_floor_handover_report_smoke(Path(tmpdir) / "floor-handover-report-smoke.db")
         run_table_admin_endpoint_and_formula_smoke(Path(tmpdir) / "app-smoke.db")

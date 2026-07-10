@@ -71,7 +71,7 @@
           <span>{{ item.floor.name }}</span>
           <a class="floor-report-link" data-testid="floor-report-link-{{ item.floor.id }}" href="{{ url_for('floor_handover_report', floor_id=item.floor.id) }}">樓層報表</a>
         </td>
-        <td>{{ item.floor.unit_count }}</td>
+        <td class="count">{{ item.floor.unit_count }}</td>
         <td>{{ item.floor.block_name }}</td>
         {% for task in grid.tasks %}
         {% set status = item.parent_status[task.id] %}
@@ -85,7 +85,7 @@
       {% set extra = grid.extras.get(unit.id, {}) %}
       <tr class="unit-row hidden" data-floor-id="{{ item.floor.id }}" data-unit-id="{{ unit.id }}">
         <td></td>
-        <td>1</td>
+        <td class="count">1</td>
         <td data-unit-name>
           <span>{{ unit.name }}</span>
           <a class="unit-report-link" data-testid="unit-report-link-{{ unit.id }}" href="{{ url_for('unit_handover_report', unit_id=unit.id) }}">單戶報表</a>
