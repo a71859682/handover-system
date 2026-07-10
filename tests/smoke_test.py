@@ -12548,6 +12548,88 @@ def run_vendor_work_entry_page_context_regression_smoke(db_path: Path) -> None:
     assert spec.loader is not None
     spec.loader.exec_module(module)
 
+    template_text = (ROOT_DIR / "templates" / "vendor_work_entry.html").read_text(encoding="utf-8")
+    styles_text = (ROOT_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+    for fragment in (
+        '{% block main_class %}page vendor-work-entry-page{% endblock %}',
+        'data-testid="vendor-mobile-quick-entry"',
+        'data-testid="vendor-mobile-quick-entry-business-date"',
+        'data-testid="vendor-mobile-quick-entry-vendor-name"',
+        'data-testid="vendor-mobile-quick-entry-link"',
+        'aria-labelledby="vendor-mobile-quick-entry-title"',
+        'href="#vendor-work-entry-draft-form-target"',
+        'id="vendor-work-entry-draft-form-target"',
+        '{% if is_new_entry_mode %}開始填報{% else %}繼續填報{% endif %}',
+        'data-vendor-work-entry-submit-url="/api/vendor-work-entry"',
+        'data-vendor-work-entry-submit-method="POST"',
+        'data-vendor-work-entry-context="trusted"',
+        'data-testid="vendor-work-entry-draft-hidden-sheet-id"',
+        'data-testid="vendor-work-entry-draft-hidden-business-date"',
+        'data-testid="vendor-work-entry-draft-hidden-vendor-name"',
+        'data-testid="vendor-work-entry-draft-hidden-entry-id"',
+        'data-testid="vendor-work-entry-draft-validation-summary"',
+        'data-testid="vendor-work-entry-draft-validation-error-planned-at"',
+        'data-testid="vendor-work-entry-draft-validation-error-planned-headcount"',
+        'data-testid="vendor-work-entry-draft-validation-error-actual-headcount"',
+        'data-testid="vendor-work-entry-draft-validation-error-work-headcount"',
+        'data-testid="vendor-work-entry-draft-validation-error-entry-order"',
+    ):
+        if fragment not in template_text:
+            raise AssertionError(f"vendor mobile quick-entry template missing guardrail: {fragment}")
+    if template_text.count('<form') != 1:
+        raise AssertionError("vendor mobile quick-entry must preserve the single existing form")
+    if template_text.count('type="submit"') != 1:
+        raise AssertionError("vendor mobile quick-entry must preserve the single existing submit button")
+    if template_text.count('id="vendor-work-entry-draft-form-target"') != 1:
+        raise AssertionError("vendor mobile quick-entry draft target must remain unique")
+    quick_entry_start = template_text.index('<section class="vendor-mobile-quick-entry"')
+    quick_entry_end = template_text.index("</section>", quick_entry_start)
+    quick_entry_source = template_text[quick_entry_start:quick_entry_end]
+    for forbidden_fragment in ("fetch(", "localStorage", "sessionStorage", "history.", "url_for("):
+        if forbidden_fragment in quick_entry_source:
+            raise AssertionError(
+                f"vendor mobile quick-entry must remain readonly anchor navigation: {forbidden_fragment}"
+            )
+    for field_name in (
+        "sheet_id",
+        "business_date",
+        "vendor_name",
+        "id",
+        "planned_at",
+        "planned_headcount",
+        "actual_headcount",
+        "work_content",
+        "pre_entry_requirement",
+        "work_headcount",
+        "entry_order",
+    ):
+        if f'name="{field_name}"' not in template_text:
+            raise AssertionError(f"vendor mobile quick-entry must preserve field name: {field_name}")
+    mobile_styles_start = styles_text.index("@media (max-width: 760px)")
+    mobile_styles_end = styles_text.index("@media print", mobile_styles_start)
+    mobile_styles = styles_text[mobile_styles_start:mobile_styles_end]
+    for fragment in (
+        ".vendor-work-entry-page .vendor-mobile-quick-entry",
+        ".vendor-work-entry-page .vendor-mobile-quick-entry-link",
+        ".vendor-work-entry-page #vendor-work-entry-draft-form-target",
+        ".vendor-work-entry-page #vendor-work-entry-draft-form-target:target",
+        '.vendor-work-entry-page [data-testid="vendor-work-entry-draft-form"] textarea',
+        "min-height: 44px;",
+        "scroll-margin-top: 16px;",
+    ):
+        if fragment not in mobile_styles:
+            raise AssertionError(f"vendor mobile quick-entry CSS missing guardrail: {fragment}")
+    scoped_selector_markers = (
+        "vendor-mobile-quick-entry",
+        "vendor-work-entry-draft-form-target",
+        'data-testid="vendor-work-entry-draft-form"',
+        'data-testid="vendor-work-entry-draft-submit-button"',
+    )
+    for line in styles_text.splitlines():
+        if any(marker in line for marker in scoped_selector_markers):
+            if not line.strip().startswith(".vendor-work-entry-page "):
+                raise AssertionError(f"vendor mobile quick-entry CSS selector must remain page-scoped: {line}")
+
     with module.db() as conn:
         conn.row_factory = sqlite3.Row
         conn.execute(
@@ -12607,6 +12689,11 @@ def run_vendor_work_entry_page_context_regression_smoke(db_path: Path) -> None:
         raise AssertionError("vendor work entry selected-entry page should return 200")
     selected_entry_html = selected_entry_page.get_data(as_text=True)
     for fragment in (
+        'data-testid="vendor-mobile-quick-entry"',
+        'data-testid="vendor-mobile-quick-entry-link" href="#vendor-work-entry-draft-form-target"',
+        f'data-testid="vendor-mobile-quick-entry-business-date">{business_date}<',
+        'data-testid="vendor-mobile-quick-entry-vendor-name">Vendor A<',
+        "繼續填報",
         'data-testid="vendor-work-entry-readiness-summary"',
         'data-testid="vendor-work-entry-summary-status-line"',
         'data-testid="vendor-work-entry-draft-submit"',
@@ -12620,12 +12707,19 @@ def run_vendor_work_entry_page_context_regression_smoke(db_path: Path) -> None:
     ):
         if fragment not in selected_entry_html:
             raise AssertionError(f"vendor work entry selected-entry page missing fragment: {fragment}")
+    if "開始填報" in selected_entry_html:
+        raise AssertionError("vendor work entry selected-entry page must not render create-mode quick-entry copy")
 
     new_entry_page = client.get("/vendor/work-entry?new_entry=1", follow_redirects=False)
     if new_entry_page.status_code != 200:
         raise AssertionError("vendor work entry create-mode page should return 200")
     new_entry_html = new_entry_page.get_data(as_text=True)
     for fragment in (
+        'data-testid="vendor-mobile-quick-entry"',
+        'data-testid="vendor-mobile-quick-entry-link" href="#vendor-work-entry-draft-form-target"',
+        f'data-testid="vendor-mobile-quick-entry-business-date">{business_date}<',
+        'data-testid="vendor-mobile-quick-entry-vendor-name">Vendor A<',
+        "開始填報",
         'data-testid="vendor-work-entry-readiness-summary"',
         'data-testid="vendor-work-entry-summary-status-line"',
         'data-testid="vendor-work-entry-draft-submit"',
@@ -12639,6 +12733,8 @@ def run_vendor_work_entry_page_context_regression_smoke(db_path: Path) -> None:
     ):
         if fragment not in new_entry_html:
             raise AssertionError(f"vendor work entry create-mode page missing fragment: {fragment}")
+    if "繼續填報" in new_entry_html:
+        raise AssertionError("vendor work entry create-mode page must not render edit-mode quick-entry copy")
 
 
 def run_vendor_work_entry_preflight_context_regression_smoke(db_path: Path) -> None:

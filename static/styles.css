@@ -1153,6 +1153,10 @@ tfoot tr:nth-child(3) td {
   gap: 6px;
 }
 
+.vendor-work-entry-page .vendor-mobile-quick-entry {
+  display: none;
+}
+
 @media (max-width: 760px) {
   .topbar,
   .sheet-header,
@@ -1188,6 +1192,101 @@ tfoot tr:nth-child(3) td {
 
   .floor-report-context-grid {
     grid-template-columns: 1fr;
+  }
+
+  .vendor-work-entry-page .vendor-mobile-quick-entry {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 14px;
+    padding: 12px;
+    border: 1px solid #99c9c3;
+    border-radius: 10px;
+    background: #eef8f6;
+  }
+
+  .vendor-work-entry-page .vendor-mobile-quick-entry > div {
+    flex: 1 1 180px;
+    min-width: 0;
+  }
+
+  .vendor-work-entry-page .vendor-mobile-quick-entry-title {
+    margin: 0;
+    font-weight: 800;
+  }
+
+  .vendor-work-entry-page .vendor-mobile-quick-entry-context {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin: 6px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  .vendor-work-entry-page .vendor-mobile-quick-entry-context div {
+    display: flex;
+    gap: 4px;
+  }
+
+  .vendor-work-entry-page .vendor-mobile-quick-entry-context dt,
+  .vendor-work-entry-page .vendor-mobile-quick-entry-context dd {
+    margin: 0;
+  }
+
+  .vendor-work-entry-page .vendor-mobile-quick-entry-context dd {
+    color: var(--text);
+    font-weight: 700;
+  }
+
+  .vendor-work-entry-page .vendor-mobile-quick-entry-link {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 0 14px;
+    border-radius: 8px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 800;
+    text-decoration: none;
+  }
+
+  .vendor-work-entry-page .vendor-mobile-quick-entry-link:focus-visible {
+    outline: 3px solid rgba(15, 118, 110, 0.35);
+    outline-offset: 3px;
+  }
+
+  .vendor-work-entry-page #vendor-work-entry-draft-form-target {
+    scroll-margin-top: 16px;
+  }
+
+  .vendor-work-entry-page #vendor-work-entry-draft-form-target:target {
+    outline: 3px solid rgba(15, 118, 110, 0.35);
+    outline-offset: 3px;
+  }
+
+  .vendor-work-entry-page [data-testid="vendor-work-entry-draft-form"] input:not([type="hidden"]),
+  .vendor-work-entry-page [data-testid="vendor-work-entry-draft-form"] select,
+  .vendor-work-entry-page [data-testid="vendor-work-entry-draft-form"] textarea,
+  .vendor-work-entry-page [data-testid="vendor-work-entry-draft-submit-button"] {
+    min-height: 44px;
+    padding: 9px 10px;
+  }
+
+  .vendor-work-entry-page [data-testid="vendor-work-entry-draft-form"] input:not([type="hidden"]),
+  .vendor-work-entry-page [data-testid="vendor-work-entry-draft-form"] select,
+  .vendor-work-entry-page [data-testid="vendor-work-entry-draft-form"] textarea,
+  .vendor-work-entry-page [data-testid="vendor-work-entry-draft-submit-button"] {
+    width: 100%;
+  }
+
+  .vendor-work-entry-page [data-testid="vendor-work-entry-draft-form"] textarea {
+    min-height: 104px;
+    resize: vertical;
   }
 }
 

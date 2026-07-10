@@ -1,9 +1,29 @@
 {% extends "base.html" %}
 {% block title %}Vendor Work Entry{% endblock %}
+{% block main_class %}page vendor-work-entry-page{% endblock %}
 {% block content %}
 <section class="section-header" data-testid="vendor-work-entry-page">
   <h1>Vendor Work Entry</h1>
   <p>Vendor Home: {{ profile_payload.vendor_name }} ({{ profile_payload.vendor_username }})</p>
+</section>
+
+<section class="vendor-mobile-quick-entry" data-testid="vendor-mobile-quick-entry" aria-labelledby="vendor-mobile-quick-entry-title">
+  <div>
+    <p class="vendor-mobile-quick-entry-title" id="vendor-mobile-quick-entry-title">今日快速填報</p>
+    <dl class="vendor-mobile-quick-entry-context">
+      <div>
+        <dt>施工日期</dt>
+        <dd data-testid="vendor-mobile-quick-entry-business-date">{{ draft_submit_preparation.business_date }}</dd>
+      </div>
+      <div>
+        <dt>廠商</dt>
+        <dd data-testid="vendor-mobile-quick-entry-vendor-name">{{ draft_submit_preparation.vendor_name }}</dd>
+      </div>
+    </dl>
+  </div>
+  <a class="vendor-mobile-quick-entry-link" data-testid="vendor-mobile-quick-entry-link" href="#vendor-work-entry-draft-form-target">
+    {% if is_new_entry_mode %}開始填報{% else %}繼續填報{% endif %}
+  </a>
 </section>
 
 {% if submit_result.status == "success" %}
@@ -163,7 +183,7 @@
   {% endif %}
 </section>
 
-<section class="admin-section" data-testid="vendor-work-entry-draft-submit">
+<section class="admin-section" id="vendor-work-entry-draft-form-target" data-testid="vendor-work-entry-draft-submit">
   <h2>進場填報草稿</h2>
   <p data-testid="vendor-work-entry-draft-submit-helper">
     請先確認下方進場資訊與施工內容。本頁僅整理既有送出欄位，不新增任何額外流程或規則。
