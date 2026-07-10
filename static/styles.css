@@ -860,6 +860,11 @@ button[type="submit"],
   background: #fff7df;
 }
 
+.control-table tfoot .footer-label-floor,
+.control-table tfoot .footer-label-count {
+  border-right: 0;
+}
+
 .floor-row td {
   background: #f0f4f3;
   font-weight: 800;
@@ -1329,13 +1334,32 @@ tfoot tr:nth-child(3) td {
 }
 
 @media (max-width: 760px) and (orientation: portrait) {
+  .sheet-page .table-shell {
+    --sheet-matrix-viewport-offset: 10rem;
+    --sheet-matrix-viewport-offset: clamp(8rem, 24dvh, 12rem);
+    --sheet-matrix-min-height: 16rem;
+    --sheet-matrix-safe-gap: 2rem;
+    height: calc(100vh - var(--sheet-matrix-viewport-offset));
+    height: calc(100dvh - var(--sheet-matrix-viewport-offset));
+    min-height: min(var(--sheet-matrix-min-height), calc(100vh - var(--sheet-matrix-safe-gap)));
+    min-height: min(var(--sheet-matrix-min-height), calc(100dvh - var(--sheet-matrix-safe-gap)));
+    max-height: calc(100vh - var(--sheet-matrix-safe-gap));
+    max-height: calc(100dvh - var(--sheet-matrix-safe-gap));
+    overflow-x: auto;
+    overflow-y: auto;
+  }
+
   .sheet-page .control-table .count {
-    display: none;
     width: 0;
     min-width: 0;
     max-width: 0;
     padding: 0;
     border: 0;
+  }
+
+  .sheet-page .control-table th.count,
+  .sheet-page .control-table td.count {
+    display: none;
   }
 
   .sheet-page .control-table .unit,
@@ -1345,6 +1369,21 @@ tfoot tr:nth-child(3) td {
 }
 
 @media (max-width: 900px) and (orientation: landscape) {
+  .sheet-page .table-shell {
+    --sheet-matrix-viewport-offset: 5rem;
+    --sheet-matrix-viewport-offset: clamp(3rem, 16dvh, 6rem);
+    --sheet-matrix-min-height: 12rem;
+    --sheet-matrix-safe-gap: 2rem;
+    height: calc(100vh - var(--sheet-matrix-viewport-offset));
+    height: calc(100dvh - var(--sheet-matrix-viewport-offset));
+    min-height: min(var(--sheet-matrix-min-height), calc(100vh - var(--sheet-matrix-safe-gap)));
+    min-height: min(var(--sheet-matrix-min-height), calc(100dvh - var(--sheet-matrix-safe-gap)));
+    max-height: calc(100vh - var(--sheet-matrix-safe-gap));
+    max-height: calc(100dvh - var(--sheet-matrix-safe-gap));
+    overflow-x: auto;
+    overflow-y: auto;
+  }
+
   .sheet-page .control-table tfoot th,
   .sheet-page .control-table tfoot td {
     position: static;

@@ -4613,19 +4613,47 @@ def run_mobile_sheet_frozen_region_guardrail_smoke() -> None:
     styles_text = (ROOT_DIR / "static" / "styles.css").read_text(encoding="utf-8")
     js_text = (ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
 
-    if template_text.count('<th class="count"') != 2:
+    thead_text = template_text[template_text.index("<thead>"):template_text.index("</thead>")]
+    tfoot_text = template_text[template_text.index("<tfoot>"):template_text.index("</tfoot>")]
+    if thead_text.count('<th class="count"') != 2:
         raise AssertionError("sheet count column should keep both existing header cells")
     if template_text.count('<td class="count"') != 2:
         raise AssertionError("sheet count column should use one shared selector for both body row sources")
+    if tfoot_text.count('<th class="count footer-label-count" aria-hidden="true"></th>') != 3:
+        raise AssertionError("each summary row should expose one explicit count-column cell")
+    if "<colgroup>" in template_text or "<col " in template_text:
+        raise AssertionError("mobile summary alignment must not depend on a partial colgroup")
+    if 'colspan="3"' in tfoot_text:
+        raise AssertionError("summary labels must not span across the count column")
     for snippet in (
         '<td class="count">{{ item.floor.unit_count }}</td>',
         '<td class="count">1</td>',
-        '<th colspan="3">未完成戶數</th>',
-        '<th colspan="3">已完成戶數</th>',
-        '<th colspan="3">總戶數</th>',
+        '<th class="meta footer-label-floor" scope="row">未完成戶數</th>',
+        '<th class="meta footer-label-floor" scope="row">已完成戶數</th>',
+        '<th class="meta footer-label-floor" scope="row">總戶數</th>',
+        '<th class="unit footer-label-unit" aria-hidden="true"></th>',
     ):
         if snippet not in template_text:
             raise AssertionError(f"mobile frozen region template guardrail missing: {snippet}")
+    if tfoot_text.count('<th class="meta footer-label-floor" scope="row">') != 3:
+        raise AssertionError("each summary row should expose one floor-label cell")
+    if tfoot_text.count('<th class="unit footer-label-unit" aria-hidden="true"></th>') != 3:
+        raise AssertionError("each summary row should expose one unit-label extension cell")
+    footer_rows = tfoot_text.split("<tr>")[1:]
+    footer_labels = ("未完成戶數", "已完成戶數", "總戶數")
+    if len(footer_rows) != len(footer_labels):
+        raise AssertionError("sheet footer should preserve exactly three summary rows")
+    for row_text, label in zip(footer_rows, footer_labels):
+        ordered_markers = (
+            f'<th class="meta footer-label-floor" scope="row">{label}</th>',
+            '<th class="count footer-label-count" aria-hidden="true"></th>',
+            '<th class="unit footer-label-unit" aria-hidden="true"></th>',
+            "{% for task in grid.tasks %}",
+            "{% for field in grid.extra_fields %}",
+        )
+        marker_positions = [row_text.index(marker) for marker in ordered_markers]
+        if marker_positions != sorted(marker_positions):
+            raise AssertionError(f"summary row logical column ordering changed: {label}")
 
     portrait_marker = "@media (max-width: 760px) and (orientation: portrait)"
     landscape_marker = "@media (max-width: 900px) and (orientation: landscape)"
@@ -4647,13 +4675,28 @@ def run_mobile_sheet_frozen_region_guardrail_smoke() -> None:
 
     for snippet in (
         portrait_marker,
+        ".sheet-page .table-shell",
+        "--sheet-matrix-viewport-offset: 10rem;",
+        "--sheet-matrix-viewport-offset: clamp(8rem, 24dvh, 12rem);",
+        "--sheet-matrix-min-height: 16rem;",
+        "--sheet-matrix-safe-gap: 2rem;",
+        "height: calc(100vh - var(--sheet-matrix-viewport-offset));",
+        "height: calc(100dvh - var(--sheet-matrix-viewport-offset));",
+        "min-height: min(var(--sheet-matrix-min-height), calc(100vh - var(--sheet-matrix-safe-gap)));",
+        "min-height: min(var(--sheet-matrix-min-height), calc(100dvh - var(--sheet-matrix-safe-gap)));",
+        "max-height: calc(100vh - var(--sheet-matrix-safe-gap));",
+        "max-height: calc(100dvh - var(--sheet-matrix-safe-gap));",
+        "overflow-x: auto;",
+        "overflow-y: auto;",
         ".sheet-page .control-table .count",
-        "display: none;",
         "width: 0;",
         "min-width: 0;",
         "max-width: 0;",
         "padding: 0;",
         "border: 0;",
+        ".sheet-page .control-table th.count,",
+        ".sheet-page .control-table td.count",
+        "display: none;",
         ".sheet-page .control-table .unit,",
         ".sheet-page .control-table tbody td:nth-child(3)",
         "left: 92px;",
@@ -4662,9 +4705,24 @@ def run_mobile_sheet_frozen_region_guardrail_smoke() -> None:
             raise AssertionError(f"portrait frozen region CSS guardrail missing: {snippet}")
     if "tfoot" in portrait_styles:
         raise AssertionError("portrait count-column rule must not alter footer sticky behavior")
+    if "visibility: collapse" in styles_text:
+        raise AssertionError("mobile summary alignment must not depend on column collapse")
 
     for snippet in (
         landscape_marker,
+        ".sheet-page .table-shell",
+        "--sheet-matrix-viewport-offset: 5rem;",
+        "--sheet-matrix-viewport-offset: clamp(3rem, 16dvh, 6rem);",
+        "--sheet-matrix-min-height: 12rem;",
+        "--sheet-matrix-safe-gap: 2rem;",
+        "height: calc(100vh - var(--sheet-matrix-viewport-offset));",
+        "height: calc(100dvh - var(--sheet-matrix-viewport-offset));",
+        "min-height: min(var(--sheet-matrix-min-height), calc(100vh - var(--sheet-matrix-safe-gap)));",
+        "min-height: min(var(--sheet-matrix-min-height), calc(100dvh - var(--sheet-matrix-safe-gap)));",
+        "max-height: calc(100vh - var(--sheet-matrix-safe-gap));",
+        "max-height: calc(100dvh - var(--sheet-matrix-safe-gap));",
+        "overflow-x: auto;",
+        "overflow-y: auto;",
         ".sheet-page .control-table tfoot th,",
         ".sheet-page .control-table tfoot td",
         "position: static;",
@@ -4674,10 +4732,25 @@ def run_mobile_sheet_frozen_region_guardrail_smoke() -> None:
             raise AssertionError(f"landscape frozen region CSS guardrail missing: {snippet}")
     if ".count" in landscape_styles or ".unit" in landscape_styles:
         raise AssertionError("landscape footer release must not alter portrait column behavior")
+    if "display: none" in landscape_styles or "visibility: hidden" in landscape_styles:
+        raise AssertionError("landscape footer rows must remain available through vertical scrolling")
+
+    base_table_shell_start = base_styles.index(".table-shell {")
+    base_table_shell_end = base_styles.index(".crew-form-shell", base_table_shell_start)
+    base_table_shell_styles = base_styles[base_table_shell_start:base_table_shell_end]
+    for snippet in ("overflow: auto;", "height: calc(100vh - 170px);"):
+        if snippet not in base_table_shell_styles:
+            raise AssertionError(f"desktop matrix scroll container contract missing: {snippet}")
+    for forbidden_snippet in ("window.innerHeight", "resize", "device-width", "device-height"):
+        if forbidden_snippet in portrait_styles or forbidden_snippet in landscape_styles:
+            raise AssertionError(f"mobile viewport fit must remain device-independent CSS: {forbidden_snippet}")
 
     for snippet in (
         "tfoot th,\n",
         "tfoot td {\n  position: sticky;",
+        ".control-table tfoot .footer-label-floor,",
+        ".control-table tfoot .footer-label-count {",
+        "border-right: 0;",
         "tfoot tr:nth-child(1) th,",
         "bottom: 64px;",
         "tfoot tr:nth-child(2) th,",
@@ -4687,6 +4760,18 @@ def run_mobile_sheet_frozen_region_guardrail_smoke() -> None:
     ):
         if snippet not in base_styles:
             raise AssertionError(f"desktop footer sticky contract missing: {snippet}")
+
+    summary_source_snippets = (
+        "{{ grid.summary[task.id].total - grid.summary[task.id].done }}",
+        "{{ grid.summary[task.id].done }}",
+        "{{ grid.summary[task.id].total }}",
+        "{{ grid.extra_summary[field.field_key].total - grid.extra_summary[field.field_key].done }}",
+        "{{ grid.extra_summary[field.field_key].done }}",
+        "{{ grid.extra_summary[field.field_key].total }}",
+    )
+    for snippet in summary_source_snippets:
+        if template_text.count(snippet) != 1:
+            raise AssertionError(f"mobile summary alignment must preserve one existing value source: {snippet}")
 
     grid_control_sources = (
         ('class="toggle" type="button" data-floor-id="{{ item.floor.id }}"', 1),
