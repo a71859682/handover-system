@@ -4817,6 +4817,362 @@ print("unit handover report smoke PASS")
         raise AssertionError("unit handover report smoke subprocess did not report PASS.")
 
 
+def run_floor_handover_report_smoke(app_db_path: Path) -> None:
+    script = """
+import importlib.util
+import inspect
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+app_db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = app_db_path
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+module.bootstrap()
+
+template_text = (Path(root_dir) / "templates" / "floor_handover_report.html").read_text(encoding="utf-8")
+sheet_template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
+styles_text = (Path(root_dir) / "static" / "styles.css").read_text(encoding="utf-8")
+requirements_text = (Path(root_dir) / "requirements.txt").read_text(encoding="utf-8")
+helper_source = inspect.getsource(module.build_floor_handover_report_context)
+route_source = inspect.getsource(module.floor_handover_report)
+
+for snippet in (
+    'data-testid="floor-handover-report"',
+    'data-testid="floor-report-unit-section"',
+    'data-testid="floor-report-task-table"',
+    'data-testid="floor-report-extra-table"',
+    'data-testid="floor-report-no-units"',
+    'data-testid="floor-report-unit-no-tasks"',
+    'data-testid="floor-report-no-extra-fields"',
+    'data-testid="floor-report-print-button"',
+    "本報表反映產出當下系統狀態，並非不可變歷史證明。",
+    "未填寫",
+    "window.print()",
+):
+    if snippet not in template_text:
+        raise SystemExit(f"floor report template missing guardrail: {snippet}")
+
+for snippet in (
+    'class="floor-report-link"',
+    "url_for('floor_handover_report', floor_id=item.floor.id)",
+    'id="controlTable"',
+):
+    if snippet not in sheet_template_text:
+        raise SystemExit(f"sheet floor report entry should preserve grid contract: {snippet}")
+
+for snippet in (
+    ".floor-report-page",
+    ".floor-report-card",
+    ".floor-report-table",
+    ".floor-report-empty",
+    ".floor-report-link",
+    ".floor-report-actions",
+    "overflow-wrap: anywhere",
+    "word-break: break-word",
+    "display: table-header-group",
+    "break-before: page",
+    "@media print",
+):
+    if snippet not in styles_text:
+        raise SystemExit(f"floor report print CSS missing guardrail: {snippet}")
+
+for forbidden_snippet in (
+    "load_grid(",
+    "parent_status",
+    '"summary"',
+    "completion_percentage",
+    "score",
+    "ranking",
+    "build_management_read_model_payload",
+    "build_scheduling_payload",
+    "build_dashboard_payload",
+    "vendor_work_entries",
+    "extra_done(",
+    "DONE_VALUE",
+    "INSERT ",
+    "UPDATE ",
+    "DELETE ",
+    "CREATE TABLE",
+    "ALTER TABLE",
+    "DROP TABLE",
+):
+    if forbidden_snippet in helper_source:
+        raise SystemExit(f"floor report context must not derive or write business state: {forbidden_snippet}")
+
+for snippet in (
+    "FROM floors f",
+    "JOIN sheets s ON s.id = f.sheet_id",
+    "JOIN sites st ON st.id = s.site_id",
+    'authorize_dashboard_read(conn, sheet_id=int(floor_context["sheet_id"]))',
+    "ORDER BY sort_order, id",
+    "ORDER BY col_index, id",
+    "WHERE sheet_id = ? AND active = 1",
+    "SELECT p.unit_id, p.task_id, p.value",
+    "SELECT ue.*",
+    "SELECT v.unit_id, v.field_key, v.value",
+):
+    if snippet not in helper_source:
+        raise SystemExit(f"floor report context missing source boundary: {snippet}")
+
+if 'methods=["GET"]' not in route_source:
+    raise SystemExit("floor report route should remain explicit GET-only HTML")
+for forbidden_snippet in (
+    "jsonify(",
+    'methods=["POST"]',
+    "localStorage",
+    "sessionStorage",
+):
+    if forbidden_snippet in route_source or forbidden_snippet in template_text:
+        raise SystemExit(f"floor report route must not add API, write, or persisted client state: {forbidden_snippet}")
+for forbidden_snippet in (
+    "WeasyPrint",
+    "weasyprint",
+    "jsPDF",
+    "jspdf",
+    "pdfkit",
+    "|safe",
+    "fetch(",
+    "<form",
+    'type="hidden"',
+    "history.pushState",
+):
+    if (
+        forbidden_snippet in template_text
+        or forbidden_snippet in route_source
+        or forbidden_snippet in helper_source
+        or forbidden_snippet.lower() in requirements_text.lower()
+    ):
+        raise SystemExit(f"floor report must remain escaped, readonly, and dependency-free: {forbidden_snippet}")
+
+with module.db() as conn:
+    default_site = conn.execute("SELECT id, site_name FROM sites WHERE is_active = 1 ORDER BY id LIMIT 1").fetchone()
+    default_sheet = conn.execute("SELECT id, name FROM sheets WHERE site_id = ? ORDER BY id LIMIT 1", (default_site["id"],)).fetchone()
+    if default_sheet is None:
+        raise SystemExit("floor report smoke requires a seeded same-site sheet")
+
+    def add_sheet(name, sort_order, site_id=default_site["id"]):
+        cur = conn.execute("INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?)", (name, sort_order, site_id))
+        return int(cur.lastrowid)
+
+    def add_floor(sheet_id, sort_order, name, block_name, unit_count=0):
+        cur = conn.execute(
+            "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, ?)",
+            (sheet_id, sort_order, name, block_name, unit_count),
+        )
+        return int(cur.lastrowid)
+
+    def add_unit(floor_id, sort_order, name):
+        cur = conn.execute("INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?)", (floor_id, sort_order, name))
+        unit_id = int(cur.lastrowid)
+        conn.execute("INSERT INTO unit_extra (unit_id, handover) VALUES (?, ?)", (unit_id, module.WORKING_VALUE))
+        return unit_id
+
+    next_floor_sort = int(conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 AS value FROM floors").fetchone()["value"])
+    next_task_col = int(conn.execute("SELECT COALESCE(MAX(col_index), 0) + 1 AS value FROM tasks").fetchone()["value"])
+    floor_sheet_id = add_sheet("Floor Report Sheet", 900)
+    floor_id = add_floor(floor_sheet_id, next_floor_sort, "Floor Report Floor", "Floor Report Block", 2)
+    unit_late_id = add_unit(floor_id, 2, "FLOOR_UNIT_LATE")
+    unit_early_id = add_unit(floor_id, 1, "FLOOR_UNIT_EARLY")
+    task_late = conn.execute(
+        "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)",
+        (floor_sheet_id, next_task_col + 1, "FLOOR_VENDOR_LATE", "FLOOR_LOCATION_LATE", "FLOOR_TASK_LATE"),
+    ).lastrowid
+    task_early = conn.execute(
+        "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)",
+        (floor_sheet_id, next_task_col, "FLOOR_VENDOR_EARLY", "FLOOR_LOCATION_EARLY", "FLOOR_TASK_EARLY"),
+    ).lastrowid
+    field_late = "floor_field_late"
+    field_early = "floor_field_early"
+    conn.execute(
+        "INSERT INTO extra_fields (sheet_id, field_key, name, field_type, sort_order, is_builtin, active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (floor_sheet_id, field_late, "FLOOR_FIELD_LATE", "date", 20, 0, 1),
+    )
+    conn.execute(
+        "INSERT INTO extra_fields (sheet_id, field_key, name, field_type, sort_order, is_builtin, active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (floor_sheet_id, field_early, "FLOOR_FIELD_EARLY", "date", 10, 0, 1),
+    )
+    conn.execute("INSERT INTO progress (unit_id, task_id, value) VALUES (?, ?, ?)", (unit_early_id, task_early, module.DONE_VALUE))
+    conn.execute("INSERT INTO unit_extra_values (unit_id, field_key, value) VALUES (?, ?, ?)", (unit_early_id, field_early, "FLOOR_RAW_VALUE_TOKEN"))
+
+    no_task_sheet_id = add_sheet("Floor Report No Tasks Sheet", 901)
+    no_task_floor_id = add_floor(no_task_sheet_id, next_floor_sort + 1, "FLOOR_NO_TASKS", "", 1)
+    no_task_unit_id = add_unit(no_task_floor_id, 1, "FLOOR_NO_TASKS_UNIT")
+    conn.execute(
+        "INSERT INTO extra_fields (sheet_id, field_key, name, field_type, sort_order, is_builtin, active) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (no_task_sheet_id, "no_task_field", "NO_TASK_FIELD", "date", 1, 0, 1),
+    )
+
+    no_field_sheet_id = add_sheet("Floor Report No Fields Sheet", 902)
+    no_field_floor_id = add_floor(no_field_sheet_id, next_floor_sort + 2, "FLOOR_NO_FIELDS", "", 1)
+    no_field_unit_id = add_unit(no_field_floor_id, 1, "FLOOR_NO_FIELDS_UNIT")
+    conn.execute(
+        "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?)",
+        (no_field_sheet_id, next_task_col + 2, "NO_FIELD_VENDOR", "NO_FIELD_LOCATION", "NO_FIELD_TASK"),
+    )
+
+    empty_sheet_id = add_sheet("Floor Report Empty Sheet", 903)
+    empty_floor_id = add_floor(empty_sheet_id, next_floor_sort + 3, "FLOOR_EMPTY", "", 0)
+
+    secret_site_id = conn.execute(
+        "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1)",
+        ("FLOOR_SECRET_SITE", "floor-secret-site"),
+    ).lastrowid
+    secret_sheet_id = add_sheet("FLOOR_SECRET_SHEET", 904, secret_site_id)
+    secret_floor_id = add_floor(secret_sheet_id, next_floor_sort + 4, "FLOOR_SECRET_FLOOR", "FLOOR_SECRET_BLOCK", 1)
+    secret_unit_id = add_unit(secret_floor_id, 1, "FLOOR_SECRET_UNIT")
+
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("floor_report_member", "Floor Report Member", module.generate_password_hash("floor-pass"), "member"),
+    )
+    member_id = conn.execute("SELECT id FROM users WHERE username = ?", ("floor_report_member",)).fetchone()["id"]
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, default_site["id"], "member"),
+    )
+    conn.commit()
+
+with module.app.test_client() as client:
+    unauthenticated = client.get(f"/reports/floor/{floor_id}")
+    if unauthenticated.status_code != 302 or not unauthenticated.headers.get("Location", "").endswith("/login"):
+        raise SystemExit("floor report should redirect unauthenticated users to internal login")
+
+with module.app.test_client() as client:
+    with client.session_transaction() as session:
+        session["identity_type"] = "vendor"
+        session["vendor_account_id"] = 78
+        session["vendor_username"] = "floor_report_vendor"
+        session["vendor_name"] = "Floor Report Vendor"
+    if client.get(f"/reports/floor/{floor_id}").status_code != 403:
+        raise SystemExit("floor report should forbid vendor identity")
+
+with module.app.test_client() as client:
+    if client.post(f"/reports/floor/{floor_id}").status_code != 405:
+        raise SystemExit("floor report should accept GET only")
+
+with module.app.test_client() as client:
+    member_login = client.post("/login", data={"username": "floor_report_member", "password": "floor-pass"}, follow_redirects=False)
+    if member_login.status_code != 302:
+        raise SystemExit("floor report same-site member login should redirect")
+    member_report = client.get(f"/reports/floor/{floor_id}")
+    if member_report.status_code != 200:
+        raise SystemExit("floor report should allow same-site member")
+    member_cross_site = client.get(f"/reports/floor/{secret_floor_id}")
+    member_cross_body = member_cross_site.get_data(as_text=True)
+    if member_cross_site.status_code != 403:
+        raise SystemExit("floor report should enforce selected current-site boundary for member")
+    for leaked_value in ("FLOOR_SECRET_SITE", "FLOOR_SECRET_SHEET", "FLOOR_SECRET_FLOOR", "FLOOR_SECRET_BLOCK", "FLOOR_SECRET_UNIT"):
+        if leaked_value in member_cross_body:
+            raise SystemExit(f"member cross-site floor report response leaked identity: {leaked_value}")
+
+with module.app.test_client() as client:
+    admin_login = client.post("/login", data={"username": "admin", "password": "admin"}, follow_redirects=False)
+    if admin_login.status_code != 302:
+        raise SystemExit("floor report same-site admin login should redirect")
+    admin_report = client.get(f"/reports/floor/{floor_id}")
+    report_html = admin_report.get_data(as_text=True)
+    if admin_report.status_code != 200:
+        raise SystemExit("floor report should allow same-site admin")
+    for snippet in (
+        'data-testid="floor-handover-report"',
+        "FLOOR_UNIT_EARLY",
+        "FLOOR_UNIT_LATE",
+        "FLOOR_TASK_EARLY",
+        "FLOOR_TASK_LATE",
+        "FLOOR_VENDOR_EARLY",
+        "FLOOR_LOCATION_EARLY",
+        module.DONE_VALUE,
+        module.WORKING_VALUE,
+        "FLOOR_RAW_VALUE_TOKEN",
+        "未填寫",
+        "本報表反映產出當下系統狀態，並非不可變歷史證明。",
+    ):
+        if snippet not in report_html:
+            raise SystemExit(f"floor report rendered content missing: {snippet}")
+    if report_html.find("FLOOR_UNIT_EARLY") > report_html.find("FLOOR_UNIT_LATE"):
+        raise SystemExit("floor report units must be ordered by sort_order, id")
+    if report_html.find("FLOOR_TASK_EARLY") > report_html.find("FLOOR_TASK_LATE"):
+        raise SystemExit("floor report tasks must be ordered by col_index, id")
+    if report_html.find("FLOOR_FIELD_EARLY") > report_html.find("FLOOR_FIELD_LATE"):
+        raise SystemExit("floor report extra fields must be ordered by sort_order, id")
+
+    with module.db() as conn:
+        before_report_get = chr(10).join(conn.iterdump())
+    repeated_report = client.get(f"/reports/floor/{floor_id}")
+    with module.db() as conn:
+        after_report_get = chr(10).join(conn.iterdump())
+    if repeated_report.status_code != 200 or before_report_get != after_report_get:
+        raise SystemExit("floor report GET must not modify database state")
+
+    cross_site = client.get(f"/reports/floor/{secret_floor_id}")
+    cross_body = cross_site.get_data(as_text=True)
+    if cross_site.status_code != 403:
+        raise SystemExit("floor report should enforce selected current-site boundary for admin")
+    for leaked_value in ("FLOOR_SECRET_SITE", "FLOOR_SECRET_SHEET", "FLOOR_SECRET_FLOOR", "FLOOR_SECRET_BLOCK", "FLOOR_SECRET_UNIT"):
+        if leaked_value in cross_body:
+            raise SystemExit(f"cross-site floor report response leaked identity: {leaked_value}")
+
+    for missing_floor_id in (999999991,):
+        if client.get(f"/reports/floor/{missing_floor_id}").status_code != 404:
+            raise SystemExit("floor report missing floor should return 404")
+
+    empty_report = client.get(f"/reports/floor/{empty_floor_id}")
+    if empty_report.status_code != 200 or 'data-testid="floor-report-no-units"' not in empty_report.get_data(as_text=True):
+        raise SystemExit("floor report should render explicit no-units state")
+    no_task_report = client.get(f"/reports/floor/{no_task_floor_id}")
+    no_task_html = no_task_report.get_data(as_text=True)
+    if no_task_report.status_code != 200 or 'data-testid="floor-report-unit-no-tasks"' not in no_task_html:
+        raise SystemExit("floor report should render explicit per-unit no-tasks state")
+    no_field_report = client.get(f"/reports/floor/{no_field_floor_id}")
+    no_field_html = no_field_report.get_data(as_text=True)
+    if no_field_report.status_code != 200 or 'data-testid="floor-report-no-extra-fields"' not in no_field_html:
+        raise SystemExit("floor report should render explicit no-extra-fields state")
+
+    with module.db() as conn:
+        unit_row = conn.execute(
+            "SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ? ORDER BY u.id LIMIT 1",
+            (default_sheet["id"],),
+        ).fetchone()
+    if unit_row is None:
+        raise SystemExit("floor report smoke requires existing unit report regression fixture")
+    unit_report = client.get(f"/reports/unit/{unit_row['id']}")
+    if unit_report.status_code != 200 or 'data-testid="unit-handover-report"' not in unit_report.get_data(as_text=True):
+        raise SystemExit("floor report changes must preserve existing unit report")
+
+    grid_response = client.get(f"/api/grid?sheet_id={default_sheet['id']}")
+    sheet_response = client.get(f"/sheet/{default_sheet['id']}")
+    if grid_response.status_code != 200 or sheet_response.status_code != 200:
+        raise SystemExit("floor report baseline should preserve existing /sheet and /api/grid contracts")
+    if "floor-report-link" not in sheet_response.get_data(as_text=True):
+        raise SystemExit("sheet should expose readonly floor report entry")
+
+    with client.session_transaction() as session:
+        session.pop("current_site_id", None)
+        session.pop("current_site_name", None)
+    missing_site = client.get(f"/reports/floor/{floor_id}")
+    if missing_site.status_code != 302 or not missing_site.headers.get("Location", "").endswith("/site-selector"):
+        raise SystemExit("floor report missing current site should redirect to site selector")
+
+print("floor handover report smoke PASS")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(app_db_path), str(ROOT_DIR)],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"floor handover report smoke subprocess failed:\n{result.stdout}\n{result.stderr}")
+    if "floor handover report smoke PASS" not in result.stdout:
+        raise AssertionError("floor handover report smoke subprocess did not report PASS.")
+
+
 def run_table_admin_endpoint_and_formula_smoke(app_db_path: Path) -> None:
     script = """
 import importlib.util
@@ -12756,6 +13112,7 @@ def main() -> int:
         run_users_template_delete_ui_smoke()
         run_sheet_endpoint_smoke(Path(tmpdir) / "app-smoke.db")
         run_unit_handover_report_smoke(Path(tmpdir) / "unit-handover-report-smoke.db")
+        run_floor_handover_report_smoke(Path(tmpdir) / "floor-handover-report-smoke.db")
         run_table_admin_endpoint_and_formula_smoke(Path(tmpdir) / "app-smoke.db")
         run_admin_current_site_sheet_write_smoke(Path(tmpdir) / "admin-current-site-sheet-write.db")
         run_admin_current_site_task_write_smoke(Path(tmpdir) / "admin-current-site-task-write.db")

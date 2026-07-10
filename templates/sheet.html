@@ -59,7 +59,8 @@
       <tr class="floor-row" data-floor-id="{{ item.floor.id }}">
         <td class="floor-cell" data-floor-label>
           <button class="toggle" type="button" data-floor-id="{{ item.floor.id }}">+</button>
-          {{ item.floor.name }}
+          <span>{{ item.floor.name }}</span>
+          <a class="floor-report-link" data-testid="floor-report-link-{{ item.floor.id }}" href="{{ url_for('floor_handover_report', floor_id=item.floor.id) }}">樓層報表</a>
         </td>
         <td>{{ item.floor.unit_count }}</td>
         <td>{{ item.floor.block_name }}</td>

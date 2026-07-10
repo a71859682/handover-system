@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ report.floor.name or "未填寫" }} 樓層報表｜{{ report.site.name or "未填寫" }}{% endblock %}
+{% block main_class %}page floor-report-page{% endblock %}
+{% macro value_or_empty(value) -%}
+  {%- if value is none or value|string|trim == "" -%}未填寫{%- else -%}{{ value }}{%- endif -%}
+{%- endmacro %}
+{% block content %}
+<article class="floor-report" data-testid="floor-handover-report">
+  <header class="floor-report-header">
+    <div>
+      <p class="floor-report-kicker">Single Floor Handover Report</p>
+      <h1>{{ value_or_empty(report.floor.name) }} 樓層交屋報表</h1>
+      <p class="floor-report-subtitle">{{ value_or_empty(report.site.name) }}／{{ value_or_empty(report.sheet.name) }}</p>
+    </div>
+    <div class="floor-report-actions">
+      <a class="floor-report-back" href="{{ url_for('sheet', sheet_id=report.sheet.id) }}">返回管制表</a>
+      <button type="button" id="floorReportPrintBtn" data-testid="floor-report-print-button">列印／另存 PDF</button>
+    </div>
+  </header>
+
+  <p class="floor-report-disclaimer" data-testid="floor-report-current-state-disclaimer">本報表反映產出當下系統狀態，並非不可變歷史證明。</p>
+
+  <section class="floor-report-card" aria-labelledby="floor-report-context-title">
+    <h2 id="floor-report-context-title">樓層資料</h2>
+    <dl class="floor-report-context-grid">
+      <div><dt>工地</dt><dd data-testid="floor-report-site-name">{{ value_or_empty(report.site.name) }}</dd></div>
+      <div><dt>工地代碼</dt><dd>{{ value_or_empty(report.site.code) }}</dd></div>
+      <div><dt>表單</dt><dd data-testid="floor-report-sheet-name">{{ value_or_empty(report.sheet.name) }}</dd></div>
+      <div><dt>樓層</dt><dd data-testid="floor-report-floor-name">{{ value_or_empty(report.floor.name) }}</dd></div>
+      <div><dt>棟別</dt><dd data-testid="floor-report-block-name">{{ value_or_empty(report.floor.block_name) }}</dd></div>
+      <div><dt>戶數</dt><dd data-testid="floor-report-unit-count">{{ report.units|length }}</dd></div>
+      <div><dt>產出時間</dt><dd data-testid="floor-report-generated-at">{{ value_or_empty(report.generated_at) }}</dd></div>
+      <div><dt>製表人</dt><dd data-testid="floor-report-generated-by">{{ value_or_empty(report.generated_by) }}</dd></div>
+    </dl>
+  </section>
+
+  {% if report.units %}
+    {% for unit in report.units %}
+    {% set extra = report.extras.get(unit.id, {}) %}
+    <section class="floor-report-unit floor-report-card" data-testid="floor-report-unit-section" aria-labelledby="floor-report-unit-{{ loop.index }}">
+      <h2 id="floor-report-unit-{{ loop.index }}">戶別：{{ value_or_empty(unit.name) }}</h2>
+
+      <h3>工項完成狀態</h3>
+      {% if report.tasks %}
+      <div class="floor-report-table-shell">
+        <table class="floor-report-table" data-testid="floor-report-task-table">
+          <thead><tr><th>工項</th><th>廠商</th><th>位置</th><th>狀態</th></tr></thead>
+          <tbody>
+            {% for task in report.tasks %}
+            {% set progress_value = report.progress.get((unit.id, task.id), working_value) %}
+            <tr data-testid="floor-report-task-row">
+              <td>{{ value_or_empty(task.name) }}</td>
+              <td>{{ value_or_empty(task.vendor) }}</td>
+              <td>{{ value_or_empty(task.location) }}</td>
+              <td><span class="floor-report-status {{ 'is-done' if progress_value == done_value else 'is-open' }}" data-testid="floor-report-task-status">{{ progress_value }}</span></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="floor-report-empty" data-testid="floor-report-unit-no-tasks">此戶目前沒有可顯示的工項。</p>
+      {% endif %}
+
+      <h3>單戶附加欄位</h3>
+      {% if report.extra_fields %}
+      <div class="floor-report-table-shell">
+        <table class="floor-report-table" data-testid="floor-report-extra-table">
+          <thead><tr><th>欄位</th><th>目前值</th></tr></thead>
+          <tbody>
+            {% for field in report.extra_fields %}
+            <tr data-testid="floor-report-extra-row">
+              <td>{{ value_or_empty(field.name) }}</td>
+              <td data-testid="floor-report-extra-value">{{ value_or_empty(extra.get(field.field_key)) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="floor-report-empty" data-testid="floor-report-no-extra-fields">目前沒有啟用的單戶附加欄位。</p>
+      {% endif %}
+    </section>
+    {% endfor %}
+  {% else %}
+  <section class="floor-report-card">
+    <p class="floor-report-empty" data-testid="floor-report-no-units">此樓層目前沒有可顯示的戶別。</p>
+  </section>
+  {% endif %}
+</article>
+
+<script>
+  document.getElementById("floorReportPrintBtn")?.addEventListener("click", () => window.print());
+</script>
+{% endblock %}

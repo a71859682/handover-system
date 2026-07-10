@@ -1395,6 +1395,21 @@ def _handle_unit_handover_report_lookup_error(exc: LookupError):
     raise exc
 
 
+def _handle_floor_handover_report_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "floor_not_found":
+        return "找不到指定的樓層報表。", 404
+    if code == "sheet_not_in_current_site":
+        return "無權存取指定的樓層報表。", 403
+    if code in {"site_context_invalid", "site_permission_missing"}:
+        return redirect(url_for("site_selector"))
+    if code == "vendor_auth_forbidden":
+        return "此身分無法存取樓層報表。", 403
+    if code == "auth_required":
+        return redirect(url_for("login"))
+    raise exc
+
+
 def resolve_admin_current_site_id(conn: sqlite3.Connection) -> int:
     user = _current_internal_user()
     if user is None:
@@ -5079,6 +5094,105 @@ def build_unit_handover_report_context(conn: sqlite3.Connection, *, unit_id: int
     }
 
 
+def build_floor_handover_report_context(conn: sqlite3.Connection, *, floor_id: int) -> dict[str, object]:
+    floor_context = conn.execute(
+        """
+        SELECT f.name AS floor_name,
+               f.block_name AS block_name,
+               s.id AS sheet_id,
+               s.name AS sheet_name,
+               st.site_name AS site_name,
+               st.site_code AS site_code
+        FROM floors f
+        JOIN sheets s ON s.id = f.sheet_id
+        JOIN sites st ON st.id = s.site_id
+        WHERE f.id = ?
+        """,
+        (floor_id,),
+    ).fetchone()
+    if floor_context is None:
+        raise LookupError("floor_not_found")
+
+    authorize_dashboard_read(conn, sheet_id=int(floor_context["sheet_id"]))
+
+    unit_rows = conn.execute(
+        "SELECT id, sort_order, name FROM units WHERE floor_id = ? ORDER BY sort_order, id",
+        (floor_id,),
+    ).fetchall()
+    task_rows = conn.execute(
+        """
+        SELECT id, col_index, vendor, location, name
+        FROM tasks
+        WHERE sheet_id = ?
+        ORDER BY col_index, id
+        """,
+        (int(floor_context["sheet_id"]),),
+    ).fetchall()
+    extra_field_rows = conn.execute(
+        """
+        SELECT id, field_key, name, field_type, sort_order, is_builtin
+        FROM extra_fields
+        WHERE sheet_id = ? AND active = 1
+        ORDER BY sort_order, id
+        """,
+        (int(floor_context["sheet_id"]),),
+    ).fetchall()
+    progress_rows = conn.execute(
+        """
+        SELECT p.unit_id, p.task_id, p.value
+        FROM progress p
+        JOIN units u ON u.id = p.unit_id
+        JOIN tasks t ON t.id = p.task_id
+        WHERE u.floor_id = ? AND t.sheet_id = ?
+        """,
+        (floor_id, int(floor_context["sheet_id"])),
+    ).fetchall()
+    unit_extra_rows = conn.execute(
+        """
+        SELECT ue.*
+        FROM unit_extra ue
+        JOIN units u ON u.id = ue.unit_id
+        WHERE u.floor_id = ?
+        """,
+        (floor_id,),
+    ).fetchall()
+    extra_value_rows = conn.execute(
+        """
+        SELECT v.unit_id, v.field_key, v.value
+        FROM unit_extra_values v
+        JOIN units u ON u.id = v.unit_id
+        WHERE u.floor_id = ?
+        """,
+        (floor_id,),
+    ).fetchall()
+
+    progress = {(int(row["unit_id"]), int(row["task_id"])): row["value"] for row in progress_rows}
+    extras = {int(row["unit_id"]): dict(row) for row in unit_extra_rows}
+    for row in extra_value_rows:
+        extras.setdefault(int(row["unit_id"]), {})[str(row["field_key"])] = row["value"]
+
+    return {
+        "settings": get_settings(conn),
+        "site": {
+            "name": str(floor_context["site_name"] or ""),
+            "code": str(floor_context["site_code"] or ""),
+        },
+        "sheet": {
+            "id": int(floor_context["sheet_id"]),
+            "name": str(floor_context["sheet_name"] or ""),
+        },
+        "floor": {
+            "name": str(floor_context["floor_name"] or ""),
+            "block_name": str(floor_context["block_name"] or ""),
+        },
+        "units": [dict(row) for row in unit_rows],
+        "tasks": [dict(row) for row in task_rows],
+        "extra_fields": [dict(row) for row in extra_field_rows],
+        "progress": progress,
+        "extras": extras,
+    }
+
+
 @app.route("/")
 def index():
     if not session.get("user_id"):
@@ -5338,6 +5452,31 @@ def unit_handover_report(unit_id: int):
         report=report,
         settings=report["settings"],
         done_value=DONE_VALUE,
+    )
+
+
+@app.route("/reports/floor/<int:floor_id>", methods=["GET"])
+def floor_handover_report(floor_id: int):
+    if current_vendor_account() is not None:
+        return _handle_floor_handover_report_lookup_error(LookupError("vendor_auth_forbidden"))
+    user = _current_internal_user()
+    if user is None:
+        return _handle_floor_handover_report_lookup_error(LookupError("auth_required"))
+
+    try:
+        with db() as conn:
+            report = build_floor_handover_report_context(conn, floor_id=floor_id)
+    except LookupError as exc:
+        return _handle_floor_handover_report_lookup_error(exc)
+
+    report["generated_at"] = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    report["generated_by"] = str(user["display_name"] or user["username"] or "")
+    return render_template(
+        "floor_handover_report.html",
+        report=report,
+        settings=report["settings"],
+        done_value=DONE_VALUE,
+        working_value=WORKING_VALUE,
     )
 
 
