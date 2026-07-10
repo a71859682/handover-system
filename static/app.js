@@ -184,17 +184,45 @@ function buildCrewManagementInsightNotes(summary = {}) {
   ];
 }
 
+function buildCrewManagementInsightStatusMeta(data = {}) {
+  const state = String(data?.state || "primary").trim() || "primary";
+  if (state === "degraded") {
+    return {
+      description: "部分只讀資料暫時不可用，顯示降級管理摘要。",
+      stateLabel: "degraded",
+    };
+  }
+  if (state === "empty") {
+    return {
+      description: "目前沒有可顯示的管理摘要，保留只讀空狀態。",
+      stateLabel: "empty",
+    };
+  }
+  if (state === "fallback") {
+    return {
+      description: "management read model 暫時不可用，改用既有 dashboard / scheduling 只讀摘要。",
+      stateLabel: "fallback",
+    };
+  }
+  return {
+    description: "優先使用 management read model API，整理排程、核准與需求確認的只讀管理摘要。",
+    stateLabel: "primary",
+  };
+}
+
 function renderCrewManagementInsightSummary(data) {
   if (!crewManagementInsightSummary) return;
   const summary = data?.summary || {};
   const drilldownRefs = data?.drilldown_refs || {};
   const metrics = buildCrewManagementInsightMetricMeta(summary, drilldownRefs);
   const insightNotes = buildCrewManagementInsightNotes(summary);
+  const statusMeta = buildCrewManagementInsightStatusMeta(data);
+  crewManagementInsightSummary.setAttribute("data-management-insight-state", statusMeta.stateLabel);
   crewManagementInsightSummary.innerHTML = `
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
       <div>
         <h2 style="margin:0;font-size:1.05rem;color:#0f172a;">Management Insight Summary</h2>
-        <p style="margin:6px 0 0;color:#64748b;font-size:0.9rem;">優先使用 management read model API，整理排程、核准與需求確認的只讀管理摘要。</p>
+        <p style="margin:6px 0 0;color:#64748b;font-size:0.9rem;" data-testid="crew-management-insight-status-note">${escapeHtml(statusMeta.description)}</p>
       </div>
       <span class="crew-label" data-testid="crew-management-insight-mode">read-only</span>
     </div>
@@ -233,6 +261,8 @@ function renderCrewWorkHubCards(data) {
   if (!crewWorkHubCards) return;
   const summary = data?.summary || {};
   const cards = buildCrewWorkHubCardMeta(summary);
+  const renderState = String(data?.state || "primary").trim() || "primary";
+  crewWorkHubCards.setAttribute("data-work-hub-render-state", renderState);
   crewWorkHubCards.innerHTML = cards
     .map(
       (card) => `
@@ -428,6 +458,8 @@ function activateCrewWorkHubFocusItem(item) {
 function renderCrewWorkHubFocusSections(data) {
   if (!crewWorkHubFocusSections) return;
   const sections = buildCrewWorkHubFocusSectionMeta(data);
+  const renderState = String(data?.state || "primary").trim() || "primary";
+  crewWorkHubFocusSections.setAttribute("data-work-hub-render-state", renderState);
   crewWorkHubFocusSections.innerHTML = sections
     .map((section) => {
       const entries = section.entries.slice(0, 4);
@@ -486,23 +518,35 @@ function renderCrewWorkHubFocusSections(data) {
   crewWorkHubFocusSections.style.margin = "0 0 16px";
 }
 
+function findCrewWorkHubFocusSectionTarget(action) {
+  if (!crewWorkHubFocusSections) return null;
+  if (action === "blocked" || action === "schedulable" || action === "scheduled" || action === "today-schedule" || action === "today-entries") {
+    return crewWorkHubFocusSections.querySelector(`[data-testid="crew-work-hub-focus-section-${action}"]`);
+  }
+  return null;
+}
+
 function findCrewWorkHubTarget(action) {
   if (!crewVendorList) return null;
+  const focusSectionTarget = findCrewWorkHubFocusSectionTarget(action);
   if (action === "today-schedule") {
     return (
-      crewWorkHubFocusSections?.querySelector('[data-testid="crew-work-hub-focus-section-today-schedule"]') ||
+      focusSectionTarget ||
       crewVendorList.querySelector("[data-work-hub-scheduled='true']") ||
       crewVendorList
     );
   }
   if (action === "blocked") {
-    return crewVendorList.querySelector("[data-work-hub-blocked='true']") || crewVendorList;
+    return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-blocked='true']") || crewVendorList;
   }
   if (action === "schedulable") {
-    return crewVendorList.querySelector("[data-work-hub-schedulable='true']") || crewVendorList;
+    return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-schedulable='true']") || crewVendorList;
   }
   if (action === "scheduled") {
-    return crewVendorList.querySelector("[data-work-hub-scheduled='true']") || crewVendorList;
+    return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-scheduled='true']") || crewVendorList;
+  }
+  if (action === "today-entries") {
+    return focusSectionTarget || crewVendorList;
   }
   if (action === "pending-approval") {
     return crewVendorList.querySelector("[data-work-hub-pending-approval='true']") || crewVendorList;
@@ -626,6 +670,14 @@ function syncCrewScheduledRowMarkers() {
       row.removeAttribute("data-work-hub-scheduled");
     }
   });
+}
+
+function resetCrewWorkHubDerivedState() {
+  crewScheduledEntryIds = new Set();
+  syncCrewScheduledRowMarkers();
+  clearCrewWorkHubFocusedRow();
+  setCrewWorkHubFocusItemActiveState(null);
+  setCrewManagementInsightMetricActiveState(null);
 }
 
 function buildCrewRequirementMeta(entry) {
@@ -950,6 +1002,7 @@ async function loadCrewWorkHubSummary(sheetId) {
       today_schedule_count: managementSummary.today_schedule_count ?? 0,
     };
     const focusSections = {
+      state: "primary",
       summary,
       blocked_entries: Array.isArray(workHubRuntimeData?.work_hub?.blocked_entries)
         ? workHubRuntimeData.work_hub.blocked_entries
@@ -974,20 +1027,25 @@ async function loadCrewWorkHubSummary(sheetId) {
     );
     syncCrewScheduledRowMarkers();
     renderCrewManagementInsightSummary({
+      state: "primary",
       summary,
       drilldown_refs: managementReadModelData.drilldown_refs,
     });
-    renderCrewWorkHubCards({ summary });
+    renderCrewWorkHubCards({ state: "primary", summary });
     renderCrewWorkHubFocusSections(focusSections);
     return;
   } catch {
+    resetCrewWorkHubDerivedState();
     try {
       const [dashboardResult, schedulingResult] = await Promise.allSettled([
         fetch(`/api/dashboard?sheet_id=${encodeURIComponent(sheetId)}`),
         fetch(`/api/scheduling?sheet_id=${encodeURIComponent(sheetId)}`),
       ]);
+      let dashboardApplied = false;
+      let schedulingApplied = false;
       const summary = { ...emptySummary };
       const focusSections = {
+        state: "empty",
         summary,
         blocked_entries: [],
         schedulable_entries: [],
@@ -996,34 +1054,35 @@ async function loadCrewWorkHubSummary(sheetId) {
         today_schedule: [],
       };
 
-        if (dashboardResult.status === "fulfilled") {
+      if (dashboardResult.status === "fulfilled") {
         const dashboardResponse = dashboardResult.value;
         const dashboardData = await dashboardResponse.json().catch(() => ({}));
-        if (!dashboardResponse.ok || !dashboardData?.summary) {
-          throw new Error(dashboardData?.error?.message || "dashboard summary request failed");
+        if (dashboardResponse.ok && dashboardData?.summary) {
+          dashboardApplied = true;
+          focusSections.state = "fallback";
+          summary.pending_approval_count = dashboardData.summary.pending_approval_count ?? 0;
+          summary.pending_requirement_count = dashboardData.summary.pending_requirement_count ?? 0;
+          summary.today_entry_count = dashboardData.summary.today_entry_count ?? 0;
+          summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;
+          summary.today_schedule_count = dashboardData.summary.today_schedule_count ?? 0;
+          focusSections.today_entries = Array.isArray(dashboardData.today_entries) ? dashboardData.today_entries : [];
+          focusSections.scheduled_entries = Array.isArray(dashboardData.scheduled_entries) ? dashboardData.scheduled_entries : [];
+          focusSections.today_schedule = Array.isArray(dashboardData.today_schedule) ? dashboardData.today_schedule : [];
+          crewScheduledEntryIds = new Set(
+            Array.isArray(dashboardData.scheduled_entries)
+              ? dashboardData.scheduled_entries.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean)
+              : [],
+          );
+          syncCrewScheduledRowMarkers();
         }
-        summary.pending_approval_count = dashboardData.summary.pending_approval_count ?? 0;
-        summary.pending_requirement_count = dashboardData.summary.pending_requirement_count ?? 0;
-        summary.today_entry_count = dashboardData.summary.today_entry_count ?? 0;
-        summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;
-        summary.today_schedule_count = dashboardData.summary.today_schedule_count ?? 0;
-        focusSections.today_entries = Array.isArray(dashboardData.today_entries) ? dashboardData.today_entries : [];
-        focusSections.scheduled_entries = Array.isArray(dashboardData.scheduled_entries) ? dashboardData.scheduled_entries : [];
-        focusSections.today_schedule = Array.isArray(dashboardData.today_schedule) ? dashboardData.today_schedule : [];
-        crewScheduledEntryIds = new Set(
-          Array.isArray(dashboardData.scheduled_entries)
-            ? dashboardData.scheduled_entries.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean)
-            : [],
-        );
-        syncCrewScheduledRowMarkers();
-      } else {
-        throw dashboardResult.reason || new Error("dashboard summary request failed");
       }
 
       if (schedulingResult.status === "fulfilled") {
         const schedulingResponse = schedulingResult.value;
         const schedulingData = await schedulingResponse.json().catch(() => ({}));
         if (schedulingResponse.ok && schedulingData?.summary) {
+          schedulingApplied = true;
+          focusSections.state = dashboardApplied ? "fallback" : "degraded";
           summary.blocked_count = schedulingData.summary.blocked_count ?? 0;
           summary.schedulable_count = schedulingData.summary.schedulable_count ?? 0;
           focusSections.blocked_entries = Array.isArray(schedulingData.blocked_entries) ? schedulingData.blocked_entries : [];
@@ -1033,15 +1092,20 @@ async function loadCrewWorkHubSummary(sheetId) {
         }
       }
 
-      renderCrewManagementInsightSummary({ summary, drilldown_refs: {} });
-      renderCrewWorkHubCards({ summary });
+      if (!dashboardApplied && !schedulingApplied) {
+        throw new Error("dashboard and scheduling fallback request failed");
+      }
+
+      const renderState = dashboardApplied && schedulingApplied ? "fallback" : "degraded";
+      focusSections.state = renderState;
+      renderCrewManagementInsightSummary({ state: renderState, summary, drilldown_refs: {} });
+      renderCrewWorkHubCards({ state: renderState, summary });
       renderCrewWorkHubFocusSections(focusSections);
     } catch {
-      renderCrewManagementInsightSummary({ summary: emptySummary, drilldown_refs: {} });
-      renderCrewWorkHubCards({ summary: emptySummary });
-      renderCrewWorkHubFocusSections({ summary: emptySummary });
-      crewScheduledEntryIds = new Set();
-      syncCrewScheduledRowMarkers();
+      resetCrewWorkHubDerivedState();
+      renderCrewManagementInsightSummary({ state: "empty", summary: emptySummary, drilldown_refs: {} });
+      renderCrewWorkHubCards({ state: "empty", summary: emptySummary });
+      renderCrewWorkHubFocusSections({ state: "empty", summary: emptySummary });
     }
   }
 }

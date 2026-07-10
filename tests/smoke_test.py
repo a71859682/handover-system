@@ -2690,8 +2690,9 @@ required_js = (
     'row.setAttribute("data-work-hub-pending-requirement", "true")',
     'const crewWorkHubCard = event.target.closest("[data-work-hub-action]");',
     "if (crewWorkHubCard) return scrollCrewWorkHubToTarget(crewWorkHubCard.dataset.workHubAction);",
-    'return crewVendorList.querySelector("[data-work-hub-blocked=\\\'true\\\']") || crewVendorList;',
-    'return crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
+    'const focusSectionTarget = findCrewWorkHubFocusSectionTarget(action);',
+    'return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-blocked=\\\'true\\\']") || crewVendorList;',
+    'return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
     'return crewVendorList.querySelector("[data-work-hub-pending-approval=\\\'true\\\']") || crewVendorList;',
     'return crewVendorList.querySelector("[data-work-hub-pending-requirement=\\\'true\\\']") || crewVendorList;',
     'target.scrollIntoView({ behavior: "smooth", block: "start" });',
@@ -2807,9 +2808,10 @@ required_js = (
     'schedulable_count: 0',
     'scheduled_count: 0',
     'crewScheduledEntryIds = new Set(',
+    'const focusSectionTarget = findCrewWorkHubFocusSectionTarget(action);',
     'row.setAttribute("data-work-hub-schedulable", "true");',
     'row.setAttribute("data-work-hub-scheduled", "true");',
-    'return crewVendorList.querySelector("[data-work-hub-schedulable=\\\'true\\\']") || crewVendorList;',
+    'return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-schedulable=\\\'true\\\']") || crewVendorList;',
 )
 for snippet in required_js:
     if snippet not in js_text:
@@ -2890,8 +2892,9 @@ required_js = (
     'workHubRuntimeData.work_hub.scheduled_entries.map((entry) => String(entry?.id ?? "").trim()).filter(Boolean)',
     'summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;',
     'crewScheduledEntryIds = new Set(',
+    'const focusSectionTarget = findCrewWorkHubFocusSectionTarget(action);',
     'row.setAttribute("data-work-hub-scheduled", "true");',
-    'return crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
+    'return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
     'data-entry-id="${escapeHtml(entry.id ?? "")}"',
 )
 for snippet in required_js:
@@ -2972,7 +2975,8 @@ required_js = (
     'summaryKey: "scheduled_count"',
     'summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;',
     'row.setAttribute("data-work-hub-scheduled", "true");',
-    'return crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
+    'const focusSectionTarget = findCrewWorkHubFocusSectionTarget(action);',
+    'return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
     'data-entry-id="${escapeHtml(entry.id ?? "")}"',
     'const crewWorkHubCard = event.target.closest("[data-work-hub-action]");',
     'target.scrollIntoView({ behavior: "smooth", block: "start" });',
@@ -3966,8 +3970,10 @@ module.app.testing = True
 template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding="utf-8")
 js_text = (Path(root_dir) / "static" / "app.js").read_text(encoding="utf-8")
 load_section = js_text.split("async function loadCrewWorkHubSummary", 1)[1].split("function setCrewFormalApproveFeedback", 1)[0]
+status_meta_section = js_text.split("function buildCrewManagementInsightStatusMeta", 1)[1].split("function renderCrewManagementInsightSummary", 1)[0]
 focus_summary_section = js_text.split("function buildCrewWorkHubPrimaryTimeline", 1)[1].split("function renderCrewWorkHubFocusSections", 1)[0]
 focus_interaction_section = js_text.split("function mapCrewWorkHubSectionKeyToAction", 1)[1].split("function syncCrewScheduledRowMarkers", 1)[0]
+reset_derived_state_section = js_text.split("function resetCrewWorkHubDerivedState", 1)[1].split("function buildCrewRequirementMeta", 1)[0]
 
 required_load_snippets = (
     "/api/management-read-model?sheet_id=",
@@ -3998,12 +4004,18 @@ required_load_snippets = (
     "summary.scheduled_count = dashboardData.summary.scheduled_count ?? 0;",
     "summary.blocked_count = schedulingData.summary.blocked_count ?? 0;",
     "summary.schedulable_count = schedulingData.summary.schedulable_count ?? 0;",
+    "let dashboardApplied = false;",
+    "let schedulingApplied = false;",
+    'focusSections.state = dashboardApplied ? "fallback" : "degraded";',
+    'const renderState = dashboardApplied && schedulingApplied ? "fallback" : "degraded";',
     "crewScheduledEntryIds = new Set(",
+    "resetCrewWorkHubDerivedState();",
     "syncCrewScheduledRowMarkers();",
-    "renderCrewWorkHubCards({ summary });",
-    'renderCrewManagementInsightSummary({ summary, drilldown_refs: {} });',
-    'renderCrewManagementInsightSummary({ summary: emptySummary, drilldown_refs: {} });',
-    "crewScheduledEntryIds = new Set();",
+    'renderCrewManagementInsightSummary({ state: renderState, summary, drilldown_refs: {} });',
+    'renderCrewManagementInsightSummary({ state: "empty", summary: emptySummary, drilldown_refs: {} });',
+    'renderCrewWorkHubCards({ state: renderState, summary });',
+    'renderCrewWorkHubCards({ state: "empty", summary: emptySummary });',
+    'renderCrewWorkHubFocusSections({ state: "empty", summary: emptySummary });',
 )
 for snippet in required_load_snippets:
     if snippet not in load_section:
@@ -4038,6 +4050,14 @@ if "managementReadModelData.management_summary" not in load_section:
 if "workHubRuntimeData.work_hub.summary" not in load_section:
     raise SystemExit("work hub primary consumer should depend on public work_hub.summary shape")
 
+for required_state in ('"primary"', '"fallback"', '"degraded"', '"empty"'):
+    if required_state not in load_section:
+        raise SystemExit(f"work hub runtime consumption should preserve render state: {required_state}")
+
+for required_state_label in ('stateLabel: "primary"', 'stateLabel: "fallback"', 'stateLabel: "degraded"', 'stateLabel: "empty"'):
+    if required_state_label not in status_meta_section:
+        raise SystemExit(f"management insight status marker should preserve render state: {required_state_label}")
+
 for forbidden_snippet in (
     "/api/crew-work-entry-requirement-confirm",
     "/api/crew-work-entry/formal-approve",
@@ -4058,6 +4078,8 @@ if 'data-testid="crew-management-insight-summary"' not in template_text:
     raise SystemExit("work hub runtime consumption should keep management insight summary mount container")
 if 'data-testid="crew-work-hub-focus-sections"' not in template_text:
     raise SystemExit("work hub runtime consumption should keep work hub focus sections mount container")
+if '<section class="crew-form-shell" data-mode="readonly"' not in template_text:
+    raise SystemExit("work hub runtime consumption should keep readonly crew shell container")
 for snippet in (
     ".crew-management-insight-summary",
     ".crew-management-insight-summary-grid",
@@ -4081,6 +4103,7 @@ for snippet in (
 
 required_focus_section_snippets = (
     'const crewManagementInsightSummary = document.getElementById("crewManagementInsightSummary");',
+    "function buildCrewManagementInsightStatusMeta(data = {}) {",
     "function buildCrewManagementInsightMetricMeta(summary = {}, drilldownRefs = {}) {",
     "const resolveTargetAction = (key, fallbackAction) => {",
     'const target = String(drilldownRefs?.[key]?.target || "").trim();',
@@ -4089,11 +4112,18 @@ required_focus_section_snippets = (
     "function renderCrewManagementInsightSummary(data) {",
     "Management Insight Summary",
     "優先使用 management read model API，整理排程、核准與需求確認的只讀管理摘要。",
+    "management read model 暫時不可用，改用既有 dashboard / scheduling 只讀摘要。",
+    "部分只讀資料暫時不可用，顯示降級管理摘要。",
+    "目前沒有可顯示的管理摘要，保留只讀空狀態。",
     'data-testid="crew-management-insight-mode"',
+    'data-testid="crew-management-insight-status-note"',
     'data-testid="crew-management-insight-metric-${metric.summaryKey}"',
     'data-testid="crew-management-insight-value-${metric.summaryKey}"',
     'data-testid="crew-management-insight-note-${index + 1}"',
     'data-management-insight-action="${escapeHtml(metric.targetAction)}"',
+    'crewManagementInsightSummary.setAttribute("data-management-insight-state", statusMeta.stateLabel);',
+    'crewWorkHubCards.setAttribute("data-work-hub-render-state", renderState);',
+    'crewWorkHubFocusSections.setAttribute("data-work-hub-render-state", renderState);',
     'tabindex="0"',
     'role="button"',
     '按 Enter 可查看對應 Work Hub 明細',
@@ -4111,7 +4141,8 @@ required_focus_section_snippets = (
     "activateCrewManagementInsightMetric(managementInsightMetric);",
     "scrollCrewWorkHubToTarget(metric.dataset.managementInsightAction);",
     'if (action === "today-schedule") {',
-    'crewWorkHubFocusSections?.querySelector(\\\'[data-testid="crew-work-hub-focus-section-today-schedule"]\\\') ||',
+    'const focusSectionTarget = findCrewWorkHubFocusSectionTarget(action);',
+    "focusSectionTarget ||",
     'crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") ||',
     "summary.today_schedule_count ?? 0,",
     "summary.schedulable_count ?? 0,",
@@ -4119,8 +4150,8 @@ required_focus_section_snippets = (
     "summary.pending_approval_count ?? 0,",
     "summary.pending_requirement_count ?? 0,",
     "renderCrewManagementInsightSummary({",
-    "renderCrewManagementInsightSummary({ summary, drilldown_refs: {} });",
-    "renderCrewManagementInsightSummary({ summary: emptySummary, drilldown_refs: {} });",
+    'renderCrewManagementInsightSummary({ state: renderState, summary, drilldown_refs: {} });',
+    'renderCrewManagementInsightSummary({ state: "empty", summary: emptySummary, drilldown_refs: {} });',
     'const crewWorkHubFocusSections = document.getElementById("crewWorkHubFocusSections");',
     "function renderCrewWorkHubFocusSections(data) {",
     'data-testid="crew-work-hub-focus-section-${section.key}"',
@@ -4134,6 +4165,7 @@ required_focus_section_snippets = (
     "function buildCrewWorkHubFocusSummary(entry, sectionKey) {",
     "function buildCrewWorkHubFocusAriaLabel(entry) {",
     "function activateCrewWorkHubFocusItem(item) {",
+    "function findCrewWorkHubFocusSectionTarget(action) {",
     'class="crew-work-hub-focus-badges"',
     'class="crew-work-hub-focus-badge"',
     'class="crew-work-hub-focus-primary-timeline"',
@@ -4160,6 +4192,10 @@ required_focus_section_snippets = (
     "schedulable_entries: Array.isArray(workHubRuntimeData?.work_hub?.schedulable_entries)",
     "today_entries: Array.isArray(workHubRuntimeData?.work_hub?.today_entries)",
     "today_schedule: Array.isArray(workHubRuntimeData?.work_hub?.today_schedule)",
+    "function resetCrewWorkHubDerivedState() {",
+    "clearCrewWorkHubFocusedRow();",
+    "setCrewWorkHubFocusItemActiveState(null);",
+    "setCrewManagementInsightMetricActiveState(null);",
     "renderCrewWorkHubFocusSections(focusSections);",
     "syncCrewScheduledRowMarkers();",
     'data-work-hub-action="${card.action}"',
@@ -4190,6 +4226,27 @@ for forbidden_snippet in (
 ):
     if forbidden_snippet in focus_interaction_section:
         raise SystemExit(f"work hub focus item interaction should remain read-only and fetch-free: {forbidden_snippet}")
+
+for required_snippet in (
+    "crewScheduledEntryIds = new Set();",
+    "syncCrewScheduledRowMarkers();",
+    "clearCrewWorkHubFocusedRow();",
+    "setCrewWorkHubFocusItemActiveState(null);",
+    "setCrewManagementInsightMetricActiveState(null);",
+):
+    if required_snippet not in reset_derived_state_section:
+        raise SystemExit(f"work hub derived state reset missing guardrail: {required_snippet}")
+
+for forbidden_snippet in (
+    "fetch(",
+    "localStorage",
+    "sessionStorage",
+    "document.cookie",
+    'method: "POST"',
+    "method: 'POST'",
+):
+    if forbidden_snippet in reset_derived_state_section:
+        raise SystemExit(f"work hub derived state reset must not persist or mutate business data: {forbidden_snippet}")
 
 for snippet in (
     "setCrewWorkHubFocusItemActiveState(item);",
@@ -4251,6 +4308,7 @@ for forbidden_snippet in (
     "today_entries.filter(",
     "scheduled_entries.filter(",
     "drilldown_refs.filter(",
+    "Promise.race([",
 ):
     if forbidden_snippet in js_text:
         raise SystemExit(f"management insight summary should not introduce new analytics APIs or frontend rule re-derivation: {forbidden_snippet}")
