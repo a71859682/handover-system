@@ -356,6 +356,14 @@
     transform: translateY(1px);
   }
 
+  .crew-work-hub-focus-section[data-work-hub-destination-active="true"],
+  .crew-vendor-list[data-work-hub-destination-active="true"] {
+    outline: 3px solid rgba(37, 99, 235, 0.42);
+    outline-offset: 4px;
+    box-shadow: 0 0 0 6px rgba(37, 99, 235, 0.1);
+    transition: outline-color 0.18s ease, box-shadow 0.18s ease;
+  }
+
   @media (max-width: 720px) {
     .crew-management-insight-summary {
       padding: 14px;

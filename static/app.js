@@ -30,6 +30,7 @@ let crewScheduledEntryIds = new Set();
 let crewWorkHubFocusHighlightTimeoutId = 0;
 let crewWorkHubFocusItemActiveTimeoutId = 0;
 let crewManagementInsightActiveTimeoutId = 0;
+let crewWorkHubDestinationActiveTimeoutId = 0;
 
 function key(...parts) {
   return parts.join(":");
@@ -270,6 +271,9 @@ function renderCrewWorkHubCards(data) {
           class="crew-work-hub-card"
           data-testid="${card.testId}"
           data-work-hub-action="${card.action}"
+          tabindex="0"
+          role="button"
+          aria-label="${escapeHtml(`${card.title} ${card.value}，按 Enter 可查看對應 Work Hub 明細`)}"
           style="border:1px solid #d9e2ec;border-radius:16px;padding:14px 16px;background:linear-gradient(180deg,#ffffff 0%,#f5f8fb 100%);box-shadow:0 8px 20px rgba(15,23,42,0.06);min-height:88px;display:flex;flex-direction:column;justify-content:space-between;"
         >
           <span class="crew-label">${escapeHtml(card.title)}</span>
@@ -457,6 +461,7 @@ function activateCrewWorkHubFocusItem(item) {
 
 function renderCrewWorkHubFocusSections(data) {
   if (!crewWorkHubFocusSections) return;
+  clearCrewWorkHubDestinationActiveState();
   const sections = buildCrewWorkHubFocusSectionMeta(data);
   const renderState = String(data?.state || "primary").trim() || "primary";
   crewWorkHubFocusSections.setAttribute("data-work-hub-render-state", renderState);
@@ -527,8 +532,8 @@ function findCrewWorkHubFocusSectionTarget(action) {
 }
 
 function findCrewWorkHubTarget(action) {
-  if (!crewVendorList) return null;
   const focusSectionTarget = findCrewWorkHubFocusSectionTarget(action);
+  if (!crewVendorList) return focusSectionTarget;
   if (action === "today-schedule") {
     return (
       focusSectionTarget ||
@@ -557,6 +562,33 @@ function findCrewWorkHubTarget(action) {
   return crewVendorList;
 }
 
+function clearCrewWorkHubDestinationActiveState() {
+  if (crewWorkHubDestinationActiveTimeoutId) {
+    window.clearTimeout(crewWorkHubDestinationActiveTimeoutId);
+    crewWorkHubDestinationActiveTimeoutId = 0;
+  }
+  [crewWorkHubFocusSections, crewVendorList].forEach((container) => {
+    if (!container) return;
+    container.removeAttribute("data-work-hub-destination-active");
+    container.querySelectorAll("[data-work-hub-destination-active='true']").forEach((target) => {
+      target.removeAttribute("data-work-hub-destination-active");
+    });
+  });
+}
+
+function setCrewWorkHubDestinationActiveState(target) {
+  clearCrewWorkHubDestinationActiveState();
+  const isFocusSection = target?.classList?.contains("crew-work-hub-focus-section");
+  const isVendorList = target === crewVendorList;
+  if (!isFocusSection && !isVendorList) return;
+  target.setAttribute("data-work-hub-destination-active", "true");
+  crewWorkHubDestinationActiveTimeoutId = window.setTimeout(() => {
+    if (target.getAttribute("data-work-hub-destination-active") !== "true") return;
+    target.removeAttribute("data-work-hub-destination-active");
+    crewWorkHubDestinationActiveTimeoutId = 0;
+  }, 1800);
+}
+
 function setCrewManagementInsightMetricActiveState(metric) {
   if (!crewManagementInsightSummary) return;
   if (crewManagementInsightActiveTimeoutId) {
@@ -582,13 +614,23 @@ function activateCrewManagementInsightMetric(metric) {
 }
 
 function scrollCrewWorkHubToTarget(action) {
+  clearCrewWorkHubDestinationActiveState();
   const target = findCrewWorkHubTarget(action);
   if (!target) return;
+  if (target.classList?.contains("crew-entry-row")) {
+    focusCrewWorkHubEntryRow(target.dataset.entryId);
+    return;
+  }
+  clearCrewWorkHubFocusedRow();
+  setCrewWorkHubDestinationActiveState(target);
   target.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function mapCrewWorkHubSectionKeyToAction(sectionKey) {
-  if (sectionKey === "today-entries" || sectionKey === "today-schedule") {
+  if (sectionKey === "today-schedule") {
+    return "today-schedule";
+  }
+  if (sectionKey === "today-entries") {
     return "today-entries";
   }
   return String(sectionKey || "").trim();
@@ -635,6 +677,7 @@ function setCrewWorkHubFocusItemActiveState(item) {
 }
 
 function focusCrewWorkHubEntryRow(entryId, fallbackAction = "") {
+  clearCrewWorkHubDestinationActiveState();
   const row = findCrewWorkHubEntryRow(entryId);
   if (!row) {
     if (fallbackAction) {
@@ -660,6 +703,23 @@ function focusCrewWorkHubEntryRow(entryId, fallbackAction = "") {
   }, 1800);
 }
 
+function activateCrewReadonlyDrilldown(control) {
+  if (!control) return false;
+  if (control.matches("[data-management-insight-action]")) {
+    activateCrewManagementInsightMetric(control);
+    return true;
+  }
+  if (control.matches("[data-work-hub-entry-id]")) {
+    activateCrewWorkHubFocusItem(control);
+    return true;
+  }
+  if (control.matches("[data-work-hub-action]")) {
+    scrollCrewWorkHubToTarget(control.dataset.workHubAction);
+    return true;
+  }
+  return false;
+}
+
 function syncCrewScheduledRowMarkers() {
   if (!crewVendorList) return;
   crewVendorList.querySelectorAll(".crew-entry-row").forEach((row) => {
@@ -675,6 +735,7 @@ function syncCrewScheduledRowMarkers() {
 function resetCrewWorkHubDerivedState() {
   crewScheduledEntryIds = new Set();
   syncCrewScheduledRowMarkers();
+  clearCrewWorkHubDestinationActiveState();
   clearCrewWorkHubFocusedRow();
   setCrewWorkHubFocusItemActiveState(null);
   setCrewManagementInsightMetricActiveState(null);
@@ -1461,18 +1522,10 @@ document.addEventListener("click", (event) => {
   const toggle = event.target.closest(".toggle");
   if (toggle) return toggleFloor(toggle.dataset.floorId);
 
-  const managementInsightMetric = event.target.closest("[data-management-insight-action]");
-  if (managementInsightMetric) {
-    return activateCrewManagementInsightMetric(managementInsightMetric);
-  }
-
-  const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");
-  if (crewWorkHubFocusItem) {
-    return activateCrewWorkHubFocusItem(crewWorkHubFocusItem);
-  }
-
-  const crewWorkHubCard = event.target.closest("[data-work-hub-action]");
-  if (crewWorkHubCard) return scrollCrewWorkHubToTarget(crewWorkHubCard.dataset.workHubAction);
+  const crewReadonlyDrilldown = event.target.closest(
+    "[data-management-insight-action], [data-work-hub-entry-id], [data-work-hub-action]",
+  );
+  if (activateCrewReadonlyDrilldown(crewReadonlyDrilldown)) return;
 
   const crewRequirementConfirm = event.target.closest("[data-testid='crew-work-entry-requirement-confirm-action']");
   if (crewRequirementConfirm) return confirmCrewWorkEntryRequirement(crewRequirementConfirm);
@@ -1505,19 +1558,13 @@ document.addEventListener("click", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
-  const managementInsightMetric = event.target.closest("[data-management-insight-action]");
-  if (managementInsightMetric) {
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    activateCrewManagementInsightMetric(managementInsightMetric);
-    return;
-  }
-
-  const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");
-  if (!crewWorkHubFocusItem) return;
   if (event.key !== "Enter" && event.key !== " ") return;
+  const crewReadonlyDrilldown = event.target.closest(
+    "[data-management-insight-action], [data-work-hub-entry-id], [data-work-hub-action]",
+  );
+  if (!crewReadonlyDrilldown) return;
   event.preventDefault();
-  activateCrewWorkHubFocusItem(crewWorkHubFocusItem);
+  activateCrewReadonlyDrilldown(crewReadonlyDrilldown);
 });
 
 document.addEventListener("focusin", (event) => {

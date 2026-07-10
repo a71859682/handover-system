@@ -2688,8 +2688,9 @@ required_js = (
     'row.setAttribute("data-work-hub-scheduled", "true")',
     'row.setAttribute("data-work-hub-pending-approval", "true")',
     'row.setAttribute("data-work-hub-pending-requirement", "true")',
-    'const crewWorkHubCard = event.target.closest("[data-work-hub-action]");',
-    "if (crewWorkHubCard) return scrollCrewWorkHubToTarget(crewWorkHubCard.dataset.workHubAction);",
+    "function activateCrewReadonlyDrilldown(control) {",
+    'if (control.matches("[data-work-hub-action]")) {',
+    "scrollCrewWorkHubToTarget(control.dataset.workHubAction);",
     'const focusSectionTarget = findCrewWorkHubFocusSectionTarget(action);',
     'return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-blocked=\\\'true\\\']") || crewVendorList;',
     'return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
@@ -2978,7 +2979,8 @@ required_js = (
     'const focusSectionTarget = findCrewWorkHubFocusSectionTarget(action);',
     'return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
     'data-entry-id="${escapeHtml(entry.id ?? "")}"',
-    'const crewWorkHubCard = event.target.closest("[data-work-hub-action]");',
+    "function activateCrewReadonlyDrilldown(control) {",
+    'if (control.matches("[data-work-hub-action]")) {',
     'target.scrollIntoView({ behavior: "smooth", block: "start" });',
 )
 for snippet in required_js:
@@ -3971,8 +3973,13 @@ template_text = (Path(root_dir) / "templates" / "sheet.html").read_text(encoding
 js_text = (Path(root_dir) / "static" / "app.js").read_text(encoding="utf-8")
 load_section = js_text.split("async function loadCrewWorkHubSummary", 1)[1].split("function setCrewFormalApproveFeedback", 1)[0]
 status_meta_section = js_text.split("function buildCrewManagementInsightStatusMeta", 1)[1].split("function renderCrewManagementInsightSummary", 1)[0]
+cards_render_section = js_text.split("function renderCrewWorkHubCards", 1)[1].split("function buildCrewWorkHubFocusSectionMeta", 1)[0]
 focus_summary_section = js_text.split("function buildCrewWorkHubPrimaryTimeline", 1)[1].split("function renderCrewWorkHubFocusSections", 1)[0]
 focus_interaction_section = js_text.split("function mapCrewWorkHubSectionKeyToAction", 1)[1].split("function syncCrewScheduledRowMarkers", 1)[0]
+drilldown_interaction_section = js_text.split("function findCrewWorkHubFocusSectionTarget", 1)[1].split("function syncCrewScheduledRowMarkers", 1)[0]
+target_boundary_section = js_text.split("function findCrewWorkHubTarget", 1)[1].split("function clearCrewWorkHubDestinationActiveState", 1)[0]
+section_action_mapping = js_text.split("function mapCrewWorkHubSectionKeyToAction", 1)[1].split("function findCrewWorkHubEntryRow", 1)[0]
+event_delegation_section = js_text.split('document.addEventListener("click"', 1)[1].split('document.addEventListener("focusin"', 1)[0]
 reset_derived_state_section = js_text.split("function resetCrewWorkHubDerivedState", 1)[1].split("function buildCrewRequirementMeta", 1)[0]
 
 required_load_snippets = (
@@ -4044,6 +4051,9 @@ if load_section.count("fetch(`/api/") != 4:
 if "Promise.allSettled([" not in load_section:
     raise SystemExit("work hub runtime consumption should keep dashboard+scheduling fallback boundary")
 
+if load_section.count("resetCrewWorkHubDerivedState();") != 2:
+    raise SystemExit("work hub fallback and empty paths should both reset derived drilldown state")
+
 if "managementReadModelData.management_summary" not in load_section:
     raise SystemExit("management insight primary consumer should depend on public management_summary shape")
 
@@ -4096,6 +4106,8 @@ for snippet in (
     ".crew-work-hub-focus-badge",
     ".crew-work-hub-focus-item:focus-visible",
     ".crew-work-hub-focus-item-arrow",
+    '.crew-work-hub-focus-section[data-work-hub-destination-active="true"]',
+    '.crew-vendor-list[data-work-hub-destination-active="true"]',
     '@media (max-width: 720px)',
 ):
     if snippet not in template_text:
@@ -4137,8 +4149,9 @@ required_focus_section_snippets = (
     "function setCrewManagementInsightMetricActiveState(metric) {",
     "function activateCrewManagementInsightMetric(metric) {",
     'metric.setAttribute("data-management-insight-active", "true");',
-    'const managementInsightMetric = event.target.closest("[data-management-insight-action]");',
-    "activateCrewManagementInsightMetric(managementInsightMetric);",
+    "function activateCrewReadonlyDrilldown(control) {",
+    'if (control.matches("[data-management-insight-action]")) {',
+    "activateCrewManagementInsightMetric(control);",
     "scrollCrewWorkHubToTarget(metric.dataset.managementInsightAction);",
     'if (action === "today-schedule") {',
     'const focusSectionTarget = findCrewWorkHubFocusSectionTarget(action);',
@@ -4156,6 +4169,7 @@ required_focus_section_snippets = (
     "function renderCrewWorkHubFocusSections(data) {",
     'data-testid="crew-work-hub-focus-section-${section.key}"',
     'data-testid="crew-work-hub-focus-count-${section.key}"',
+    'data-testid="crew-work-hub-focus-empty-${section.key}"',
     'class="crew-work-hub-focus-item"',
     'class="crew-work-hub-focus-item-main"',
     'class="crew-work-hub-focus-item-arrow"',
@@ -4183,8 +4197,8 @@ required_focus_section_snippets = (
     "window.setTimeout(() => {",
     "if (!row) {",
     "scrollCrewWorkHubToTarget(fallbackAction);",
-    'const crewWorkHubFocusItem = event.target.closest("[data-work-hub-entry-id]");',
-    "activateCrewWorkHubFocusItem(crewWorkHubFocusItem);",
+    'if (control.matches("[data-work-hub-entry-id]")) {',
+    "activateCrewWorkHubFocusItem(control);",
     'document.addEventListener("keydown", (event) => {',
     'if (event.key !== "Enter" && event.key !== " ") return;',
     "event.preventDefault();",
@@ -4203,6 +4217,72 @@ required_focus_section_snippets = (
 for snippet in required_focus_section_snippets:
     if snippet not in js_text:
         raise SystemExit(f"work hub runtime consumption missing focus sections guardrail: {snippet}")
+
+for snippet in (
+    "let crewWorkHubDestinationActiveTimeoutId = 0;",
+    "function clearCrewWorkHubDestinationActiveState() {",
+    "window.clearTimeout(crewWorkHubDestinationActiveTimeoutId);",
+    'container.removeAttribute("data-work-hub-destination-active");',
+    "function setCrewWorkHubDestinationActiveState(target) {",
+    'const isFocusSection = target?.classList?.contains("crew-work-hub-focus-section");',
+    "const isVendorList = target === crewVendorList;",
+    'target.setAttribute("data-work-hub-destination-active", "true");',
+    'target.removeAttribute("data-work-hub-destination-active");',
+    "crewWorkHubDestinationActiveTimeoutId = window.setTimeout(() => {",
+    "clearCrewWorkHubDestinationActiveState();",
+    'if (target.classList?.contains("crew-entry-row")) {',
+    "focusCrewWorkHubEntryRow(target.dataset.entryId);",
+    "setCrewWorkHubDestinationActiveState(target);",
+):
+    if snippet not in drilldown_interaction_section and snippet not in js_text:
+        raise SystemExit(f"readonly drilldown destination feedback missing guardrail: {snippet}")
+
+for snippet in (
+    'return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-blocked=\\\'true\\\']") || crewVendorList;',
+    'return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-schedulable=\\\'true\\\']") || crewVendorList;',
+    'return focusSectionTarget || crewVendorList.querySelector("[data-work-hub-scheduled=\\\'true\\\']") || crewVendorList;',
+    'return crewVendorList.querySelector("[data-work-hub-pending-approval=\\\'true\\\']") || crewVendorList;',
+    'return crewVendorList.querySelector("[data-work-hub-pending-requirement=\\\'true\\\']") || crewVendorList;',
+):
+    if snippet not in target_boundary_section:
+        raise SystemExit(f"readonly drilldown should preserve section to row to list fallback: {snippet}")
+
+if 'if (sectionKey === "today-schedule") {' not in section_action_mapping or 'return "today-schedule";' not in section_action_mapping:
+    raise SystemExit("today-schedule missing-row fallback should preserve today-schedule section semantics")
+if 'sectionKey === "today-entries" || sectionKey === "today-schedule"' in section_action_mapping:
+    raise SystemExit("today-schedule missing-row fallback must not collapse into today-entries")
+
+if event_delegation_section.count("activateCrewReadonlyDrilldown(crewReadonlyDrilldown)") != 2:
+    raise SystemExit("click and keyboard drilldown activation should share the same readonly handler")
+for snippet in (
+    '"[data-management-insight-action], [data-work-hub-entry-id], [data-work-hub-action]"',
+    'if (event.key !== "Enter" && event.key !== " ") return;',
+    "event.preventDefault();",
+):
+    if snippet not in event_delegation_section:
+        raise SystemExit(f"readonly drilldown click/keyboard parity missing guardrail: {snippet}")
+
+for snippet in (
+    'data-work-hub-action="${card.action}"',
+    'tabindex="0"',
+    'role="button"',
+    'aria-label="${escapeHtml(`${card.title} ${card.value}，按 Enter 可查看對應 Work Hub 明細`)}"',
+):
+    if snippet not in cards_render_section:
+        raise SystemExit(f"work hub cards should preserve readonly click/keyboard parity: {snippet}")
+
+for forbidden_snippet in (
+    "fetch(",
+    'method: "POST"',
+    "method: 'POST'",
+    "localStorage",
+    "sessionStorage",
+    "document.cookie",
+    "history.pushState",
+    "location.href",
+):
+    if forbidden_snippet in drilldown_interaction_section:
+        raise SystemExit(f"readonly drilldown helpers must remain fetch-free and non-persistent: {forbidden_snippet}")
 
 for snippet in (
     'const plannedAt = String(entry?.planned_at || "").trim();',
@@ -4230,6 +4310,7 @@ for forbidden_snippet in (
 for required_snippet in (
     "crewScheduledEntryIds = new Set();",
     "syncCrewScheduledRowMarkers();",
+    "clearCrewWorkHubDestinationActiveState();",
     "clearCrewWorkHubFocusedRow();",
     "setCrewWorkHubFocusItemActiveState(null);",
     "setCrewManagementInsightMetricActiveState(null);",
