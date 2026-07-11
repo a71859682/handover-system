@@ -13680,6 +13680,319 @@ def run_vendor_work_entry_submit_result_flow_completion_smoke(db_path: Path) -> 
         raise AssertionError("vendor submit result flow completion smoke update landing should explain selected-entry update status")
 
 
+def run_ai_read_formal_schedule_count_orchestration_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import inspect
+import os
+import sqlite3
+import sys
+from datetime import datetime
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+
+business_date = "2026-07-11"
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site = conn.execute("SELECT id FROM sites ORDER BY id LIMIT 1").fetchone()
+    default_sheet = conn.execute("SELECT id FROM sheets WHERE site_id = ? ORDER BY id LIMIT 1", (default_site["id"],)).fetchone()
+    default_site_id = int(default_site["id"])
+    sheet_id = int(default_sheet["id"])
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+            ("AI Read Secondary", "ai-read-secondary"),
+        ).fetchone()["id"]
+    )
+    secondary_sheet_id = int(
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+            ("AI Read Secondary Sheet", 999, secondary_site_id),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, 'member')",
+        ("ai_read_member", "AI Read Member", module.generate_password_hash("member-pass")),
+    )
+    member_id = int(conn.execute("SELECT id FROM users WHERE username = 'ai_read_member'").fetchone()["id"])
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'member')",
+        (member_id, default_site_id),
+    )
+    conn.execute(
+        "INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active) VALUES (?, ?, ?, 1)",
+        ("ai_read_vendor", module.generate_password_hash("vendor-pass"), "AI Read Vendor"),
+    )
+    vendor_id = int(conn.execute("SELECT id FROM vendor_accounts WHERE username = 'ai_read_vendor'").fetchone()["id"])
+    for entry_order, scheduled_time in enumerate(("09:00", "10:00")):
+        entry_id = int(
+            conn.execute(
+                '''
+                INSERT INTO vendor_work_entries (
+                    sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                    actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 1, 0, ?, '', 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id
+                ''',
+                (sheet_id, "AI Read Vendor", business_date, f"{business_date} {scheduled_time}", f"Work {entry_order}", entry_order),
+            ).fetchone()["id"]
+        )
+        conn.execute(
+            '''
+            INSERT INTO formal_approvals (
+                entry_id, sheet_id, action, approval_status, approved_by, approved_at, created_at, updated_at
+            ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', 'ai_read_member', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ''',
+            (entry_id, sheet_id),
+        )
+        conn.execute(
+            '''
+            INSERT INTO scheduling_entries (
+                entry_id, sheet_id, action, schedule_status, scheduled_date, scheduled_time,
+                scheduled_by, scheduled_at, created_at, updated_at
+            ) VALUES (?, ?, 'schedule_entry', 'scheduled', ?, ?, 'ai_read_member', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ''',
+            (entry_id, sheet_id, business_date, scheduled_time),
+        )
+    conn.commit()
+
+member_session = {"user_id": member_id, "role": "member", "current_site_id": default_site_id}
+admin_session = {"user_id": 1, "role": "admin", "current_site_id": default_site_id}
+vendor_session = {
+    "identity_type": "vendor",
+    "vendor_account_id": vendor_id,
+    "vendor_username": "ai_read_vendor",
+    "vendor_name": "AI Read Vendor",
+}
+
+def database_snapshot():
+    with module.db() as conn:
+        return tuple(conn.iterdump())
+
+def call_helper(session_values, **overrides):
+    kwargs = {
+        "intent_key": "today_formally_scheduled_count",
+        "sheet_id": sheet_id,
+        "business_date": business_date,
+        "as_of": datetime(2026, 7, 11, 12, 0),
+    }
+    kwargs.update(overrides)
+    with module.app.test_request_context("/"):
+        module.session.clear()
+        module.session.update(session_values)
+        with module.db() as conn:
+            return module.build_role_scoped_ai_read_result(conn, **kwargs)
+
+def read_only_call(callback):
+    before = database_snapshot()
+    try:
+        return callback()
+    finally:
+        if database_snapshot() != before:
+            raise SystemExit("AI read orchestration helper must not modify the database")
+
+def expect_domain_error(code, callback):
+    try:
+        read_only_call(callback)
+    except module.AIReadOrchestrationError as exc:
+        if exc.code != code or str(exc) != code:
+            raise SystemExit(f"AI read domain error should preserve {code}")
+    else:
+        raise SystemExit(f"AI read orchestration should fail with {code}")
+
+def expect_lookup_error(code, callback):
+    try:
+        read_only_call(callback)
+    except LookupError as exc:
+        if str(exc) != code:
+            raise SystemExit(f"AI read authorization should preserve {code}")
+    else:
+        raise SystemExit(f"AI read authorization should fail with {code}")
+
+member_result = read_only_call(lambda: call_helper(member_session))
+if set(member_result) != {"mode", "intent_key", "scope", "evidence", "total_count", "returned_count", "truncated", "count"}:
+    raise SystemExit("AI read count orchestration should keep the internal result shape")
+if member_result["mode"] != "read_only" or member_result["intent_key"] != "today_formally_scheduled_count":
+    raise SystemExit("AI read count orchestration should identify its mode and exact intent")
+if "items" in member_result or member_result["count"] != 2:
+    raise SystemExit("AI read count orchestration should return the full scalar count without items")
+if member_result["total_count"] != 2 or member_result["returned_count"] != 2 or member_result["truncated"] is not False:
+    raise SystemExit("AI read count orchestration must not cap a scalar count at registry max_items=1")
+if member_result["scope"] != {"current_site_id": default_site_id, "sheet_id": sheet_id, "business_date": business_date}:
+    raise SystemExit("AI read count orchestration should preserve authorized scope")
+evidence = member_result["evidence"]
+intent_metadata = module.get_supported_ai_read_intent("today_formally_scheduled_count")
+if not set(intent_metadata["evidence_fields"]).issubset(evidence):
+    raise SystemExit("AI read count evidence should cover every registry-required evidence field")
+if evidence["actor_identity_type"] != "internal" or evidence["actor_role"] != "member" or evidence["actor_scope"] != "site_member":
+    raise SystemExit("AI read count orchestration should derive member identity from trusted session data")
+if evidence["current_site_id"] != default_site_id or evidence["sheet_id"] != sheet_id:
+    raise SystemExit("AI read count evidence should repeat the authorized site and sheet scope")
+if evidence["intent_key"] != "today_formally_scheduled_count" or evidence["business_date"] != business_date:
+    raise SystemExit("AI read count evidence should preserve the registry intent and resolved business date")
+if evidence["item_count"] != 2:
+    raise SystemExit("AI read count evidence should use the full canonical count as item_count")
+if evidence["source_family"] != "dashboard_today_schedule_count":
+    raise SystemExit("AI read count orchestration should preserve registry source_family")
+if evidence["authorization_policy"] != "internal_dashboard_current_site_sheet_read":
+    raise SystemExit("AI read count orchestration should preserve registry authorization policy")
+if evidence["as_of"] != "2026-07-11T12:00:00" or evidence["empty_state_reason"] is not None:
+    raise SystemExit("AI read count orchestration should preserve trusted as_of and non-empty evidence")
+
+admin_result = read_only_call(lambda: call_helper(admin_session))
+if admin_result["evidence"]["actor_role"] != "admin" or admin_result["evidence"]["actor_scope"] != "current_site_constrained_admin":
+    raise SystemExit("AI read count orchestration should keep admin constrained to current site")
+
+empty_result = read_only_call(lambda: call_helper(member_session, business_date="2026-07-10"))
+if (
+    empty_result["count"] != 0
+    or empty_result["evidence"]["item_count"] != 0
+    or empty_result["evidence"]["empty_state_reason"] != "no_formal_schedule_for_business_date"
+):
+    raise SystemExit("AI read count orchestration should expose its fixed empty-state reason")
+
+expect_domain_error("unsupported_ai_read_intent", lambda: call_helper(member_session, intent_key="unknown"))
+expect_domain_error("unsupported_ai_read_intent", lambda: call_helper(vendor_session, intent_key="unknown"))
+pending_keys = (
+    "today_due_crew_entries_not_entered",
+    "today_pending_requirements",
+    "current_blocked_items",
+)
+for pending_key in pending_keys:
+    expect_domain_error("ai_read_intent_not_implemented", lambda key=pending_key: call_helper(member_session, intent_key=key))
+
+for known_key in ("today_formally_scheduled_count", *pending_keys):
+    expect_lookup_error("auth_required", lambda key=known_key: call_helper({}, intent_key=key))
+    expect_lookup_error("vendor_auth_forbidden", lambda key=known_key: call_helper(vendor_session, intent_key=key))
+expect_lookup_error("site_context_invalid", lambda: call_helper({"user_id": member_id, "role": "member"}))
+expect_lookup_error(
+    "site_context_invalid",
+    lambda: call_helper({"user_id": member_id, "role": "member"}, intent_key=pending_keys[0]),
+)
+expect_lookup_error("sheet_not_found", lambda: call_helper(member_session, sheet_id=999999))
+expect_lookup_error("sheet_not_in_current_site", lambda: call_helper(member_session, sheet_id=secondary_sheet_id))
+expect_lookup_error(
+    "sheet_not_in_current_site",
+    lambda: call_helper(member_session, sheet_id=secondary_sheet_id, intent_key=pending_keys[0]),
+)
+
+with module.db() as conn:
+    conn.execute("DELETE FROM user_site_permissions WHERE user_id = ? AND site_id = ?", (member_id, default_site_id))
+    conn.commit()
+expect_lookup_error("site_permission_missing", lambda: call_helper(member_session))
+with module.db() as conn:
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'member')",
+        (member_id, default_site_id),
+    )
+    conn.commit()
+
+expect_domain_error("invalid_business_date", lambda: call_helper(member_session, business_date="2026-02-30"))
+
+original_dashboard_helper = module.build_dashboard_payload
+invalid_payloads = (
+    None,
+    {},
+    {"summary": None},
+    {"summary": {}},
+    {"summary": {"today_schedule_count": True}},
+    {"summary": {"today_schedule_count": "2"}},
+    {"summary": {"today_schedule_count": -1}},
+)
+try:
+    for invalid_payload in invalid_payloads:
+        module.build_dashboard_payload = lambda *args, _payload=invalid_payload, **kwargs: _payload
+        expect_domain_error("ai_read_source_shape_mismatch", lambda: call_helper(member_session))
+finally:
+    module.build_dashboard_payload = original_dashboard_helper
+
+dashboard_calls = []
+real_datetime = module.datetime
+class FixedDateTime(real_datetime):
+    calls = 0
+
+    @classmethod
+    def now(cls):
+        cls.calls += 1
+        return cls(2026, 7, 12, 8, 0)
+
+def tracked_dashboard_helper(conn, *, sheet_id, business_date):
+    dashboard_calls.append((sheet_id, business_date))
+    return original_dashboard_helper(conn, sheet_id=sheet_id, business_date=business_date)
+
+try:
+    module.datetime = FixedDateTime
+    module.build_dashboard_payload = tracked_dashboard_helper
+    resolved_result = read_only_call(lambda: call_helper(member_session, business_date=None, as_of=None))
+finally:
+    module.datetime = real_datetime
+    module.build_dashboard_payload = original_dashboard_helper
+if FixedDateTime.calls != 1 or dashboard_calls != [(sheet_id, business_date)]:
+    raise SystemExit("AI read orchestration should capture one server as_of and call the canonical Dashboard helper once")
+if resolved_result["scope"]["business_date"] != business_date or resolved_result["evidence"]["as_of"] != "2026-07-12T08:00:00":
+    raise SystemExit("AI read orchestration should use the same as_of for 08:30 business-date resolution and evidence")
+
+client = module.app.test_client()
+with client.session_transaction() as session:
+    session.update(member_session)
+before_api = database_snapshot()
+dashboard_response = client.get(f"/api/dashboard?sheet_id={sheet_id}&business_date={business_date}")
+if dashboard_response.status_code != 200:
+    raise SystemExit("existing Dashboard API success contract should remain available")
+dashboard_payload = dashboard_response.get_json()
+if dashboard_payload["summary"]["today_schedule_count"] != 2 or "today_schedule" not in dashboard_payload:
+    raise SystemExit("existing Dashboard API scheduled fact contract should remain unchanged")
+if database_snapshot() != before_api:
+    raise SystemExit("existing Dashboard API must remain read-only")
+unauthenticated_response = module.app.test_client().get(f"/api/dashboard?sheet_id={sheet_id}&business_date={business_date}")
+if unauthenticated_response.status_code != 403 or unauthenticated_response.get_json()["error"]["code"] != "auth_required":
+    raise SystemExit("existing Dashboard API auth error contract should remain unchanged")
+
+helper_source = inspect.getsource(module.build_role_scoped_ai_read_result)
+for required_fragment in (
+    "get_supported_ai_read_intent(intent_key)",
+    "authorize_dashboard_read(conn, sheet_id=sheet_id)",
+    "build_dashboard_payload(",
+):
+    if required_fragment not in helper_source:
+        raise SystemExit(f"AI read orchestration helper missing canonical call: {required_fragment}")
+for forbidden_fragment in (
+    "/api/dashboard",
+    "requests.",
+    "urlopen(",
+    "openai",
+    "anthropic",
+    "model_call",
+    "provider_call",
+    "jsonify(",
+):
+    if forbidden_fragment in helper_source:
+        raise SystemExit(f"AI read orchestration helper contains forbidden runtime behavior: {forbidden_fragment}")
+if any("ai-read" in rule.rule or "ai_read" in rule.endpoint for rule in module.app.url_map.iter_rules()):
+    raise SystemExit("AI read orchestration baseline must not add a route or API")
+
+print("AI read formal schedule count orchestration smoke PASS")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(db_path), str(ROOT_DIR)],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if "AI read formal schedule count orchestration smoke PASS" not in result.stdout:
+        raise AssertionError("AI read formal schedule count orchestration smoke did not report PASS.")
+
+
 def run_ai_read_supported_intent_registry_smoke(db_path: Path) -> None:
     registry_path = ROOT_DIR / "services" / "ai_read_intent_registry.py"
     database_before = db_path.read_bytes()
@@ -13808,6 +14121,9 @@ def main() -> int:
             raise AssertionError(f"Unexpected sample counts: {counts}")
 
         run_ai_read_supported_intent_registry_smoke(db_path)
+        ai_read_orchestration_db = Path(tmpdir) / "ai-read-formal-schedule-count.db"
+        create_sample_sqlite(ai_read_orchestration_db)
+        run_ai_read_formal_schedule_count_orchestration_smoke(ai_read_orchestration_db)
 
         site_foundation_db = Path(tmpdir) / "site-foundation.db"
         create_sample_sqlite(site_foundation_db)

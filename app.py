@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
@@ -25,6 +26,7 @@ from flask import (
 from openpyxl import load_workbook
 from werkzeug.security import check_password_hash, generate_password_hash
 from database import init_database
+from services.ai_read_intent_registry import get_supported_ai_read_intent
 from sqlite_db_path import get_sqlite_db_path
 
 
@@ -2896,6 +2898,93 @@ def build_management_read_model_payload(
                 _management_read_model_count(dashboard_summary, "today_schedule_count"),
             ),
         },
+    }
+
+
+class AIReadOrchestrationError(RuntimeError):
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+def build_role_scoped_ai_read_result(
+    conn: sqlite3.Connection,
+    *,
+    intent_key: str,
+    sheet_id: int,
+    business_date: str | None = None,
+    as_of: datetime | None = None,
+) -> dict[str, object]:
+    intent = get_supported_ai_read_intent(intent_key)
+    if intent is None:
+        raise AIReadOrchestrationError("unsupported_ai_read_intent")
+    scope = authorize_dashboard_read(conn, sheet_id=sheet_id)
+    if intent_key != "today_formally_scheduled_count":
+        raise AIReadOrchestrationError("ai_read_intent_not_implemented")
+
+    trusted_as_of = as_of if as_of is not None else datetime.now()
+    try:
+        resolved_business_date = (
+            resolve_crew_business_date(now=trusted_as_of)
+            if business_date is None
+            else parse_crew_business_date(business_date)
+        )
+    except ValueError:
+        raise AIReadOrchestrationError("invalid_business_date") from None
+
+    actor = _current_internal_user()
+    actor_role = str(actor["role"])
+    actor_scope = "current_site_constrained_admin" if is_global_admin(actor) else "site_member"
+    if actor_scope not in intent["actor_scope"]:
+        raise AIReadOrchestrationError("ai_read_intent_not_implemented")
+
+    payload = build_dashboard_payload(
+        conn,
+        sheet_id=int(scope["sheet_id"]),
+        business_date=resolved_business_date,
+    )
+    if not isinstance(payload, Mapping):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    summary = payload.get("summary")
+    if not isinstance(summary, Mapping):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    count = summary.get("today_schedule_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+
+    evidence = {
+        "actor_identity_type": "internal",
+        "actor_role": actor_role,
+        "actor_scope": actor_scope,
+        "current_site_id": int(scope["current_site_id"]),
+        "sheet_id": int(scope["sheet_id"]),
+        "intent_key": intent_key,
+        "source_family": intent["source_family"],
+        "business_date": resolved_business_date,
+        "authorization_policy": intent["authorization_policy"],
+        "as_of": trusted_as_of.isoformat(),
+        "item_count": count,
+        "empty_state_reason": "no_formal_schedule_for_business_date" if count == 0 else None,
+    }
+    required_evidence_fields = intent.get("evidence_fields")
+    if not isinstance(required_evidence_fields, (list, tuple)) or not set(required_evidence_fields).issubset(
+        evidence
+    ):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+
+    return {
+        "mode": "read_only",
+        "intent_key": intent_key,
+        "scope": {
+            "current_site_id": int(scope["current_site_id"]),
+            "sheet_id": int(scope["sheet_id"]),
+            "business_date": resolved_business_date,
+        },
+        "evidence": evidence,
+        "total_count": count,
+        "returned_count": count,
+        "truncated": False,
+        "count": count,
     }
 
 
