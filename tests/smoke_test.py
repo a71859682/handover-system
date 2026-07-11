@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import inspect
 import re
@@ -13679,6 +13680,117 @@ def run_vendor_work_entry_submit_result_flow_completion_smoke(db_path: Path) -> 
         raise AssertionError("vendor submit result flow completion smoke update landing should explain selected-entry update status")
 
 
+def run_ai_read_supported_intent_registry_smoke(db_path: Path) -> None:
+    registry_path = ROOT_DIR / "services" / "ai_read_intent_registry.py"
+    database_before = db_path.read_bytes()
+    spec = importlib.util.spec_from_file_location("ai_read_intent_registry_smoke", registry_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("AI read intent registry should be importable as a standalone service module.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    expected_keys = [
+        "today_due_crew_entries_not_entered",
+        "today_pending_requirements",
+        "current_blocked_items",
+        "today_formally_scheduled_count",
+    ]
+    entries = module.list_supported_ai_read_intents()
+    keys = [entry["key"] for entry in entries]
+    if keys != expected_keys or len(keys) != len(set(keys)):
+        raise AssertionError("AI read intent registry should contain exactly four unique deterministic keys.")
+    if [entry["key"] for entry in module.list_supported_ai_read_intents()] != expected_keys:
+        raise AssertionError("AI read intent registry ordering should be deterministic.")
+
+    required_fields = {
+        "key",
+        "display_name",
+        "actor_scope",
+        "readiness",
+        "source_family",
+        "authorization_policy",
+        "business_date_policy",
+        "result_kind",
+        "max_items",
+        "evidence_fields",
+    }
+    required_evidence = {
+        "actor_role",
+        "current_site_id",
+        "sheet_id",
+        "intent_key",
+        "source_family",
+        "business_date",
+        "as_of",
+        "item_count",
+        "empty_state_reason",
+    }
+    allowed_actor_scope = {"site_member", "current_site_constrained_admin"}
+    for entry in entries:
+        if not required_fields.issubset(entry):
+            raise AssertionError(f"AI read intent metadata is incomplete for {entry.get('key')!r}.")
+        for field in ("display_name", "source_family", "authorization_policy"):
+            if not isinstance(entry[field], str) or not entry[field].strip():
+                raise AssertionError(f"AI read intent {field} must be a non-empty identifier or label.")
+        if entry["readiness"] != "ready_candidate":
+            raise AssertionError("AI read intent readiness must remain ready_candidate, not enabled or production-ready.")
+        if set(entry["actor_scope"]) != allowed_actor_scope:
+            raise AssertionError("AI read intents must remain internal site-member/current-site-admin scoped.")
+        if entry["business_date_policy"] != "canonical_per_form_reset_business_date":
+            raise AssertionError("AI read intents must use the canonical per-form reset business-date contract.")
+        if not isinstance(entry["max_items"], int) or not 1 <= entry["max_items"] <= 25:
+            raise AssertionError("AI read intent max_items must remain a conservative positive bound.")
+        if not required_evidence.issubset(entry["evidence_fields"]):
+            raise AssertionError("AI read intent evidence should preserve scope/source/date/as-of grounding.")
+
+    count_entry = module.get_supported_ai_read_intent("today_formally_scheduled_count")
+    if count_entry is None or count_entry["result_kind"] != "count_only" or count_entry["max_items"] != 1:
+        raise AssertionError("Formally scheduled count intent must remain count-only without an item-list contract.")
+    if "item_fields" in count_entry:
+        raise AssertionError("Count-only AI read intent must not claim an item-list shape.")
+
+    excluded_keys = {
+        "floor_incomplete_tasks",
+        "vendor_today_entries",
+        "vendor_pending_requirements",
+        "vendor_entry_status",
+    }
+    if excluded_keys.intersection(keys):
+        raise AssertionError("Conditional or not-ready AI read intents must remain excluded.")
+    if module.get_supported_ai_read_intent("unknown") is not None:
+        raise AssertionError("Unknown AI read intent keys should return None.")
+    if module.get_supported_ai_read_intent(" TODAY_PENDING_REQUIREMENTS ") is not None:
+        raise AssertionError("AI read intent lookup should not trim, alias, or fuzzy-match keys.")
+
+    entries[0]["display_name"] = "mutated"
+    entries.pop()
+    count_entry["max_items"] = 99
+    fresh_entries = module.list_supported_ai_read_intents()
+    if [entry["key"] for entry in fresh_entries] != expected_keys:
+        raise AssertionError("Caller mutation should not change the global AI read intent registry.")
+    if fresh_entries[0]["display_name"] == "mutated":
+        raise AssertionError("AI read intent list results should be defensive copies.")
+    if module.get_supported_ai_read_intent("today_formally_scheduled_count")["max_items"] != 1:
+        raise AssertionError("AI read intent lookup results should be defensive copies.")
+
+    source = registry_path.read_text(encoding="utf-8")
+    forbidden_runtime_patterns = {
+        "Flask dependency": r"^\s*(?:from\s+flask\b|import\s+flask\b)",
+        "database dependency": r"^\s*(?:from\s+(?:database|models)\b|import\s+(?:sqlite3|sqlalchemy|database|models)\b)",
+        "database execution": r"\.(?:execute|executemany|executescript)\s*\(",
+        "network dependency": r"^\s*(?:from\s+(?:requests|httpx|socket)\b|import\s+(?:requests|httpx|socket)\b)",
+        "AI dependency": r"^\s*(?:from\s+(?:openai|anthropic)\b|import\s+(?:openai|anthropic)\b)",
+        "network or AI call": r"\b(?:fetch|model_call|provider_call)\s*\(",
+        "session access": r"\bsession\s*(?:\[|\.get\s*\()",
+        "mutation handler": r"\b(?:write|mutation)_handler\s*\(",
+    }
+    for label, pattern in forbidden_runtime_patterns.items():
+        if re.search(pattern, source, flags=re.IGNORECASE | re.MULTILINE):
+            raise AssertionError(f"AI read intent registry must not contain a {label}.")
+    if db_path.read_bytes() != database_before:
+        raise AssertionError("Importing and reading the AI intent registry must not change the database.")
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "sample.db"
@@ -13694,6 +13806,8 @@ def main() -> int:
         expected_counts = {"meta": 3, "users": 2, "vendor_contacts": 0, "vendor_work_entries": 0}
         if any(count != expected_counts.get(table_name, 1) for table_name, count in counts.items()):
             raise AssertionError(f"Unexpected sample counts: {counts}")
+
+        run_ai_read_supported_intent_registry_smoke(db_path)
 
         site_foundation_db = Path(tmpdir) / "site-foundation.db"
         create_sample_sqlite(site_foundation_db)
