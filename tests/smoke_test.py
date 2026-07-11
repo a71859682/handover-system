@@ -13700,6 +13700,7 @@ spec.loader.exec_module(module)
 module.app.testing = True
 
 business_date = "2026-07-11"
+pending_entry_ids = []
 with module.db() as conn:
     conn.row_factory = sqlite3.Row
     default_site = conn.execute("SELECT id FROM sites ORDER BY id LIMIT 1").fetchone()
@@ -13763,7 +13764,24 @@ with module.db() as conn:
             ''',
             (entry_id, sheet_id, business_date, scheduled_time),
         )
+    for vendor_name, entry_order in (("Vendor Z", 0), ("Vendor A", 1), ("Vendor A", 0)):
+        pending_entry_ids.append(
+            int(
+                conn.execute(
+                    '''
+                    INSERT INTO vendor_work_entries (
+                        sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                        actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 1, 0, ?, 'Need permit', 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    RETURNING id
+                    ''',
+                    (sheet_id, vendor_name, business_date, f"{business_date} 11:00", f"Pending {vendor_name}", entry_order),
+                ).fetchone()["id"]
+            )
+        )
     conn.commit()
+expected_pending_entry_order = [pending_entry_ids[2], pending_entry_ids[1], pending_entry_ids[0]]
 
 member_session = {"user_id": member_id, "role": "member", "current_site_id": default_site_id}
 admin_session = {"user_id": 1, "role": "admin", "current_site_id": default_site_id}
@@ -13860,35 +13878,246 @@ if (
 ):
     raise SystemExit("AI read count orchestration should expose its fixed empty-state reason")
 
+pending_dashboard_calls = []
+original_dashboard_helper = module.build_dashboard_payload
+def tracked_pending_dashboard_helper(conn, *, sheet_id, business_date):
+    pending_dashboard_calls.append((sheet_id, business_date))
+    return original_dashboard_helper(conn, sheet_id=sheet_id, business_date=business_date)
+
+try:
+    module.build_dashboard_payload = tracked_pending_dashboard_helper
+    pending_result = read_only_call(
+        lambda: call_helper(member_session, intent_key="today_pending_requirements")
+    )
+finally:
+    module.build_dashboard_payload = original_dashboard_helper
+if pending_dashboard_calls != [(sheet_id, business_date)]:
+    raise SystemExit("pending requirements orchestration should call the canonical Dashboard helper once")
+pending_projection_fields = {
+    "id",
+    "vendor_name",
+    "business_date",
+    "planned_at",
+    "work_content",
+    "pre_entry_requirement",
+    "readiness_state",
+    "readiness_reason",
+}
+if set(pending_result) != {"mode", "intent_key", "scope", "evidence", "total_count", "returned_count", "truncated", "items"}:
+    raise SystemExit("pending requirements orchestration should keep the bounded internal result shape")
+if pending_result["total_count"] != 3 or pending_result["returned_count"] != 3 or pending_result["truncated"] is not False:
+    raise SystemExit("pending requirements orchestration should return the full small canonical list")
+if [item["id"] for item in pending_result["items"]] != expected_pending_entry_order:
+    raise SystemExit("pending requirements projection should preserve canonical vendor/entry/id ordering")
+if any(set(item) != pending_projection_fields for item in pending_result["items"]):
+    raise SystemExit("pending requirements projection should expose exactly eight allowlisted fields")
+pending_evidence = pending_result["evidence"]
+pending_metadata = module.get_supported_ai_read_intent("today_pending_requirements")
+if not set(pending_metadata["evidence_fields"]).issubset(pending_evidence):
+    raise SystemExit("pending requirements evidence should cover registry-required evidence fields")
+if pending_evidence["actor_role"] != "member" or pending_evidence["actor_scope"] != "site_member":
+    raise SystemExit("pending requirements orchestration should derive member scope from trusted session")
+if pending_result["scope"] != {"current_site_id": default_site_id, "sheet_id": sheet_id, "business_date": business_date}:
+    raise SystemExit("pending requirements orchestration should preserve authorized scope")
+if (
+    pending_evidence["current_site_id"] != default_site_id
+    or pending_evidence["sheet_id"] != sheet_id
+    or pending_evidence["intent_key"] != "today_pending_requirements"
+    or pending_evidence["source_family"] != "dashboard_pending_requirements"
+    or pending_evidence["business_date"] != business_date
+    or pending_evidence["authorization_policy"] != "internal_dashboard_current_site_sheet_read"
+    or pending_evidence["as_of"] != "2026-07-11T12:00:00"
+):
+    raise SystemExit("pending requirements evidence should preserve registry and trusted scope metadata")
+if pending_evidence["item_count"] != 3 or pending_evidence["empty_state_reason"] is not None:
+    raise SystemExit("pending requirements evidence should use total canonical item count")
+
+pending_admin_result = read_only_call(
+    lambda: call_helper(admin_session, intent_key="today_pending_requirements")
+)
+if pending_admin_result["evidence"]["actor_scope"] != "current_site_constrained_admin":
+    raise SystemExit("pending requirements admin should remain current-site constrained")
+
+pending_empty_result = read_only_call(
+    lambda: call_helper(member_session, intent_key="today_pending_requirements", business_date="2026-07-10")
+)
+if (
+    pending_empty_result["items"] != []
+    or pending_empty_result["total_count"] != 0
+    or pending_empty_result["returned_count"] != 0
+    or pending_empty_result["truncated"] is not False
+    or pending_empty_result["evidence"]["item_count"] != 0
+    or pending_empty_result["evidence"]["empty_state_reason"] != "no_pending_requirements_for_business_date"
+):
+    raise SystemExit("pending requirements empty result should preserve its fixed contract")
+
+def make_pending_item(index, **overrides):
+    item = {
+        "id": 1000 + index,
+        "sheet_id": sheet_id,
+        "vendor_name": f"Vendor {index:02d}",
+        "business_date": business_date,
+        "planned_at": f"{business_date} 09:00",
+        "work_content": f"Work {index}",
+        "pre_entry_requirement": "Need permit",
+        "readiness_state": "not_ready",
+        "readiness_reason": "requirement_pending",
+        "requirement_confirmed_by": "must-not-leak",
+        "requirement_confirmed_at": "must-not-leak",
+        "future_secret": "must-not-leak",
+    }
+    item.update(overrides)
+    return item
+
+def make_pending_payload(items, *, count=None):
+    return {
+        "summary": {"pending_requirement_count": len(items) if count is None else count},
+        "pending_requirements": items,
+    }
+
+def call_with_pending_payload(payload):
+    original = module.build_dashboard_payload
+    try:
+        module.build_dashboard_payload = lambda *args, **kwargs: payload
+        return read_only_call(
+            lambda: call_helper(member_session, intent_key="today_pending_requirements")
+        )
+    finally:
+        module.build_dashboard_payload = original
+
+def expect_pending_shape_error(payload):
+    original = module.build_dashboard_payload
+    try:
+        module.build_dashboard_payload = lambda *args, **kwargs: payload
+        expect_domain_error(
+            "ai_read_source_shape_mismatch",
+            lambda: call_helper(member_session, intent_key="today_pending_requirements"),
+        )
+    finally:
+        module.build_dashboard_payload = original
+
+for item_count, expected_returned, expected_truncated in ((24, 24, False), (25, 25, False), (26, 25, True)):
+    source_items = [make_pending_item(index) for index in range(item_count)]
+    source_items[0]["pre_entry_requirement"] = None
+    bounded_result = call_with_pending_payload(make_pending_payload(source_items))
+    if (
+        bounded_result["total_count"] != item_count
+        or bounded_result["returned_count"] != expected_returned
+        or bounded_result["truncated"] is not expected_truncated
+        or bounded_result["evidence"]["item_count"] != item_count
+    ):
+        raise SystemExit(f"pending requirements bounded contract failed at {item_count} items")
+    if [item["id"] for item in bounded_result["items"]] != [item["id"] for item in source_items[:25]]:
+        raise SystemExit("pending requirements bounded projection should preserve source ordering")
+    if any(set(item) != pending_projection_fields for item in bounded_result["items"]):
+        raise SystemExit("pending requirements projection must exclude source extras and future fields")
+
+pending_payload_shape_failures = (
+    None,
+    {},
+    {"summary": None, "pending_requirements": []},
+    {"summary": {}, "pending_requirements": []},
+    {"summary": {"pending_requirement_count": 0}},
+    {"summary": {"pending_requirement_count": 0}, "pending_requirements": {}},
+    make_pending_payload([], count=True),
+    make_pending_payload([], count="0"),
+    make_pending_payload([], count=-1),
+    make_pending_payload([make_pending_item(1)], count=0),
+    make_pending_payload(["not-a-mapping"]),
+    make_pending_payload([make_pending_item(1), make_pending_item(1)]),
+)
+for invalid_pending_payload in pending_payload_shape_failures:
+    expect_pending_shape_error(invalid_pending_payload)
+
+missing_id_item = make_pending_item(1)
+missing_id_item.pop("id")
+for invalid_item in (
+    missing_id_item,
+    make_pending_item(1, id=None),
+    make_pending_item(1, id=True),
+    make_pending_item(1, id="1"),
+    make_pending_item(1, id=0),
+    make_pending_item(1, id=-1),
+    make_pending_item(1, sheet_id=True),
+    make_pending_item(1, sheet_id="1"),
+    make_pending_item(1, sheet_id=-1),
+    make_pending_item(1, sheet_id=secondary_sheet_id),
+    make_pending_item(1, business_date=1),
+    make_pending_item(1, business_date="2026-07-10"),
+    make_pending_item(1, vendor_name=1),
+    make_pending_item(1, planned_at=1),
+    make_pending_item(1, work_content=1),
+    make_pending_item(1, pre_entry_requirement=1),
+    make_pending_item(1, readiness_state=1),
+    make_pending_item(1, readiness_state="ready"),
+    make_pending_item(1, readiness_reason=1),
+    make_pending_item(1, readiness_reason="requirement_confirmed"),
+):
+    expect_pending_shape_error(make_pending_payload([invalid_item]))
+
+invalid_tail_items = [make_pending_item(index) for index in range(26)]
+invalid_tail_items[-1]["vendor_name"] = 1
+expect_pending_shape_error(make_pending_payload(invalid_tail_items))
+
+original_get_supported_ai_read_intent = module.get_supported_ai_read_intent
+def drifted_pending_intent_lookup(intent_key):
+    intent = original_get_supported_ai_read_intent(intent_key)
+    if intent_key != "today_pending_requirements" or intent is None:
+        return intent
+    drifted_intent = dict(intent)
+    drifted_intent["max_items"] = 26
+    return drifted_intent
+
+try:
+    module.get_supported_ai_read_intent = drifted_pending_intent_lookup
+    expect_domain_error(
+        "ai_read_source_shape_mismatch",
+        lambda: call_helper(member_session, intent_key="today_pending_requirements"),
+    )
+finally:
+    module.get_supported_ai_read_intent = original_get_supported_ai_read_intent
+if module.get_supported_ai_read_intent("today_pending_requirements")["max_items"] != 25:
+    raise SystemExit("pending requirements registry max_items must remain frozen at 25 after drift testing")
+
 expect_domain_error("unsupported_ai_read_intent", lambda: call_helper(member_session, intent_key="unknown"))
 expect_domain_error("unsupported_ai_read_intent", lambda: call_helper(vendor_session, intent_key="unknown"))
-pending_keys = (
+not_implemented_keys = (
     "today_due_crew_entries_not_entered",
-    "today_pending_requirements",
     "current_blocked_items",
 )
-for pending_key in pending_keys:
-    expect_domain_error("ai_read_intent_not_implemented", lambda key=pending_key: call_helper(member_session, intent_key=key))
+for not_implemented_key in not_implemented_keys:
+    expect_domain_error(
+        "ai_read_intent_not_implemented",
+        lambda key=not_implemented_key: call_helper(member_session, intent_key=key),
+    )
 
-for known_key in ("today_formally_scheduled_count", *pending_keys):
+for known_key in ("today_formally_scheduled_count", "today_pending_requirements", *not_implemented_keys):
     expect_lookup_error("auth_required", lambda key=known_key: call_helper({}, intent_key=key))
     expect_lookup_error("vendor_auth_forbidden", lambda key=known_key: call_helper(vendor_session, intent_key=key))
 expect_lookup_error("site_context_invalid", lambda: call_helper({"user_id": member_id, "role": "member"}))
 expect_lookup_error(
     "site_context_invalid",
-    lambda: call_helper({"user_id": member_id, "role": "member"}, intent_key=pending_keys[0]),
+    lambda: call_helper({"user_id": member_id, "role": "member"}, intent_key="today_pending_requirements"),
 )
 expect_lookup_error("sheet_not_found", lambda: call_helper(member_session, sheet_id=999999))
+expect_lookup_error(
+    "sheet_not_found",
+    lambda: call_helper(member_session, sheet_id=999999, intent_key="today_pending_requirements"),
+)
 expect_lookup_error("sheet_not_in_current_site", lambda: call_helper(member_session, sheet_id=secondary_sheet_id))
 expect_lookup_error(
     "sheet_not_in_current_site",
-    lambda: call_helper(member_session, sheet_id=secondary_sheet_id, intent_key=pending_keys[0]),
+    lambda: call_helper(member_session, sheet_id=secondary_sheet_id, intent_key="today_pending_requirements"),
 )
 
 with module.db() as conn:
     conn.execute("DELETE FROM user_site_permissions WHERE user_id = ? AND site_id = ?", (member_id, default_site_id))
     conn.commit()
 expect_lookup_error("site_permission_missing", lambda: call_helper(member_session))
+expect_lookup_error(
+    "site_permission_missing",
+    lambda: call_helper(member_session, intent_key="today_pending_requirements"),
+)
 with module.db() as conn:
     conn.execute(
         "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'member')",
@@ -13897,6 +14126,14 @@ with module.db() as conn:
     conn.commit()
 
 expect_domain_error("invalid_business_date", lambda: call_helper(member_session, business_date="2026-02-30"))
+expect_domain_error(
+    "invalid_business_date",
+    lambda: call_helper(
+        member_session,
+        intent_key="today_pending_requirements",
+        business_date="2026-02-30",
+    ),
+)
 
 original_dashboard_helper = module.build_dashboard_payload
 invalid_payloads = (
@@ -13933,13 +14170,26 @@ try:
     module.datetime = FixedDateTime
     module.build_dashboard_payload = tracked_dashboard_helper
     resolved_result = read_only_call(lambda: call_helper(member_session, business_date=None, as_of=None))
+    resolved_pending_result = read_only_call(
+        lambda: call_helper(
+            member_session,
+            intent_key="today_pending_requirements",
+            business_date=None,
+            as_of=None,
+        )
+    )
 finally:
     module.datetime = real_datetime
     module.build_dashboard_payload = original_dashboard_helper
-if FixedDateTime.calls != 1 or dashboard_calls != [(sheet_id, business_date)]:
-    raise SystemExit("AI read orchestration should capture one server as_of and call the canonical Dashboard helper once")
+if FixedDateTime.calls != 2 or dashboard_calls != [(sheet_id, business_date), (sheet_id, business_date)]:
+    raise SystemExit("each AI read orchestration call should capture one server as_of and call Dashboard once")
 if resolved_result["scope"]["business_date"] != business_date or resolved_result["evidence"]["as_of"] != "2026-07-12T08:00:00":
     raise SystemExit("AI read orchestration should use the same as_of for 08:30 business-date resolution and evidence")
+if (
+    resolved_pending_result["scope"]["business_date"] != business_date
+    or resolved_pending_result["evidence"]["as_of"] != "2026-07-12T08:00:00"
+):
+    raise SystemExit("pending requirements should reuse the same 08:30 business-date and single-as_of contract")
 
 client = module.app.test_client()
 with client.session_transaction() as session:
@@ -13949,8 +14199,13 @@ dashboard_response = client.get(f"/api/dashboard?sheet_id={sheet_id}&business_da
 if dashboard_response.status_code != 200:
     raise SystemExit("existing Dashboard API success contract should remain available")
 dashboard_payload = dashboard_response.get_json()
-if dashboard_payload["summary"]["today_schedule_count"] != 2 or "today_schedule" not in dashboard_payload:
-    raise SystemExit("existing Dashboard API scheduled fact contract should remain unchanged")
+if (
+    dashboard_payload["summary"]["today_schedule_count"] != 2
+    or dashboard_payload["summary"]["pending_requirement_count"] != 3
+    or len(dashboard_payload["pending_requirements"]) != 3
+    or "today_schedule" not in dashboard_payload
+):
+    raise SystemExit("existing Dashboard API scheduled and pending-requirement contracts should remain unchanged")
 if database_snapshot() != before_api:
     raise SystemExit("existing Dashboard API must remain read-only")
 unauthenticated_response = module.app.test_client().get(f"/api/dashboard?sheet_id={sheet_id}&business_date={business_date}")

@@ -2907,6 +2907,138 @@ class AIReadOrchestrationError(RuntimeError):
         super().__init__(code)
 
 
+def _project_pending_requirement_ai_read_item(
+    item: Mapping[str, object],
+    *,
+    sheet_id: int,
+    business_date: str,
+) -> dict[str, object]:
+    entry_id = item.get("id")
+    source_sheet_id = item.get("sheet_id")
+    if isinstance(entry_id, bool) or not isinstance(entry_id, int) or entry_id <= 0:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if (
+        isinstance(source_sheet_id, bool)
+        or not isinstance(source_sheet_id, int)
+        or source_sheet_id <= 0
+        or source_sheet_id != sheet_id
+    ):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if not isinstance(item.get("business_date"), str) or item["business_date"] != business_date:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    for field in ("vendor_name", "planned_at", "work_content"):
+        if not isinstance(item.get(field), str):
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    requirement_text = item.get("pre_entry_requirement")
+    if requirement_text is not None and not isinstance(requirement_text, str):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if item.get("readiness_state") != "not_ready" or item.get("readiness_reason") != "requirement_pending":
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+
+    return {
+        "id": entry_id,
+        "vendor_name": item["vendor_name"],
+        "business_date": item["business_date"],
+        "planned_at": item["planned_at"],
+        "work_content": item["work_content"],
+        "pre_entry_requirement": requirement_text,
+        "readiness_state": item["readiness_state"],
+        "readiness_reason": item["readiness_reason"],
+    }
+
+
+def _build_pending_requirements_ai_read_result(
+    payload: Mapping[str, object],
+    *,
+    intent: Mapping[str, object],
+    scope: Mapping[str, int],
+    actor_role: str,
+    actor_scope: str,
+    business_date: str,
+    as_of: datetime,
+) -> dict[str, object]:
+    if not isinstance(payload, Mapping):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    summary = payload.get("summary")
+    full_items = payload.get("pending_requirements")
+    if not isinstance(summary, Mapping) or not isinstance(full_items, list):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    summary_count = summary.get("pending_requirement_count")
+    if isinstance(summary_count, bool) or not isinstance(summary_count, int) or summary_count < 0:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if summary_count != len(full_items):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+
+    max_items = intent.get("max_items")
+    if (
+        isinstance(max_items, bool)
+        or not isinstance(max_items, int)
+        or max_items <= 0
+        or max_items > 25
+    ):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if intent.get("result_kind") != "bounded_items":
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    for field in ("source_family", "authorization_policy", "business_date_policy"):
+        value = intent.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+
+    projected_items: list[dict[str, object]] = []
+    seen_entry_ids: set[int] = set()
+    for item in full_items:
+        if not isinstance(item, Mapping):
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+        projected_item = _project_pending_requirement_ai_read_item(
+            item,
+            sheet_id=int(scope["sheet_id"]),
+            business_date=business_date,
+        )
+        entry_id = int(projected_item["id"])
+        if entry_id in seen_entry_ids:
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+        seen_entry_ids.add(entry_id)
+        projected_items.append(projected_item)
+
+    returned_items = projected_items[:max_items]
+    total_count = len(projected_items)
+    returned_count = len(returned_items)
+    evidence = {
+        "actor_identity_type": "internal",
+        "actor_role": actor_role,
+        "actor_scope": actor_scope,
+        "current_site_id": int(scope["current_site_id"]),
+        "sheet_id": int(scope["sheet_id"]),
+        "intent_key": intent["key"],
+        "source_family": intent["source_family"],
+        "business_date": business_date,
+        "authorization_policy": intent["authorization_policy"],
+        "as_of": as_of.isoformat(),
+        "item_count": total_count,
+        "empty_state_reason": "no_pending_requirements_for_business_date" if total_count == 0 else None,
+    }
+    required_evidence_fields = intent.get("evidence_fields")
+    if not isinstance(required_evidence_fields, (list, tuple)) or not set(required_evidence_fields).issubset(
+        evidence
+    ):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+
+    return {
+        "mode": "read_only",
+        "intent_key": intent["key"],
+        "scope": {
+            "current_site_id": int(scope["current_site_id"]),
+            "sheet_id": int(scope["sheet_id"]),
+            "business_date": business_date,
+        },
+        "evidence": evidence,
+        "total_count": total_count,
+        "returned_count": returned_count,
+        "truncated": total_count > returned_count,
+        "items": returned_items,
+    }
+
+
 def build_role_scoped_ai_read_result(
     conn: sqlite3.Connection,
     *,
@@ -2919,7 +3051,7 @@ def build_role_scoped_ai_read_result(
     if intent is None:
         raise AIReadOrchestrationError("unsupported_ai_read_intent")
     scope = authorize_dashboard_read(conn, sheet_id=sheet_id)
-    if intent_key != "today_formally_scheduled_count":
+    if intent_key not in ("today_formally_scheduled_count", "today_pending_requirements"):
         raise AIReadOrchestrationError("ai_read_intent_not_implemented")
 
     trusted_as_of = as_of if as_of is not None else datetime.now()
@@ -2943,6 +3075,17 @@ def build_role_scoped_ai_read_result(
         sheet_id=int(scope["sheet_id"]),
         business_date=resolved_business_date,
     )
+    if intent_key == "today_pending_requirements":
+        return _build_pending_requirements_ai_read_result(
+            payload,
+            intent=intent,
+            scope=scope,
+            actor_role=actor_role,
+            actor_scope=actor_scope,
+            business_date=resolved_business_date,
+            as_of=trusted_as_of,
+        )
+
     if not isinstance(payload, Mapping):
         raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
     summary = payload.get("summary")
