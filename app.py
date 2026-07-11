@@ -3119,6 +3119,21 @@ class AIReadOrchestrationError(RuntimeError):
         super().__init__(code)
 
 
+def _normalize_due_crew_ai_read_as_of(as_of: datetime) -> datetime:
+    if not isinstance(as_of, datetime):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    try:
+        utc_offset = as_of.utcoffset()
+    except (TypeError, ValueError):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch") from None
+    if as_of.tzinfo is None or utc_offset is None:
+        return as_of.replace(tzinfo=CREW_OPERATIONAL_TIMEZONE)
+    try:
+        return normalize_crew_operational_as_of(as_of)
+    except CrewMissingSourceError:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch") from None
+
+
 def _project_due_crew_missing_ai_read_item(
     item: Mapping[str, object],
     *,
@@ -3574,13 +3589,19 @@ def build_role_scoped_ai_read_result(
         "today_formally_scheduled_count",
         "today_pending_requirements",
         "current_blocked_items",
+        "today_due_crew_entries_not_entered",
     ):
         raise AIReadOrchestrationError("ai_read_intent_not_implemented")
 
     trusted_as_of = as_of if as_of is not None else get_crew_trusted_as_of()
+    due_effective_as_of = (
+        _normalize_due_crew_ai_read_as_of(trusted_as_of)
+        if intent_key == "today_due_crew_entries_not_entered"
+        else trusted_as_of
+    )
     try:
         resolved_business_date = (
-            resolve_crew_business_date(now=trusted_as_of)
+            resolve_crew_business_date(now=due_effective_as_of)
             if business_date is None
             else parse_crew_business_date(business_date)
         )
@@ -3592,6 +3613,26 @@ def build_role_scoped_ai_read_result(
     actor_scope = "current_site_constrained_admin" if is_global_admin(actor) else "site_member"
     if actor_scope not in intent["actor_scope"]:
         raise AIReadOrchestrationError("ai_read_intent_not_implemented")
+
+    if intent_key == "today_due_crew_entries_not_entered":
+        try:
+            payload = build_crew_missing_source_payload(
+                conn,
+                sheet_id=int(scope["sheet_id"]),
+                business_date=resolved_business_date,
+                as_of=due_effective_as_of,
+            )
+        except CrewMissingSourceError:
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch") from None
+        return _build_due_crew_missing_ai_read_result(
+            payload,
+            intent=intent,
+            scope=scope,
+            actor_role=actor_role,
+            actor_scope=actor_scope,
+            business_date=resolved_business_date,
+            as_of=due_effective_as_of,
+        )
 
     if intent_key == "current_blocked_items":
         payload = build_scheduling_payload(

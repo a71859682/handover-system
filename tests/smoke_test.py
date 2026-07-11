@@ -14706,6 +14706,265 @@ if (
 ):
     raise SystemExit("current blocked empty result should preserve its fixed contract")
 
+due_projection_fields = {
+    "id",
+    "vendor_name",
+    "business_date",
+    "planned_at",
+    "planned_headcount",
+    "actual_headcount",
+    "work_content",
+}
+
+def make_due_source_item(index, **overrides):
+    item = {
+        "id": 3000 + index,
+        "sheet_id": sheet_id,
+        "vendor_name": f"Due Vendor {index:02d}",
+        "business_date": business_date,
+        "planned_at": f"{business_date} 09:00",
+        "planned_headcount": index + 1,
+        "actual_headcount": 0,
+        "work_content": f"Due Work {index}",
+        "entry_order": index,
+        "future_secret": "must-not-leak",
+    }
+    item.update(overrides)
+    return item
+
+def call_due_with_source(session_values, source_items, **overrides):
+    source_calls = []
+    original_source = module.build_crew_missing_source_payload
+    original_dashboard = module.build_dashboard_payload
+    original_scheduling = module.build_scheduling_payload
+    original_public_serializer = module.serialize_crew_missing_public_items
+
+    def source_payload(_conn, *, sheet_id, business_date, as_of):
+        source_calls.append((sheet_id, business_date, as_of))
+        return {
+            "sheet_id": sheet_id,
+            "business_date": business_date,
+            "as_of": as_of.isoformat(),
+            "summary": {"missing_count": len(source_items)},
+            "missing_entries": source_items,
+        }
+
+    def forbidden_dispatch(*_args, **_kwargs):
+        raise SystemExit("due crew dispatcher must not call Dashboard, Scheduling, or public serializer")
+
+    try:
+        module.build_crew_missing_source_payload = source_payload
+        module.build_dashboard_payload = forbidden_dispatch
+        module.build_scheduling_payload = forbidden_dispatch
+        module.serialize_crew_missing_public_items = forbidden_dispatch
+        result = read_only_call(
+            lambda: call_helper(
+                session_values,
+                intent_key="today_due_crew_entries_not_entered",
+                **overrides,
+            )
+        )
+    finally:
+        module.build_crew_missing_source_payload = original_source
+        module.build_dashboard_payload = original_dashboard
+        module.build_scheduling_payload = original_scheduling
+        module.serialize_crew_missing_public_items = original_public_serializer
+    if len(source_calls) != 1:
+        raise SystemExit("due crew dispatcher must call the canonical source exactly once")
+    return result, source_calls[0]
+
+for item_count, expected_returned, expected_truncated in (
+    (0, 0, False), (1, 1, False), (24, 24, False), (25, 25, False), (26, 25, True),
+):
+    source_items = [make_due_source_item(index) for index in range(item_count)]
+    due_result, due_source_call = call_due_with_source(member_session, source_items)
+    if (
+        set(due_result)
+        != {"mode", "intent_key", "scope", "evidence", "total_count", "returned_count", "truncated", "items"}
+        or due_result["total_count"] != item_count
+        or due_result["returned_count"] != expected_returned
+        or due_result["truncated"] is not expected_truncated
+        or len(due_result["items"]) != expected_returned
+    ):
+        raise SystemExit(f"due crew dispatcher bounded contract failed at {item_count} items")
+    if [item["id"] for item in due_result["items"]] != [item["id"] for item in source_items[:25]]:
+        raise SystemExit("due crew dispatcher must preserve canonical source ordering")
+    if any(set(item) != due_projection_fields or "future_secret" in item for item in due_result["items"]):
+        raise SystemExit("due crew dispatcher must preserve the exact non-leaking projection allowlist")
+    due_evidence = due_result["evidence"]
+    if (
+        due_source_call[:2] != (sheet_id, business_date)
+        or due_source_call[2].isoformat() != due_evidence["as_of"]
+        or due_result["scope"]
+        != {"current_site_id": default_site_id, "sheet_id": sheet_id, "business_date": business_date}
+        or due_evidence["source_family"] != "crew_missing"
+        or due_evidence["item_count"] != item_count
+    ):
+        raise SystemExit("due crew dispatcher scope, source, and evidence must share one grounded context")
+
+due_raw_item = make_due_source_item(1, vendor_name="Raw Vendor", planned_at="2026-07-11 09:07")
+due_raw_result, _due_raw_call = call_due_with_source(member_session, [due_raw_item])
+if due_raw_result["items"][0] != {
+    key: due_raw_item[key] for key in due_projection_fields
+}:
+    raise SystemExit("due crew dispatcher must preserve raw canonical item values")
+due_admin_result, _due_admin_call = call_due_with_source(admin_session, [make_due_source_item(1)])
+if (
+    due_admin_result["evidence"]["actor_role"] != "admin"
+    or due_admin_result["evidence"]["actor_scope"] != "current_site_constrained_admin"
+):
+    raise SystemExit("due crew dispatcher admin must remain current-site constrained")
+
+def expect_due_authorization_without_source(code, session_values, **overrides):
+    source_calls = []
+    original_source = module.build_crew_missing_source_payload
+    try:
+        module.build_crew_missing_source_payload = lambda *_args, **_kwargs: source_calls.append(True)
+        expect_lookup_error(
+            code,
+            lambda: call_helper(
+                session_values,
+                intent_key="today_due_crew_entries_not_entered",
+                **overrides,
+            ),
+        )
+    finally:
+        module.build_crew_missing_source_payload = original_source
+    if source_calls:
+        raise SystemExit("due crew authorization rejection must occur before canonical source access")
+
+expect_due_authorization_without_source("auth_required", {})
+expect_due_authorization_without_source("vendor_auth_forbidden", vendor_session)
+expect_due_authorization_without_source("site_context_invalid", {"user_id": member_id, "role": "member"})
+expect_due_authorization_without_source(
+    "site_context_invalid",
+    {"user_id": member_id, "role": "member", "current_site_id": inactive_site_id},
+)
+expect_due_authorization_without_source("sheet_not_found", member_session, sheet_id=999999)
+expect_due_authorization_without_source(
+    "sheet_not_in_current_site", member_session, sheet_id=secondary_sheet_id
+)
+
+original_due_source = module.build_crew_missing_source_payload
+due_source_error_calls = []
+def crew_source_domain_error(*_args, **_kwargs):
+    due_source_error_calls.append(True)
+    raise module.CrewMissingSourceError("private-source-detail")
+
+try:
+    module.build_crew_missing_source_payload = crew_source_domain_error
+    expect_domain_error(
+        "ai_read_source_shape_mismatch",
+        lambda: call_helper(member_session, intent_key="today_due_crew_entries_not_entered"),
+    )
+finally:
+    module.build_crew_missing_source_payload = original_due_source
+if due_source_error_calls != [True]:
+    raise SystemExit("due crew source domain error should be mapped after exactly one source call")
+
+lineage_source_calls = []
+def invalid_lineage_due_source(_conn, *, sheet_id, business_date, as_of):
+    lineage_source_calls.append(True)
+    return {
+        "sheet_id": sheet_id,
+        "business_date": business_date,
+        "as_of": as_of.isoformat(),
+        "summary": {"missing_count": 1},
+        "missing_entries": [make_due_source_item(1, sheet_id=sheet_id + 1)],
+    }
+
+try:
+    module.build_crew_missing_source_payload = invalid_lineage_due_source
+    expect_domain_error(
+        "ai_read_source_shape_mismatch",
+        lambda: call_helper(member_session, intent_key="today_due_crew_entries_not_entered"),
+    )
+finally:
+    module.build_crew_missing_source_payload = original_due_source
+if lineage_source_calls != [True]:
+    raise SystemExit("due crew lineage mismatch should fail after exactly one source call")
+
+unexpected_due_calls = []
+def unexpected_due_source(*_args, **_kwargs):
+    unexpected_due_calls.append(True)
+    raise sqlite3.OperationalError("private-system-detail")
+
+unexpected_before = database_snapshot()
+try:
+    module.build_crew_missing_source_payload = unexpected_due_source
+    try:
+        call_helper(member_session, intent_key="today_due_crew_entries_not_entered")
+    except sqlite3.OperationalError as exc:
+        if str(exc) != "private-system-detail":
+            raise SystemExit("due crew unexpected error identity changed")
+    except module.AIReadOrchestrationError:
+        raise SystemExit("due crew unexpected system error must not become a domain or empty result")
+    else:
+        raise SystemExit("due crew unexpected system error must propagate to generic handling")
+finally:
+    module.build_crew_missing_source_payload = original_due_source
+    if database_snapshot() != unexpected_before:
+        raise SystemExit("due crew unexpected error path must not mutate the database")
+if unexpected_due_calls != [True]:
+    raise SystemExit("due crew unexpected system error should occur after exactly one source call")
+
+expect_domain_error(
+    "ai_read_source_shape_mismatch",
+    lambda: call_helper(
+        member_session,
+        intent_key="today_due_crew_entries_not_entered",
+        as_of="not-a-datetime",
+    ),
+)
+
+def call_due_in_caller_transaction(source_override=None):
+    before = database_snapshot()
+    original_source = module.build_crew_missing_source_payload
+    caught = None
+    try:
+        if source_override is not None:
+            module.build_crew_missing_source_payload = source_override
+        with module.app.test_request_context("/"):
+            module.session.clear()
+            module.session.update(member_session)
+            with module.db() as conn:
+                conn.execute("BEGIN")
+                try:
+                    module.build_role_scoped_ai_read_result(
+                        conn,
+                        intent_key="today_due_crew_entries_not_entered",
+                        sheet_id=sheet_id,
+                        business_date=business_date,
+                        as_of=datetime(2026, 7, 11, 12, 0),
+                    )
+                except (module.AIReadOrchestrationError, sqlite3.OperationalError) as exc:
+                    caught = exc
+                finally:
+                    if not conn.in_transaction:
+                        raise SystemExit("due crew dispatcher must preserve caller-owned transaction state")
+                    conn.rollback()
+    finally:
+        module.build_crew_missing_source_payload = original_source
+        if database_snapshot() != before:
+            raise SystemExit("due crew caller-owned transaction paths must not mutate the database")
+    return caught
+
+if call_due_in_caller_transaction() is not None:
+    raise SystemExit("due crew caller-owned transaction success path should return normally")
+domain_transaction_error = call_due_in_caller_transaction(
+    lambda *_args, **_kwargs: (_ for _ in ()).throw(module.CrewMissingSourceError("private"))
+)
+if (
+    not isinstance(domain_transaction_error, module.AIReadOrchestrationError)
+    or domain_transaction_error.code != "ai_read_source_shape_mismatch"
+):
+    raise SystemExit("due crew caller-owned source error should preserve fixed domain mapping")
+unexpected_transaction_error = call_due_in_caller_transaction(
+    lambda *_args, **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("private"))
+)
+if not isinstance(unexpected_transaction_error, sqlite3.OperationalError):
+    raise SystemExit("due crew caller-owned unexpected error must remain unexpected")
+
 def make_pending_item(index, **overrides):
     item = {
         "id": 1000 + index,
@@ -14996,20 +15255,11 @@ if module.get_supported_ai_read_intent("current_blocked_items")["max_items"] != 
 
 expect_domain_error("unsupported_ai_read_intent", lambda: call_helper(member_session, intent_key="unknown"))
 expect_domain_error("unsupported_ai_read_intent", lambda: call_helper(vendor_session, intent_key="unknown"))
-not_implemented_keys = (
-    "today_due_crew_entries_not_entered",
-)
-for not_implemented_key in not_implemented_keys:
-    expect_domain_error(
-        "ai_read_intent_not_implemented",
-        lambda key=not_implemented_key: call_helper(member_session, intent_key=key),
-    )
-
 for known_key in (
     "today_formally_scheduled_count",
     "today_pending_requirements",
     "current_blocked_items",
-    *not_implemented_keys,
+    "today_due_crew_entries_not_entered",
 ):
     expect_lookup_error("auth_required", lambda key=known_key: call_helper({}, intent_key=key))
     expect_lookup_error("vendor_auth_forbidden", lambda key=known_key: call_helper(vendor_session, intent_key=key))
@@ -15075,9 +15325,9 @@ with module.db() as conn:
     conn.execute("DELETE FROM user_site_permissions WHERE user_id = ? AND site_id = ?", (member_id, default_site_id))
     conn.commit()
 expect_lookup_error("site_permission_missing", lambda: call_helper(member_session))
-expect_lookup_error(
+expect_due_authorization_without_source(
     "site_permission_missing",
-    lambda: call_helper(member_session, intent_key="today_due_crew_entries_not_entered"),
+    member_session,
 )
 expect_lookup_error(
     "site_permission_missing",
@@ -15175,6 +15425,13 @@ for boundary_as_of, expected_business_date in default_boundary_cases:
         or boundary_result["evidence"]["as_of"] != boundary_as_of.isoformat()
     ):
         raise SystemExit("AI read default clock should preserve Asia/Taipei 08:30 boundary evidence")
+    due_boundary_result = call_with_default_clock("today_due_crew_entries_not_entered", boundary_as_of)
+    if (
+        due_boundary_result["scope"]["business_date"] != expected_business_date
+        or due_boundary_result["evidence"]["business_date"] != expected_business_date
+        or due_boundary_result["evidence"]["as_of"] != boundary_as_of.isoformat()
+    ):
+        raise SystemExit("due crew default clock should ground source and evidence at the same boundary instant")
 
 default_clock_calls_during_explicit = []
 def forbidden_default_clock():
@@ -15182,6 +15439,7 @@ def forbidden_default_clock():
     raise SystemExit("explicit AI read as_of must not call the default clock")
 
 explicit_aware_as_of = datetime(2026, 7, 11, 0, 29, 59, tzinfo=timezone.utc)
+explicit_taipei_as_of = datetime(2026, 7, 11, 8, 29, 59, tzinfo=taipei)
 explicit_naive_as_of = datetime(2026, 7, 11, 8, 29, 59)
 try:
     module.get_crew_trusted_as_of = forbidden_default_clock
@@ -15190,6 +15448,30 @@ try:
     )
     explicit_naive_result = read_only_call(
         lambda: call_helper(member_session, business_date=None, as_of=explicit_naive_as_of)
+    )
+    explicit_due_aware_result = read_only_call(
+        lambda: call_helper(
+            member_session,
+            intent_key="today_due_crew_entries_not_entered",
+            business_date=None,
+            as_of=explicit_aware_as_of,
+        )
+    )
+    explicit_due_taipei_result = read_only_call(
+        lambda: call_helper(
+            member_session,
+            intent_key="today_due_crew_entries_not_entered",
+            business_date=None,
+            as_of=explicit_taipei_as_of,
+        )
+    )
+    explicit_due_naive_result = read_only_call(
+        lambda: call_helper(
+            member_session,
+            intent_key="today_due_crew_entries_not_entered",
+            business_date=None,
+            as_of=explicit_naive_as_of,
+        )
     )
 finally:
     module.get_crew_trusted_as_of = original_trusted_clock
@@ -15205,6 +15487,18 @@ if (
     or explicit_naive_result["evidence"]["as_of"] != explicit_naive_as_of.isoformat()
 ):
     raise SystemExit("naive explicit as_of should remain a deterministic Taipei wall-clock override")
+expected_due_as_of = explicit_taipei_as_of.isoformat()
+for explicit_due_result in (
+    explicit_due_aware_result,
+    explicit_due_taipei_result,
+    explicit_due_naive_result,
+):
+    if (
+        explicit_due_result["scope"]["business_date"] != "2026-07-10"
+        or explicit_due_result["evidence"]["business_date"] != "2026-07-10"
+        or explicit_due_result["evidence"]["as_of"] != expected_due_as_of
+    ):
+        raise SystemExit("due crew explicit aware/UTC/naive times must normalize to one Taipei instant")
 
 def tracked_dashboard_helper(conn, *, sheet_id, business_date):
     dashboard_calls.append((sheet_id, business_date))
