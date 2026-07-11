@@ -32,6 +32,32 @@ let crewWorkHubFocusItemActiveTimeoutId = 0;
 let crewManagementInsightActiveTimeoutId = 0;
 let crewWorkHubDestinationActiveTimeoutId = 0;
 
+function initializeSheetAiUx001bDialogShell() {
+  const aiButton = document.getElementById("sheet-ai-assistant-entry");
+  const dialog = document.getElementById("sheet-ai-assistant-dialog");
+  const closeButton = document.querySelector("[data-testid='sheet-ai-assistant-close']");
+  if (!aiButton || !dialog || !closeButton) return;
+  if (
+    typeof dialog.showModal !== "function" ||
+    typeof dialog.close !== "function"
+  ) return;
+
+  aiButton.addEventListener("click", () => {
+    if (dialog.open) return;
+    dialog.showModal();
+    aiButton.setAttribute("aria-expanded", "true");
+  });
+
+  closeButton.addEventListener("click", () => {
+    if (dialog.open) dialog.close();
+  });
+
+  dialog.addEventListener("close", () => {
+    aiButton.setAttribute("aria-expanded", "false");
+    aiButton.focus();
+  });
+}
+
 function key(...parts) {
   return parts.join(":");
 }
@@ -1593,6 +1619,7 @@ document.addEventListener("change", (event) => {
 
 buildDomCache();
 updatePrintDate();
+initializeSheetAiUx001bDialogShell();
 if (crewFormShell?.dataset.sheetId) {
   loadCrewWorkHubSummary(crewFormShell.dataset.sheetId);
   loadCrewForms(crewFormShell.dataset.sheetId);

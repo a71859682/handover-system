@@ -4563,8 +4563,8 @@ def run_sheet_bidirectional_floating_navigation_guardrail_smoke() -> None:
     crew_shell_tag = re.search(r'<section\b[^>]*class="crew-form-shell"[^>]*>', template_text)
     if not crew_shell_tag or parse_attrs(crew_shell_tag.group(0)).get("id") != "sheet-lower-table-start":
         raise AssertionError("sheet lower-table target must remain on the existing readonly crew shell")
-    if any(token in nav_source for token in ("<form", "<button", "<script", "fetch(", "POST", "Storage", "history.", "onclick=")):
-        raise AssertionError("sheet bidirectional floating navigation must remain readonly native navigation")
+    if any(token in nav_source for token in ("<form", "<script", "fetch(", "POST", "Storage", "history.", "onclick=")):
+        raise AssertionError("sheet bidirectional floating navigation must not gain inline or network behavior")
 
     toolbar_start = template_text.index('<div class="crew-form-toolbar">')
     toolbar_source = template_text[toolbar_start:template_text.index("</div>", toolbar_start)]
@@ -4615,6 +4615,149 @@ def run_sheet_bidirectional_floating_navigation_guardrail_smoke() -> None:
     print_hidden_selector_group = print_styles.split("display: none !important;", 1)[0]
     if ".sheet-page .sheet-bidirectional-floating-navigation," not in print_hidden_selector_group:
         raise AssertionError("sheet bidirectional floating navigation must remain hidden in print")
+
+
+def run_sheet_ai_ux_001b_floating_entry_modal_shell_smoke() -> None:
+    template_text = (ROOT_DIR / "templates" / "sheet.html").read_text(encoding="utf-8")
+    styles_text = (ROOT_DIR / "static" / "styles.css").read_text(encoding="utf-8")
+    js_text = (ROOT_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+    def parse_attrs(tag: str) -> dict[str, str]:
+        return dict(re.findall(r'([:\w-]+)="([^"]*)"', tag))
+
+    nav_marker = 'data-testid="sheet-bidirectional-floating-navigation"'
+    nav_marker_pos = template_text.index(nav_marker)
+    nav_start = template_text.rfind("<nav", 0, nav_marker_pos)
+    nav_end = template_text.index("</nav>", nav_marker_pos) + len("</nav>")
+    nav_source = template_text[nav_start:nav_end]
+
+    ai_button_marker = 'data-testid="sheet-ai-assistant-entry"'
+    if template_text.count(ai_button_marker) != 1:
+        raise AssertionError("AI-UX-001B floating AI entry must remain unique")
+    ai_button = re.search(rf'<button\b[^>]*{re.escape(ai_button_marker)}[^>]*>(.*?)</button>', nav_source, re.S)
+    if not ai_button:
+        raise AssertionError("AI-UX-001B entry must be a button inside the frozen floating navigation")
+    ai_button_tag = ai_button.group(0).split(">", 1)[0]
+    ai_button_attrs = parse_attrs(ai_button_tag)
+    expected_ai_attrs = {
+        "type": "button",
+        "id": "sheet-ai-assistant-entry",
+        "aria-label": "開啟 AI 工程助理",
+        "aria-haspopup": "dialog",
+        "aria-controls": "sheet-ai-assistant-dialog",
+        "aria-expanded": "false",
+    }
+    if any(ai_button_attrs.get(key) != value for key, value in expected_ai_attrs.items()):
+        raise AssertionError("AI-UX-001B floating entry semantic contract changed")
+    if re.sub(r"<[^>]+>", "", ai_button.group(1)).strip() != "AI":
+        raise AssertionError("AI-UX-001B floating entry visible text must remain AI")
+
+    nav_buttons = re.findall(r"<button\b[^>]*>.*?</button>", nav_source, re.S)
+    if len(nav_buttons) != 1 or parse_attrs(nav_buttons[0].split(">", 1)[0]).get("id") != "sheet-ai-assistant-entry":
+        raise AssertionError("AI-UX-001B must remain the only button in the frozen floating navigation")
+    anchors = re.findall(r"<a\b[^>]*>.*?</a>", nav_source, re.S)
+    if len(anchors) != 2:
+        raise AssertionError("AI-UX-001B must preserve exactly two frozen navigation anchors")
+    if not (nav_source.index(ai_button.group(0)) < nav_source.index(anchors[0]) < nav_source.index(anchors[1])):
+        raise AssertionError("AI-UX-001B floating controls must remain ordered AI, top, lower-table")
+
+    dialog_marker = 'data-testid="sheet-ai-assistant-dialog"'
+    dialog_tags = re.findall(r"<dialog\b[^>]*>", template_text, re.S)
+    matching_dialog_tags = [tag for tag in dialog_tags if parse_attrs(tag).get("id") == "sheet-ai-assistant-dialog"]
+    if template_text.count(dialog_marker) != 1 or len(matching_dialog_tags) != 1:
+        raise AssertionError("AI-UX-001B dialog and button target must remain unique")
+    dialog_marker_pos = template_text.index(dialog_marker)
+    dialog_start = template_text.rfind("<dialog", 0, dialog_marker_pos)
+    dialog_end = template_text.index("</dialog>", dialog_marker_pos) + len("</dialog>")
+    dialog_source = template_text[dialog_start:dialog_end]
+    dialog_attrs = parse_attrs(dialog_source.split(">", 1)[0])
+    if dialog_attrs.get("id") != ai_button_attrs.get("aria-controls"):
+        raise AssertionError("AI-UX-001B aria-controls must resolve to the dialog ID")
+    for required_text in (
+        "AI 工程助理",
+        "功能規劃中",
+        "未來可使用文字或語音查詢及建立操作草稿；所有資料變更都必須先確認。",
+        "輸入內容",
+    ):
+        if required_text not in dialog_source:
+            raise AssertionError(f"AI-UX-001B dialog missing required safe-shell content: {required_text}")
+
+    textarea_match = re.search(r'<textarea\b[^>]*data-testid="sheet-ai-assistant-input"[^>]*>', dialog_source, re.S)
+    if not textarea_match or not re.search(r"\bdisabled(?:\s|>)", textarea_match.group(0)):
+        raise AssertionError("AI-UX-001B textarea must remain disabled")
+
+    dialog_buttons = re.findall(r"<button\b[^>]*>.*?</button>", dialog_source, re.S)
+    if len(dialog_buttons) != 2:
+        raise AssertionError("AI-UX-001B dialog must contain only disabled microphone and close controls")
+    microphone_button = next((button for button in dialog_buttons if 'data-testid="sheet-ai-assistant-microphone"' in button), None)
+    close_button = next((button for button in dialog_buttons if 'data-testid="sheet-ai-assistant-close"' in button), None)
+    if not microphone_button or not re.search(r"\bdisabled(?:\s|>)", microphone_button.split(">", 1)[0]):
+        raise AssertionError("AI-UX-001B microphone control must remain disabled")
+    if not close_button or re.search(r"\bdisabled(?:\s|>)", close_button.split(">", 1)[0]):
+        raise AssertionError("AI-UX-001B close control must remain available")
+    if any(token in dialog_source.lower() for token in ("<form", 'type="submit"', 'type="hidden"', "onclick=")):
+        raise AssertionError("AI-UX-001B dialog must not contain submission, hidden-write, or inline-script behavior")
+
+    definition_marker = "function initializeSheetAiUx001bDialogShell()"
+    invocation_pattern = r"(?m)^\s*initializeSheetAiUx001bDialogShell\(\);\s*$"
+    if js_text.count(definition_marker) != 1 or len(re.findall(invocation_pattern, js_text)) != 1:
+        raise AssertionError("AI-UX-001B dialog initializer definition and invocation must remain unique")
+    ai_js_start = js_text.index("function initializeSheetAiUx001bDialogShell()")
+    ai_js_end = js_text.index("function key(", ai_js_start)
+    ai_js = js_text[ai_js_start:ai_js_end]
+    for marker in (
+        'dialog.showModal()',
+        'dialog.close()',
+        'setAttribute("aria-expanded", "true")',
+        'setAttribute("aria-expanded", "false")',
+        'dialog.addEventListener("close"',
+        "aiButton.focus()",
+        "if (!aiButton || !dialog || !closeButton) return",
+        'typeof dialog.showModal !== "function"',
+        'typeof dialog.close !== "function"',
+    ):
+        if marker not in ai_js:
+            raise AssertionError(f"AI-UX-001B local dialog behavior missing: {marker}")
+    if ai_js.index('typeof dialog.showModal !== "function"') > ai_js.index('aiButton.addEventListener("click"'):
+        raise AssertionError("AI-UX-001B dialog API guard must run before listeners are registered")
+    for forbidden_js in (
+        "fetch(",
+        "XMLHttpRequest",
+        "WebSocket",
+        "localStorage",
+        "sessionStorage",
+        "history.",
+        "SpeechRecognition",
+        "webkitSpeechRecognition",
+        "MediaRecorder",
+        "getUserMedia",
+        "analytics",
+        "POST",
+        "mutation",
+    ):
+        if forbidden_js in ai_js:
+            raise AssertionError(f"AI-UX-001B must remain local UI-only: {forbidden_js}")
+
+    bootstrap_positions = [
+        js_text.rindex("buildDomCache();"),
+        js_text.rindex("updatePrintDate();"),
+        js_text.rindex("initializeSheetAiUx001bDialogShell();"),
+        js_text.rindex("if (crewFormShell?.dataset.sheetId)"),
+    ]
+    if bootstrap_positions != sorted(bootstrap_positions) or len(set(bootstrap_positions)) != 4:
+        raise AssertionError("AI-UX-001B initializer must preserve the existing bootstrap order")
+
+    ai_button_css = re.search(r"\.sheet-page \.sheet-ai-ux-001b-entry \{(.*?)\}", styles_text, re.S)
+    if not ai_button_css or any(marker not in ai_button_css.group(1) for marker in ("width: 44px", "height: 44px", "background: var(--accent)")):
+        raise AssertionError("AI-UX-001B button must keep a solid primary 44px target")
+    mobile_css_start = styles_text.rindex("@media (max-width: 760px)", 0, styles_text.index("@media print"))
+    mobile_css = styles_text[mobile_css_start:styles_text.index("@media print", mobile_css_start)]
+    if any(marker not in mobile_css for marker in (".sheet-page .sheet-ai-ux-001b-dialog", "100dvh", "safe-area-inset-top", "safe-area-inset-bottom")):
+        raise AssertionError("AI-UX-001B mobile bottom-sheet and safe-area guardrails are missing")
+    print_css = styles_text[styles_text.index("@media print"):]
+    print_hidden = print_css.split("display: none !important;", 1)[0]
+    if ".sheet-page .sheet-ai-ux-001b-dialog," not in print_hidden:
+        raise AssertionError("AI-UX-001B dialog must remain hidden in print")
 
 
 def run_sheet_endpoint_smoke(app_db_path: Path) -> None:
@@ -13590,6 +13733,7 @@ def main() -> int:
         run_work_hub_runtime_api_smoke(Path(tmpdir) / "work-hub-runtime-api-smoke.db")
         run_work_hub_runtime_consumption_smoke(Path(tmpdir) / "work-hub-runtime-consumption-smoke.db")
         run_sheet_bidirectional_floating_navigation_guardrail_smoke()
+        run_sheet_ai_ux_001b_floating_entry_modal_shell_smoke()
         run_work_hub_quick_action_smoke(Path(tmpdir) / "work-hub-quick-action-smoke.db")
         run_users_id_allocation_smoke(db_path)
         run_users_sqlite_sequence_bump_plan_smoke()

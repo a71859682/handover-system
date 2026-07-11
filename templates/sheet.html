@@ -34,6 +34,16 @@
   data-testid="sheet-bidirectional-floating-navigation"
   aria-label="頁面快速導覽"
 >
+  <button
+    type="button"
+    id="sheet-ai-assistant-entry"
+    class="sheet-ai-ux-001b-entry"
+    data-testid="sheet-ai-assistant-entry"
+    aria-label="開啟 AI 工程助理"
+    aria-haspopup="dialog"
+    aria-controls="sheet-ai-assistant-dialog"
+    aria-expanded="false"
+  >AI</button>
   <a
     class="sheet-bidirectional-floating-navigation-link"
     data-testid="sheet-floating-navigation-top"
@@ -47,6 +57,47 @@
     aria-label="回到下方表格首"
   ><span aria-hidden="true">↓</span></a>
 </nav>
+
+<dialog
+  id="sheet-ai-assistant-dialog"
+  class="sheet-ai-ux-001b-dialog"
+  data-testid="sheet-ai-assistant-dialog"
+  aria-labelledby="sheet-ai-assistant-title"
+  aria-describedby="sheet-ai-assistant-description"
+>
+  <div class="sheet-ai-ux-001b-dialog-content">
+    <header class="sheet-ai-ux-001b-dialog-header">
+      <h2 id="sheet-ai-assistant-title">AI 工程助理</h2>
+      <span class="sheet-ai-ux-001b-status">功能規劃中</span>
+    </header>
+    <p id="sheet-ai-assistant-description" class="sheet-ai-ux-001b-description">
+      未來可使用文字或語音查詢及建立操作草稿；所有資料變更都必須先確認。
+    </p>
+    <div class="sheet-ai-ux-001b-field">
+      <label for="sheet-ai-assistant-input">輸入內容</label>
+      <textarea
+        id="sheet-ai-assistant-input"
+        data-testid="sheet-ai-assistant-input"
+        placeholder="例如：星旭，室內放樣，8人"
+        disabled
+      ></textarea>
+    </div>
+    <div class="sheet-ai-ux-001b-dialog-actions">
+      <button
+        type="button"
+        class="sheet-ai-ux-001b-microphone"
+        data-testid="sheet-ai-assistant-microphone"
+        aria-label="語音輸入尚未啟用"
+        disabled
+      >語音輸入尚未啟用</button>
+      <button
+        type="button"
+        class="sheet-ai-ux-001b-close"
+        data-testid="sheet-ai-assistant-close"
+      >關閉</button>
+    </div>
+  </div>
+</dialog>
 
 <div class="print-meta">
   <div class="print-date">列表日期：<span id="printDate"></span></div>
