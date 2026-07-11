@@ -13700,7 +13700,9 @@ spec.loader.exec_module(module)
 module.app.testing = True
 
 business_date = "2026-07-11"
+scheduled_entry_ids = []
 pending_entry_ids = []
+blocked_ready_entry_ids = []
 with module.db() as conn:
     conn.row_factory = sqlite3.Row
     default_site = conn.execute("SELECT id FROM sites ORDER BY id LIMIT 1").fetchone()
@@ -13717,6 +13719,12 @@ with module.db() as conn:
         conn.execute(
             "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
             ("AI Read Secondary Sheet", 999, secondary_site_id),
+        ).fetchone()["id"]
+    )
+    inactive_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 0) RETURNING id",
+            ("AI Read Inactive", "ai-read-inactive"),
         ).fetchone()["id"]
     )
     conn.execute(
@@ -13747,6 +13755,7 @@ with module.db() as conn:
                 (sheet_id, "AI Read Vendor", business_date, f"{business_date} {scheduled_time}", f"Work {entry_order}", entry_order),
             ).fetchone()["id"]
         )
+        scheduled_entry_ids.append(entry_id)
         conn.execute(
             '''
             INSERT INTO formal_approvals (
@@ -13780,8 +13789,49 @@ with module.db() as conn:
                 ).fetchone()["id"]
             )
         )
+    blocked_ready_entry_ids.append(
+        int(
+            conn.execute(
+                '''
+                INSERT INTO vendor_work_entries (
+                    sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                    actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                    created_at, updated_at
+                ) VALUES (?, 'Vendor B', ?, ?, 1, 0, 'Ready Pending Approval', '', 0, 0,
+                          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id
+                ''',
+                (sheet_id, business_date, f"{business_date} 12:00"),
+            ).fetchone()["id"]
+        )
+    )
+    blocked_ready_entry_ids.append(
+        int(
+            conn.execute(
+                '''
+                INSERT INTO vendor_work_entries (
+                    sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                    actual_headcount, work_content, pre_entry_requirement, requirement_status,
+                    requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order,
+                    created_at, updated_at
+                ) VALUES (?, 'Vendor C', ?, ?, 1, 0, 'Confirmed Pending Approval', 'Need access',
+                          'confirmed', 'ai_read_member', CURRENT_TIMESTAMP, 0, 0,
+                          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id
+                ''',
+                (sheet_id, business_date, f"{business_date} 13:00"),
+            ).fetchone()["id"]
+        )
+    )
     conn.commit()
 expected_pending_entry_order = [pending_entry_ids[2], pending_entry_ids[1], pending_entry_ids[0]]
+expected_blocked_entry_order = [
+    pending_entry_ids[2],
+    pending_entry_ids[1],
+    blocked_ready_entry_ids[0],
+    blocked_ready_entry_ids[1],
+    pending_entry_ids[0],
+]
 
 member_session = {"user_id": member_id, "role": "member", "current_site_id": default_site_id}
 admin_session = {"user_id": 1, "role": "admin", "current_site_id": default_site_id}
@@ -13951,6 +14001,100 @@ if (
 ):
     raise SystemExit("pending requirements empty result should preserve its fixed contract")
 
+blocked_scheduling_calls = []
+original_scheduling_helper = module.build_scheduling_payload
+original_dashboard_helper = module.build_dashboard_payload
+def tracked_blocked_scheduling_helper(conn, *, sheet_id, business_date):
+    blocked_scheduling_calls.append((sheet_id, business_date))
+    return original_scheduling_helper(conn, sheet_id=sheet_id, business_date=business_date)
+
+def reject_blocked_dashboard_helper(*args, **kwargs):
+    raise SystemExit("current blocked orchestration must not build a Dashboard payload")
+
+try:
+    module.build_scheduling_payload = tracked_blocked_scheduling_helper
+    module.build_dashboard_payload = reject_blocked_dashboard_helper
+    blocked_result = read_only_call(
+        lambda: call_helper(member_session, intent_key="current_blocked_items")
+    )
+finally:
+    module.build_scheduling_payload = original_scheduling_helper
+    module.build_dashboard_payload = original_dashboard_helper
+if blocked_scheduling_calls != [(sheet_id, business_date)]:
+    raise SystemExit("current blocked orchestration should call the canonical Scheduling helper once")
+blocked_projection_fields = {
+    "id",
+    "vendor_name",
+    "business_date",
+    "planned_at",
+    "work_content",
+    "formal_approval_state",
+    "scheduling_gate_state",
+    "scheduling_gate_reason",
+}
+if set(blocked_result) != {"mode", "intent_key", "scope", "evidence", "total_count", "returned_count", "truncated", "items"}:
+    raise SystemExit("current blocked orchestration should keep the bounded internal result shape")
+if blocked_result["total_count"] != 5 or blocked_result["returned_count"] != 5 or blocked_result["truncated"] is not False:
+    raise SystemExit("current blocked orchestration should return the full small canonical list")
+if [item["id"] for item in blocked_result["items"]] != expected_blocked_entry_order:
+    raise SystemExit("current blocked projection should preserve canonical vendor/entry/id ordering")
+if any(set(item) != blocked_projection_fields for item in blocked_result["items"]):
+    raise SystemExit("current blocked projection should expose exactly eight allowlisted fields")
+blocked_by_id = {item["id"]: item for item in blocked_result["items"]}
+if (
+    blocked_by_id[pending_entry_ids[2]]["formal_approval_state"] != "pending"
+    or blocked_by_id[pending_entry_ids[2]]["scheduling_gate_state"] != "warning"
+    or blocked_by_id[pending_entry_ids[2]]["scheduling_gate_reason"] != "requirement_pending"
+):
+    raise SystemExit("current blocked projection should preserve canonical requirement-pending warning lineage")
+if (
+    blocked_by_id[blocked_ready_entry_ids[0]]["formal_approval_state"] != "pending"
+    or blocked_by_id[blocked_ready_entry_ids[0]]["scheduling_gate_state"] != "allowed"
+    or blocked_by_id[blocked_ready_entry_ids[0]]["scheduling_gate_reason"] != "no_requirement"
+):
+    raise SystemExit("current blocked projection should preserve canonical no-requirement allowed lineage")
+if (
+    blocked_by_id[blocked_ready_entry_ids[1]]["formal_approval_state"] != "pending"
+    or blocked_by_id[blocked_ready_entry_ids[1]]["scheduling_gate_state"] != "allowed"
+    or blocked_by_id[blocked_ready_entry_ids[1]]["scheduling_gate_reason"] != "requirement_confirmed"
+):
+    raise SystemExit("current blocked projection should preserve canonical confirmed-requirement allowed lineage")
+if any(entry_id in blocked_by_id for entry_id in scheduled_entry_ids):
+    raise SystemExit("approved and allowed entries must not appear in canonical blocked_entries")
+blocked_evidence = blocked_result["evidence"]
+blocked_metadata = module.get_supported_ai_read_intent("current_blocked_items")
+if not set(blocked_metadata["evidence_fields"]).issubset(blocked_evidence):
+    raise SystemExit("current blocked evidence should cover registry-required evidence fields")
+if (
+    blocked_result["scope"] != {"current_site_id": default_site_id, "sheet_id": sheet_id, "business_date": business_date}
+    or blocked_evidence["actor_role"] != "member"
+    or blocked_evidence["actor_scope"] != "site_member"
+    or blocked_evidence["source_family"] != "scheduling_blocked_entries"
+    or blocked_evidence["authorization_policy"] != "internal_dashboard_current_site_sheet_read"
+    or blocked_evidence["item_count"] != 5
+    or blocked_evidence["empty_state_reason"] is not None
+):
+    raise SystemExit("current blocked evidence should preserve trusted scope and frozen registry metadata")
+
+blocked_admin_result = read_only_call(
+    lambda: call_helper(admin_session, intent_key="current_blocked_items")
+)
+if blocked_admin_result["evidence"]["actor_scope"] != "current_site_constrained_admin":
+    raise SystemExit("current blocked admin should remain current-site constrained")
+
+blocked_empty_result = read_only_call(
+    lambda: call_helper(member_session, intent_key="current_blocked_items", business_date="2026-07-10")
+)
+if (
+    blocked_empty_result["items"] != []
+    or blocked_empty_result["total_count"] != 0
+    or blocked_empty_result["returned_count"] != 0
+    or blocked_empty_result["truncated"] is not False
+    or blocked_empty_result["evidence"]["item_count"] != 0
+    or blocked_empty_result["evidence"]["empty_state_reason"] != "no_blocked_items_for_business_date"
+):
+    raise SystemExit("current blocked empty result should preserve its fixed contract")
+
 def make_pending_item(index, **overrides):
     item = {
         "id": 1000 + index,
@@ -14079,11 +14223,170 @@ finally:
 if module.get_supported_ai_read_intent("today_pending_requirements")["max_items"] != 25:
     raise SystemExit("pending requirements registry max_items must remain frozen at 25 after drift testing")
 
+def make_blocked_item(index, **overrides):
+    item = {
+        "id": 2000 + index,
+        "sheet_id": sheet_id,
+        "vendor_name": f"Blocked Vendor {index:02d}",
+        "business_date": business_date,
+        "planned_at": f"{business_date} 09:00",
+        "work_content": f"Blocked Work {index}",
+        "formal_approval_state": "pending",
+        "readiness_state": "not_ready",
+        "readiness_reason": "requirement_pending",
+        "scheduling_gate_state": "warning",
+        "scheduling_gate_reason": "requirement_pending",
+        "formal_approved_by": "must-not-leak",
+        "requirement_confirmed_by": "must-not-leak",
+        "entry_order": index,
+        "future_secret": "must-not-leak",
+    }
+    item.update(overrides)
+    return item
+
+def make_blocked_payload(items, *, count=None):
+    return {
+        "summary": {"blocked_count": len(items) if count is None else count},
+        "blocked_entries": items,
+    }
+
+def call_with_blocked_payload(payload):
+    original = module.build_scheduling_payload
+    try:
+        module.build_scheduling_payload = lambda *args, **kwargs: payload
+        return read_only_call(
+            lambda: call_helper(member_session, intent_key="current_blocked_items")
+        )
+    finally:
+        module.build_scheduling_payload = original
+
+def expect_blocked_shape_error(payload):
+    original = module.build_scheduling_payload
+    try:
+        module.build_scheduling_payload = lambda *args, **kwargs: payload
+        expect_domain_error(
+            "ai_read_source_shape_mismatch",
+            lambda: call_helper(member_session, intent_key="current_blocked_items"),
+        )
+    finally:
+        module.build_scheduling_payload = original
+
+for item_count, expected_returned, expected_truncated in ((24, 24, False), (25, 25, False), (26, 25, True)):
+    source_items = [make_blocked_item(index) for index in range(item_count)]
+    bounded_result = call_with_blocked_payload(make_blocked_payload(source_items))
+    if (
+        bounded_result["total_count"] != item_count
+        or bounded_result["returned_count"] != expected_returned
+        or bounded_result["truncated"] is not expected_truncated
+        or bounded_result["evidence"]["item_count"] != item_count
+        or len(bounded_result["items"]) != expected_returned
+    ):
+        raise SystemExit(f"current blocked bounded contract failed at {item_count} items")
+    if [item["id"] for item in bounded_result["items"]] != [item["id"] for item in source_items[:25]]:
+        raise SystemExit("current blocked bounded projection should preserve source ordering")
+    if any(set(item) != blocked_projection_fields for item in bounded_result["items"]):
+        raise SystemExit("current blocked projection must exclude source extras and future fields")
+
+valid_blocked_lineages = (
+    make_blocked_item(
+        1,
+        readiness_state="ready",
+        readiness_reason="no_requirement",
+        scheduling_gate_state="allowed",
+        scheduling_gate_reason="no_requirement",
+    ),
+    make_blocked_item(
+        2,
+        readiness_state="ready",
+        readiness_reason="requirement_confirmed",
+        scheduling_gate_state="allowed",
+        scheduling_gate_reason="requirement_confirmed",
+    ),
+    make_blocked_item(3, formal_approval_state="approved"),
+)
+valid_lineage_result = call_with_blocked_payload(make_blocked_payload(list(valid_blocked_lineages)))
+if len(valid_lineage_result["items"]) != 3:
+    raise SystemExit("current blocked projection should accept all canonical decision lineages")
+
+blocked_payload_shape_failures = (
+    None,
+    {},
+    {"summary": None, "blocked_entries": []},
+    {"summary": {}, "blocked_entries": []},
+    {"summary": {"blocked_count": 0}},
+    {"summary": {"blocked_count": 0}, "blocked_entries": {}},
+    make_blocked_payload([], count=True),
+    make_blocked_payload([], count="0"),
+    make_blocked_payload([], count=-1),
+    make_blocked_payload([make_blocked_item(1)], count=0),
+    make_blocked_payload(["not-a-mapping"]),
+    make_blocked_payload([make_blocked_item(1), make_blocked_item(1)]),
+)
+for invalid_blocked_payload in blocked_payload_shape_failures:
+    expect_blocked_shape_error(invalid_blocked_payload)
+
+missing_blocked_id_item = make_blocked_item(1)
+missing_blocked_id_item.pop("id")
+for invalid_item in (
+    missing_blocked_id_item,
+    make_blocked_item(1, id=None),
+    make_blocked_item(1, id=True),
+    make_blocked_item(1, id="1"),
+    make_blocked_item(1, id=0),
+    make_blocked_item(1, id=-1),
+    make_blocked_item(1, sheet_id=True),
+    make_blocked_item(1, sheet_id="1"),
+    make_blocked_item(1, sheet_id=-1),
+    make_blocked_item(1, sheet_id=secondary_sheet_id),
+    make_blocked_item(1, business_date=1),
+    make_blocked_item(1, business_date="2026-07-10"),
+    make_blocked_item(1, vendor_name=1),
+    make_blocked_item(1, planned_at=1),
+    make_blocked_item(1, work_content=1),
+    make_blocked_item(1, formal_approval_state="rejected"),
+    make_blocked_item(1, readiness_state="ready"),
+    make_blocked_item(1, readiness_reason="no_requirement"),
+    make_blocked_item(1, scheduling_gate_state="blocked"),
+    make_blocked_item(1, scheduling_gate_reason="custom_reason"),
+    make_blocked_item(
+        1,
+        formal_approval_state="approved",
+        readiness_state="ready",
+        readiness_reason="no_requirement",
+        scheduling_gate_state="allowed",
+        scheduling_gate_reason="no_requirement",
+    ),
+):
+    expect_blocked_shape_error(make_blocked_payload([invalid_item]))
+
+invalid_blocked_tail_items = [make_blocked_item(index) for index in range(26)]
+invalid_blocked_tail_items[-1]["scheduling_gate_reason"] = "custom_reason"
+expect_blocked_shape_error(make_blocked_payload(invalid_blocked_tail_items))
+
+original_get_supported_ai_read_intent = module.get_supported_ai_read_intent
+def drifted_blocked_intent_lookup(intent_key):
+    intent = original_get_supported_ai_read_intent(intent_key)
+    if intent_key != "current_blocked_items" or intent is None:
+        return intent
+    drifted_intent = dict(intent)
+    drifted_intent["max_items"] = 26
+    return drifted_intent
+
+try:
+    module.get_supported_ai_read_intent = drifted_blocked_intent_lookup
+    expect_domain_error(
+        "ai_read_source_shape_mismatch",
+        lambda: call_helper(member_session, intent_key="current_blocked_items"),
+    )
+finally:
+    module.get_supported_ai_read_intent = original_get_supported_ai_read_intent
+if module.get_supported_ai_read_intent("current_blocked_items")["max_items"] != 25:
+    raise SystemExit("current blocked registry max_items must remain frozen at 25 after drift testing")
+
 expect_domain_error("unsupported_ai_read_intent", lambda: call_helper(member_session, intent_key="unknown"))
 expect_domain_error("unsupported_ai_read_intent", lambda: call_helper(vendor_session, intent_key="unknown"))
 not_implemented_keys = (
     "today_due_crew_entries_not_entered",
-    "current_blocked_items",
 )
 for not_implemented_key in not_implemented_keys:
     expect_domain_error(
@@ -14091,7 +14394,12 @@ for not_implemented_key in not_implemented_keys:
         lambda key=not_implemented_key: call_helper(member_session, intent_key=key),
     )
 
-for known_key in ("today_formally_scheduled_count", "today_pending_requirements", *not_implemented_keys):
+for known_key in (
+    "today_formally_scheduled_count",
+    "today_pending_requirements",
+    "current_blocked_items",
+    *not_implemented_keys,
+):
     expect_lookup_error("auth_required", lambda key=known_key: call_helper({}, intent_key=key))
     expect_lookup_error("vendor_auth_forbidden", lambda key=known_key: call_helper(vendor_session, intent_key=key))
 expect_lookup_error("site_context_invalid", lambda: call_helper({"user_id": member_id, "role": "member"}))
@@ -14099,15 +14407,34 @@ expect_lookup_error(
     "site_context_invalid",
     lambda: call_helper({"user_id": member_id, "role": "member"}, intent_key="today_pending_requirements"),
 )
+expect_lookup_error(
+    "site_context_invalid",
+    lambda: call_helper({"user_id": member_id, "role": "member"}, intent_key="current_blocked_items"),
+)
+expect_lookup_error(
+    "site_context_invalid",
+    lambda: call_helper(
+        {"user_id": member_id, "role": "member", "current_site_id": inactive_site_id},
+        intent_key="current_blocked_items",
+    ),
+)
 expect_lookup_error("sheet_not_found", lambda: call_helper(member_session, sheet_id=999999))
 expect_lookup_error(
     "sheet_not_found",
     lambda: call_helper(member_session, sheet_id=999999, intent_key="today_pending_requirements"),
 )
+expect_lookup_error(
+    "sheet_not_found",
+    lambda: call_helper(member_session, sheet_id=999999, intent_key="current_blocked_items"),
+)
 expect_lookup_error("sheet_not_in_current_site", lambda: call_helper(member_session, sheet_id=secondary_sheet_id))
 expect_lookup_error(
     "sheet_not_in_current_site",
     lambda: call_helper(member_session, sheet_id=secondary_sheet_id, intent_key="today_pending_requirements"),
+)
+expect_lookup_error(
+    "sheet_not_in_current_site",
+    lambda: call_helper(member_session, sheet_id=secondary_sheet_id, intent_key="current_blocked_items"),
 )
 
 with module.db() as conn:
@@ -14117,6 +14444,10 @@ expect_lookup_error("site_permission_missing", lambda: call_helper(member_sessio
 expect_lookup_error(
     "site_permission_missing",
     lambda: call_helper(member_session, intent_key="today_pending_requirements"),
+)
+expect_lookup_error(
+    "site_permission_missing",
+    lambda: call_helper(member_session, intent_key="current_blocked_items"),
 )
 with module.db() as conn:
     conn.execute(
@@ -14131,6 +14462,14 @@ expect_domain_error(
     lambda: call_helper(
         member_session,
         intent_key="today_pending_requirements",
+        business_date="2026-02-30",
+    ),
+)
+expect_domain_error(
+    "invalid_business_date",
+    lambda: call_helper(
+        member_session,
+        intent_key="current_blocked_items",
         business_date="2026-02-30",
     ),
 )
@@ -14153,6 +14492,7 @@ finally:
     module.build_dashboard_payload = original_dashboard_helper
 
 dashboard_calls = []
+clock_scheduling_calls = []
 real_datetime = module.datetime
 class FixedDateTime(real_datetime):
     calls = 0
@@ -14166,9 +14506,15 @@ def tracked_dashboard_helper(conn, *, sheet_id, business_date):
     dashboard_calls.append((sheet_id, business_date))
     return original_dashboard_helper(conn, sheet_id=sheet_id, business_date=business_date)
 
+original_clock_scheduling_helper = module.build_scheduling_payload
+def tracked_clock_scheduling_helper(conn, *, sheet_id, business_date):
+    clock_scheduling_calls.append((sheet_id, business_date))
+    return original_clock_scheduling_helper(conn, sheet_id=sheet_id, business_date=business_date)
+
 try:
     module.datetime = FixedDateTime
     module.build_dashboard_payload = tracked_dashboard_helper
+    module.build_scheduling_payload = tracked_clock_scheduling_helper
     resolved_result = read_only_call(lambda: call_helper(member_session, business_date=None, as_of=None))
     resolved_pending_result = read_only_call(
         lambda: call_helper(
@@ -14178,11 +14524,24 @@ try:
             as_of=None,
         )
     )
+    resolved_blocked_result = read_only_call(
+        lambda: call_helper(
+            member_session,
+            intent_key="current_blocked_items",
+            business_date=None,
+            as_of=None,
+        )
+    )
 finally:
     module.datetime = real_datetime
     module.build_dashboard_payload = original_dashboard_helper
-if FixedDateTime.calls != 2 or dashboard_calls != [(sheet_id, business_date), (sheet_id, business_date)]:
-    raise SystemExit("each AI read orchestration call should capture one server as_of and call Dashboard once")
+    module.build_scheduling_payload = original_clock_scheduling_helper
+if (
+    FixedDateTime.calls != 3
+    or dashboard_calls != [(sheet_id, business_date), (sheet_id, business_date)]
+    or clock_scheduling_calls != [(sheet_id, business_date)]
+):
+    raise SystemExit("each AI read orchestration call should capture one as_of and build only its canonical payload once")
 if resolved_result["scope"]["business_date"] != business_date or resolved_result["evidence"]["as_of"] != "2026-07-12T08:00:00":
     raise SystemExit("AI read orchestration should use the same as_of for 08:30 business-date resolution and evidence")
 if (
@@ -14190,6 +14549,11 @@ if (
     or resolved_pending_result["evidence"]["as_of"] != "2026-07-12T08:00:00"
 ):
     raise SystemExit("pending requirements should reuse the same 08:30 business-date and single-as_of contract")
+if (
+    resolved_blocked_result["scope"]["business_date"] != business_date
+    or resolved_blocked_result["evidence"]["as_of"] != "2026-07-12T08:00:00"
+):
+    raise SystemExit("current blocked items should reuse the same 08:30 business-date and single-as_of contract")
 
 client = module.app.test_client()
 with client.session_transaction() as session:
@@ -14212,16 +14576,46 @@ unauthenticated_response = module.app.test_client().get(f"/api/dashboard?sheet_i
 if unauthenticated_response.status_code != 403 or unauthenticated_response.get_json()["error"]["code"] != "auth_required":
     raise SystemExit("existing Dashboard API auth error contract should remain unchanged")
 
+before_scheduling_api = database_snapshot()
+scheduling_response = client.get(f"/api/scheduling?sheet_id={sheet_id}&business_date={business_date}")
+if scheduling_response.status_code != 200:
+    raise SystemExit("existing Scheduling API success contract should remain available")
+scheduling_payload = scheduling_response.get_json()
+if (
+    scheduling_payload["summary"]["blocked_count"] != 5
+    or [entry["id"] for entry in scheduling_payload["blocked_entries"]] != expected_blocked_entry_order
+    or set(scheduling_payload) != {"summary", "schedulable_entries", "blocked_entries", "scheduled_entries", "unscheduled_entries"}
+):
+    raise SystemExit("existing Scheduling API blocked decision contract should remain unchanged")
+if database_snapshot() != before_scheduling_api:
+    raise SystemExit("existing Scheduling API must remain read-only")
+
+before_work_hub_api = database_snapshot()
+work_hub_response = client.get(f"/api/work-hub-runtime?sheet_id={sheet_id}&business_date={business_date}")
+if work_hub_response.status_code != 200:
+    raise SystemExit("existing Work Hub API success contract should remain available")
+work_hub_payload = work_hub_response.get_json()
+if (
+    work_hub_payload["work_hub"]["summary"]["blocked_count"] != 5
+    or [entry["id"] for entry in work_hub_payload["work_hub"]["blocked_entries"]] != expected_blocked_entry_order
+    or work_hub_payload["scheduling"] != scheduling_payload
+):
+    raise SystemExit("existing Work Hub blocked decision contract should remain Scheduling-backed")
+if database_snapshot() != before_work_hub_api:
+    raise SystemExit("existing Work Hub API must remain read-only")
+
 helper_source = inspect.getsource(module.build_role_scoped_ai_read_result)
 for required_fragment in (
     "get_supported_ai_read_intent(intent_key)",
     "authorize_dashboard_read(conn, sheet_id=sheet_id)",
     "build_dashboard_payload(",
+    "build_scheduling_payload(",
 ):
     if required_fragment not in helper_source:
         raise SystemExit(f"AI read orchestration helper missing canonical call: {required_fragment}")
 for forbidden_fragment in (
     "/api/dashboard",
+    "/api/scheduling",
     "requests.",
     "urlopen(",
     "openai",
@@ -14238,12 +14632,18 @@ if any("ai-read" in rule.rule or "ai_read" in rule.endpoint for rule in module.a
 print("AI read formal schedule count orchestration smoke PASS")
 """
     result = subprocess.run(
-        [sys.executable, "-c", script, str(db_path), str(ROOT_DIR)],
+        [sys.executable, "-", str(db_path), str(ROOT_DIR)],
         cwd=ROOT_DIR,
+        input=script,
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    if result.returncode != 0:
+        raise AssertionError(
+            "AI read orchestration focused smoke failed:\n"
+            f"{result.stdout}{result.stderr}"
+        )
     if "AI read formal schedule count orchestration smoke PASS" not in result.stdout:
         raise AssertionError("AI read formal schedule count orchestration smoke did not report PASS.")
 
