@@ -3416,7 +3416,7 @@ def build_role_scoped_ai_read_result(
     ):
         raise AIReadOrchestrationError("ai_read_intent_not_implemented")
 
-    trusted_as_of = as_of if as_of is not None else datetime.now()
+    trusted_as_of = as_of if as_of is not None else get_crew_trusted_as_of()
     try:
         resolved_business_date = (
             resolve_crew_business_date(now=trusted_as_of)

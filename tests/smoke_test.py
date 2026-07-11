@@ -14103,7 +14103,7 @@ import inspect
 import os
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 db_path, root_dir = sys.argv[1:3]
@@ -14909,14 +14909,80 @@ finally:
 
 dashboard_calls = []
 clock_scheduling_calls = []
-real_datetime = module.datetime
-class FixedDateTime(real_datetime):
-    calls = 0
+original_trusted_clock = module.get_crew_trusted_as_of
 
-    @classmethod
-    def now(cls):
-        cls.calls += 1
-        return cls(2026, 7, 12, 8, 0)
+def call_with_default_clock(intent_key, fixed_as_of):
+    clock_calls = []
+
+    def fixed_clock():
+        clock_calls.append(fixed_as_of)
+        return fixed_as_of
+
+    try:
+        module.get_crew_trusted_as_of = fixed_clock
+        result = read_only_call(
+            lambda: call_helper(
+                member_session,
+                intent_key=intent_key,
+                business_date=None,
+                as_of=None,
+            )
+        )
+    finally:
+        module.get_crew_trusted_as_of = original_trusted_clock
+    if clock_calls != [fixed_as_of]:
+        raise SystemExit(f"{intent_key} should capture the canonical default clock exactly once")
+    return result
+
+real_default_as_of = module.get_crew_trusted_as_of()
+if getattr(real_default_as_of.tzinfo, "key", None) != "Asia/Taipei":
+    raise SystemExit("AI read canonical default clock should return an Asia/Taipei-aware datetime")
+
+taipei = module.CREW_OPERATIONAL_TIMEZONE
+default_boundary_cases = (
+    (datetime(2026, 7, 11, 8, 29, 59, tzinfo=taipei), "2026-07-10"),
+    (datetime(2026, 7, 11, 8, 30, 0, tzinfo=taipei), "2026-07-11"),
+    (datetime(2026, 7, 11, 8, 30, 1, tzinfo=taipei), "2026-07-11"),
+    (datetime(2026, 7, 11, 0, 5, 0, tzinfo=taipei), "2026-07-10"),
+)
+for boundary_as_of, expected_business_date in default_boundary_cases:
+    boundary_result = call_with_default_clock("today_formally_scheduled_count", boundary_as_of)
+    if (
+        boundary_result["scope"]["business_date"] != expected_business_date
+        or boundary_result["evidence"]["business_date"] != expected_business_date
+        or boundary_result["evidence"]["as_of"] != boundary_as_of.isoformat()
+    ):
+        raise SystemExit("AI read default clock should preserve Asia/Taipei 08:30 boundary evidence")
+
+default_clock_calls_during_explicit = []
+def forbidden_default_clock():
+    default_clock_calls_during_explicit.append(True)
+    raise SystemExit("explicit AI read as_of must not call the default clock")
+
+explicit_aware_as_of = datetime(2026, 7, 11, 0, 29, 59, tzinfo=timezone.utc)
+explicit_naive_as_of = datetime(2026, 7, 11, 8, 29, 59)
+try:
+    module.get_crew_trusted_as_of = forbidden_default_clock
+    explicit_aware_result = read_only_call(
+        lambda: call_helper(member_session, business_date=None, as_of=explicit_aware_as_of)
+    )
+    explicit_naive_result = read_only_call(
+        lambda: call_helper(member_session, business_date=None, as_of=explicit_naive_as_of)
+    )
+finally:
+    module.get_crew_trusted_as_of = original_trusted_clock
+if default_clock_calls_during_explicit:
+    raise SystemExit("explicit AI read as_of should bypass the canonical default clock")
+if (
+    explicit_aware_result["scope"]["business_date"] != "2026-07-10"
+    or explicit_aware_result["evidence"]["as_of"] != explicit_aware_as_of.isoformat()
+):
+    raise SystemExit("UTC-aware explicit as_of should resolve through the Asia/Taipei business-date contract")
+if (
+    explicit_naive_result["scope"]["business_date"] != "2026-07-10"
+    or explicit_naive_result["evidence"]["as_of"] != explicit_naive_as_of.isoformat()
+):
+    raise SystemExit("naive explicit as_of should remain a deterministic Taipei wall-clock override")
 
 def tracked_dashboard_helper(conn, *, sheet_id, business_date):
     dashboard_calls.append((sheet_id, business_date))
@@ -14928,46 +14994,40 @@ def tracked_clock_scheduling_helper(conn, *, sheet_id, business_date):
     return original_clock_scheduling_helper(conn, sheet_id=sheet_id, business_date=business_date)
 
 try:
-    module.datetime = FixedDateTime
     module.build_dashboard_payload = tracked_dashboard_helper
     module.build_scheduling_payload = tracked_clock_scheduling_helper
-    resolved_result = read_only_call(lambda: call_helper(member_session, business_date=None, as_of=None))
-    resolved_pending_result = read_only_call(
-        lambda: call_helper(
-            member_session,
-            intent_key="today_pending_requirements",
-            business_date=None,
-            as_of=None,
-        )
+    shared_default_as_of = datetime(2026, 7, 12, 8, 0, tzinfo=taipei)
+    resolved_result = call_with_default_clock(
+        "today_formally_scheduled_count",
+        shared_default_as_of,
     )
-    resolved_blocked_result = read_only_call(
-        lambda: call_helper(
-            member_session,
-            intent_key="current_blocked_items",
-            business_date=None,
-            as_of=None,
-        )
+    resolved_pending_result = call_with_default_clock(
+        "today_pending_requirements",
+        shared_default_as_of,
+    )
+    resolved_blocked_result = call_with_default_clock(
+        "current_blocked_items",
+        shared_default_as_of,
     )
 finally:
-    module.datetime = real_datetime
+    module.get_crew_trusted_as_of = original_trusted_clock
     module.build_dashboard_payload = original_dashboard_helper
     module.build_scheduling_payload = original_clock_scheduling_helper
 if (
-    FixedDateTime.calls != 3
-    or dashboard_calls != [(sheet_id, business_date), (sheet_id, business_date)]
+    dashboard_calls != [(sheet_id, business_date), (sheet_id, business_date)]
     or clock_scheduling_calls != [(sheet_id, business_date)]
 ):
     raise SystemExit("each AI read orchestration call should capture one as_of and build only its canonical payload once")
-if resolved_result["scope"]["business_date"] != business_date or resolved_result["evidence"]["as_of"] != "2026-07-12T08:00:00":
+if resolved_result["scope"]["business_date"] != business_date or resolved_result["evidence"]["as_of"] != "2026-07-12T08:00:00+08:00":
     raise SystemExit("AI read orchestration should use the same as_of for 08:30 business-date resolution and evidence")
 if (
     resolved_pending_result["scope"]["business_date"] != business_date
-    or resolved_pending_result["evidence"]["as_of"] != "2026-07-12T08:00:00"
+    or resolved_pending_result["evidence"]["as_of"] != "2026-07-12T08:00:00+08:00"
 ):
     raise SystemExit("pending requirements should reuse the same 08:30 business-date and single-as_of contract")
 if (
     resolved_blocked_result["scope"]["business_date"] != business_date
-    or resolved_blocked_result["evidence"]["as_of"] != "2026-07-12T08:00:00"
+    or resolved_blocked_result["evidence"]["as_of"] != "2026-07-12T08:00:00+08:00"
 ):
     raise SystemExit("current blocked items should reuse the same 08:30 business-date and single-as_of contract")
 
