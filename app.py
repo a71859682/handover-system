@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import psycopg
 from flask import (
@@ -75,6 +76,8 @@ ASSET_VERSION = "20260627-010"
 _USERS_READ_COMPARE_ORM_READY = True
 CREW_BUSINESS_DAY_RESET_HOUR = 8
 CREW_BUSINESS_DAY_RESET_MINUTE = 30
+CREW_OPERATIONAL_TIMEZONE_NAME = "Asia/Taipei"
+CREW_OPERATIONAL_TIMEZONE = ZoneInfo(CREW_OPERATIONAL_TIMEZONE_NAME)
 
 
 @app.context_processor
@@ -294,7 +297,11 @@ def _log_users_read_compare_mismatch(
 
 
 def resolve_crew_business_date(now: datetime | None = None) -> str:
-    current = now or datetime.now()
+    current = now or datetime.now(CREW_OPERATIONAL_TIMEZONE)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=CREW_OPERATIONAL_TIMEZONE)
+    else:
+        current = current.astimezone(CREW_OPERATIONAL_TIMEZONE)
     reset_point = current.replace(
         hour=CREW_BUSINESS_DAY_RESET_HOUR,
         minute=CREW_BUSINESS_DAY_RESET_MINUTE,
@@ -2310,9 +2317,15 @@ def _handle_schedule_entry_lookup_error(exc: LookupError):
     raise exc
 
 
-def get_active_crew_vendors(sheet_id: int) -> list[str]:
-    with db() as conn:
-        tasks = conn.execute(
+def get_active_crew_vendors(
+    sheet_id: int,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> list[str]:
+    owns_connection = conn is None
+    source_conn = conn or db()
+    try:
+        tasks = source_conn.execute(
             """
             SELECT id, vendor
             FROM tasks
@@ -2323,7 +2336,7 @@ def get_active_crew_vendors(sheet_id: int) -> list[str]:
         ).fetchall()
         active_task_ids = {
             row["task_id"]
-            for row in conn.execute(
+            for row in source_conn.execute(
                 """
                 SELECT DISTINCT p.task_id
                 FROM progress p
@@ -2333,6 +2346,9 @@ def get_active_crew_vendors(sheet_id: int) -> list[str]:
                 (sheet_id, WORKING_VALUE),
             ).fetchall()
         }
+    finally:
+        if owns_connection:
+            source_conn.close()
 
     seen: set[str] = set()
     active_vendors: list[str] = []
@@ -2345,9 +2361,15 @@ def get_active_crew_vendors(sheet_id: int) -> list[str]:
     return active_vendors
 
 
-def get_pending_items_by_vendor(sheet_id: int) -> dict[str, list[str]]:
-    with db() as conn:
-        tasks = conn.execute(
+def get_pending_items_by_vendor(
+    sheet_id: int,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, list[str]]:
+    owns_connection = conn is None
+    source_conn = conn or db()
+    try:
+        tasks = source_conn.execute(
             """
             SELECT id, vendor, name
             FROM tasks
@@ -2358,7 +2380,7 @@ def get_pending_items_by_vendor(sheet_id: int) -> dict[str, list[str]]:
         ).fetchall()
         active_task_ids = {
             row["task_id"]
-            for row in conn.execute(
+            for row in source_conn.execute(
                 """
                 SELECT DISTINCT p.task_id
                 FROM progress p
@@ -2368,6 +2390,9 @@ def get_pending_items_by_vendor(sheet_id: int) -> dict[str, list[str]]:
                 (sheet_id, WORKING_VALUE),
             ).fetchall()
         }
+    finally:
+        if owns_connection:
+            source_conn.close()
 
     pending_items: dict[str, list[str]] = {}
     for task in tasks:
@@ -2550,6 +2575,193 @@ def fetch_vendor_work_entries(
         entry = apply_vendor_work_entry_formal_approval_state(entry)
         entries_by_vendor.setdefault(row["vendor_name"], []).append(entry)
     return entries_by_vendor
+
+
+class CrewMissingSourceError(RuntimeError):
+    def __init__(self, code: str = "crew_missing_source_shape_mismatch"):
+        self.code = code
+        super().__init__(code)
+
+
+def get_crew_trusted_as_of() -> datetime:
+    return datetime.now(CREW_OPERATIONAL_TIMEZONE)
+
+
+def normalize_crew_operational_as_of(as_of: datetime) -> datetime:
+    if not isinstance(as_of, datetime) or as_of.tzinfo is None or as_of.utcoffset() is None:
+        raise CrewMissingSourceError()
+    return as_of.astimezone(CREW_OPERATIONAL_TIMEZONE)
+
+
+def parse_crew_planned_at_operational_datetime(value: str) -> datetime | None:
+    parsed = parse_planned_at_datetime(value)
+    return parsed.replace(tzinfo=CREW_OPERATIONAL_TIMEZONE) if parsed is not None else None
+
+
+def build_crew_missing_source_payload(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    business_date: str,
+    as_of: datetime,
+) -> dict[str, object]:
+    owns_snapshot = not conn.in_transaction
+    if owns_snapshot:
+        conn.execute("BEGIN")
+    try:
+        return _build_crew_missing_source_payload_in_snapshot(
+            conn,
+            sheet_id=sheet_id,
+            business_date=business_date,
+            as_of=as_of,
+        )
+    finally:
+        if owns_snapshot and conn.in_transaction:
+            conn.rollback()
+
+
+def _build_crew_missing_source_payload_in_snapshot(
+    conn: sqlite3.Connection,
+    *,
+    sheet_id: int,
+    business_date: str,
+    as_of: datetime,
+) -> dict[str, object]:
+    if isinstance(sheet_id, bool) or not isinstance(sheet_id, int) or sheet_id <= 0:
+        raise CrewMissingSourceError()
+    try:
+        resolved_business_date = parse_crew_business_date(business_date)
+    except (AttributeError, ValueError):
+        raise CrewMissingSourceError() from None
+    trusted_as_of = normalize_crew_operational_as_of(as_of)
+    active_vendors = set(get_active_crew_vendors(sheet_id, conn=conn))
+    entries_by_vendor = fetch_vendor_work_entries(
+        conn,
+        sheet_id=sheet_id,
+        business_date=resolved_business_date,
+    )
+    if not isinstance(entries_by_vendor, Mapping):
+        raise CrewMissingSourceError()
+
+    missing_entries: list[dict[str, object]] = []
+    seen_entry_ids: set[int] = set()
+    for vendor_name, entries in entries_by_vendor.items():
+        if not isinstance(vendor_name, str) or not isinstance(entries, list):
+            raise CrewMissingSourceError()
+        if vendor_name not in active_vendors:
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                raise CrewMissingSourceError()
+            entry_id = entry.get("id")
+            source_sheet_id = entry.get("sheet_id")
+            entry_order = entry.get("entry_order")
+            planned_headcount = entry.get("planned_headcount")
+            actual_headcount = entry.get("actual_headcount")
+            if isinstance(entry_id, bool) or not isinstance(entry_id, int) or entry_id <= 0:
+                raise CrewMissingSourceError()
+            if entry_id in seen_entry_ids:
+                raise CrewMissingSourceError()
+            seen_entry_ids.add(entry_id)
+            if (
+                isinstance(source_sheet_id, bool)
+                or not isinstance(source_sheet_id, int)
+                or source_sheet_id != sheet_id
+            ):
+                raise CrewMissingSourceError()
+            if entry.get("vendor_name") != vendor_name:
+                raise CrewMissingSourceError()
+            if entry.get("business_date") != resolved_business_date:
+                raise CrewMissingSourceError()
+            if isinstance(entry_order, bool) or not isinstance(entry_order, int) or entry_order < 0:
+                raise CrewMissingSourceError()
+            if (
+                isinstance(planned_headcount, bool)
+                or not isinstance(planned_headcount, int)
+                or planned_headcount < 0
+            ):
+                raise CrewMissingSourceError()
+            if (
+                isinstance(actual_headcount, bool)
+                or not isinstance(actual_headcount, int)
+                or actual_headcount < 0
+            ):
+                raise CrewMissingSourceError()
+            planned_at = entry.get("planned_at")
+            work_content = entry.get("work_content")
+            if not isinstance(planned_at, str) or not isinstance(work_content, str):
+                raise CrewMissingSourceError()
+            planned_at_dt = parse_crew_planned_at_operational_datetime(planned_at)
+            if planned_at_dt is None or planned_at_dt > trusted_as_of or actual_headcount != 0:
+                continue
+            missing_entries.append(
+                {
+                    "id": entry_id,
+                    "sheet_id": source_sheet_id,
+                    "vendor_name": vendor_name,
+                    "business_date": resolved_business_date,
+                    "planned_at": planned_at,
+                    "planned_headcount": planned_headcount,
+                    "actual_headcount": actual_headcount,
+                    "work_content": work_content,
+                    "entry_order": entry_order,
+                }
+            )
+
+    missing_entries.sort(key=lambda item: (item["vendor_name"], item["entry_order"], item["id"]))
+    return {
+        "sheet_id": sheet_id,
+        "business_date": resolved_business_date,
+        "as_of": trusted_as_of.isoformat(),
+        "summary": {"missing_count": len(missing_entries)},
+        "missing_entries": missing_entries,
+    }
+
+
+def serialize_crew_missing_public_items(
+    source_payload: Mapping[str, object],
+    *,
+    contacts_by_vendor: Mapping[str, Mapping[str, object]],
+    pending_by_vendor: Mapping[str, list[str]],
+) -> list[dict[str, object]]:
+    summary = source_payload.get("summary")
+    missing_entries = source_payload.get("missing_entries")
+    if not isinstance(summary, Mapping) or not isinstance(missing_entries, list):
+        raise CrewMissingSourceError()
+    missing_count = summary.get("missing_count")
+    if isinstance(missing_count, bool) or not isinstance(missing_count, int) or missing_count != len(missing_entries):
+        raise CrewMissingSourceError()
+
+    items: list[dict[str, object]] = []
+    for entry in missing_entries:
+        if not isinstance(entry, Mapping):
+            raise CrewMissingSourceError()
+        vendor_name = entry.get("vendor_name")
+        planned_at = entry.get("planned_at")
+        planned_headcount = entry.get("planned_headcount")
+        actual_headcount = entry.get("actual_headcount")
+        if (
+            not isinstance(vendor_name, str)
+            or not isinstance(planned_at, str)
+            or isinstance(planned_headcount, bool)
+            or not isinstance(planned_headcount, int)
+            or isinstance(actual_headcount, bool)
+            or not isinstance(actual_headcount, int)
+        ):
+            raise CrewMissingSourceError()
+        contact = contacts_by_vendor.get(vendor_name, {})
+        items.append(
+            {
+                "vendor_name": vendor_name,
+                "contact_name": str(contact.get("contact_name", "")),
+                "contact_phone": str(contact.get("contact_phone", "")),
+                "planned_at": planned_at,
+                "planned_headcount": planned_headcount,
+                "actual_headcount": actual_headcount,
+                "pending_items": pending_by_vendor.get(vendor_name, []),
+            }
+        )
+    return items
 
 
 def fetch_dashboard_scheduled_entries(
@@ -6767,9 +6979,14 @@ def api_crew_missing():
     if sheet_id is None:
         return crew_api_error("invalid_sheet_id", "sheet_id is required and must be a valid integer.")
 
+    trusted_as_of = get_crew_trusted_as_of()
     raw_business_date = request.args.get("business_date", "").strip()
     try:
-        business_date = parse_crew_business_date(raw_business_date) if raw_business_date else resolve_crew_business_date()
+        business_date = (
+            parse_crew_business_date(raw_business_date)
+            if raw_business_date
+            else resolve_crew_business_date(now=trusted_as_of)
+        )
     except ValueError as exc:
         return crew_api_error("invalid_business_date", str(exc))
 
@@ -6779,38 +6996,19 @@ def api_crew_missing():
         except LookupError as exc:
             return _handle_grid_read_lookup_error(exc)
 
-        active_vendors = set(get_active_crew_vendors(sheet_id))
-        pending_by_vendor = get_pending_items_by_vendor(sheet_id)
+        source_payload = build_crew_missing_source_payload(
+            conn,
+            sheet_id=sheet_id,
+            business_date=business_date,
+            as_of=trusted_as_of,
+        )
+        pending_by_vendor = get_pending_items_by_vendor(sheet_id, conn=conn)
         contacts_by_vendor = fetch_vendor_contact_map(conn, sheet_id)
-        entries_by_vendor = fetch_vendor_work_entries(conn, sheet_id=sheet_id, business_date=business_date)
-
-        now = datetime.now()
-        items = []
-        for vendor_name, entries in entries_by_vendor.items():
-            if vendor_name not in active_vendors:
-                continue
-            contact = contacts_by_vendor.get(vendor_name, {})
-            for entry in entries:
-                planned_at = str(entry.get("planned_at", "")).strip()
-                if not planned_at:
-                    continue
-                planned_at_dt = parse_planned_at_datetime(planned_at)
-                if planned_at_dt is None or planned_at_dt > now:
-                    continue
-                actual_headcount = int(entry.get("actual_headcount", 0) or 0)
-                if actual_headcount > 0:
-                    continue
-                items.append(
-                    {
-                        "vendor_name": vendor_name,
-                        "contact_name": str(contact.get("contact_name", "")),
-                        "contact_phone": str(contact.get("contact_phone", "")),
-                        "planned_at": planned_at,
-                        "planned_headcount": int(entry.get("planned_headcount", 0) or 0),
-                        "actual_headcount": actual_headcount,
-                        "pending_items": pending_by_vendor.get(vendor_name, []),
-                    }
-                )
+        items = serialize_crew_missing_public_items(
+            source_payload,
+            contacts_by_vendor=contacts_by_vendor,
+            pending_by_vendor=pending_by_vendor,
+        )
 
     return jsonify({"ok": True, "sheet_id": sheet_id, "business_date": business_date, "items": items})
 

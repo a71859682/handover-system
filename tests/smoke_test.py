@@ -13680,6 +13680,422 @@ def run_vendor_work_entry_submit_result_flow_completion_smoke(db_path: Path) -> 
         raise AssertionError("vendor submit result flow completion smoke update landing should explain selected-entry update status")
 
 
+def run_crew_missing_canonical_source_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import os
+import sqlite3
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("crew_missing_source_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+
+taipei = ZoneInfo("Asia/Taipei")
+if module.CREW_OPERATIONAL_TIMEZONE.key != "Asia/Taipei":
+    raise SystemExit("crew missing operational timezone must be Asia/Taipei")
+if module.resolve_crew_business_date(datetime(2026, 7, 11, 8, 29, tzinfo=taipei)) != "2026-07-10":
+    raise SystemExit("crew business date should use previous date before 08:30 Asia/Taipei")
+if module.resolve_crew_business_date(datetime(2026, 7, 11, 8, 30, tzinfo=taipei)) != "2026-07-11":
+    raise SystemExit("crew business date should switch at 08:30 Asia/Taipei")
+if module.resolve_crew_business_date(datetime(2026, 7, 11, 0, 30, tzinfo=timezone.utc)) != "2026-07-11":
+    raise SystemExit("aware as_of should be converted to Asia/Taipei before business-date resolution")
+
+business_date = "2026-07-10"
+trusted_as_of = datetime(2026, 7, 11, 1, 0, tzinfo=taipei)
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    sheet_id = int(conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()["id"])
+    unit_id = int(conn.execute("SELECT id FROM units ORDER BY id LIMIT 1").fetchone()["id"])
+    next_col_index = int(conn.execute("SELECT COALESCE(MAX(col_index), 0) FROM tasks").fetchone()[0])
+    for offset in (1, 2):
+        task_id = int(
+            conn.execute(
+                "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, '', '', ?) RETURNING id",
+                (sheet_id, next_col_index + offset, f"Focused Task {offset}"),
+            ).fetchone()["id"]
+        )
+        conn.execute(
+            "INSERT INTO progress (unit_id, task_id, value, updated_by) VALUES (?, ?, ?, 1)",
+            (unit_id, task_id, module.WORKING_VALUE),
+        )
+    task_rows = conn.execute(
+        "SELECT id FROM tasks WHERE sheet_id = ? ORDER BY col_index, id LIMIT 3",
+        (sheet_id,),
+    ).fetchall()
+    if len(task_rows) < 3:
+        raise SystemExit("crew missing focused smoke requires three seeded tasks")
+    active_a_task, active_b_task, inactive_task = [int(row["id"]) for row in task_rows]
+    conn.execute("UPDATE tasks SET vendor = ?, name = ? WHERE id = ?", ("VendorA", "Task A", active_a_task))
+    conn.execute("UPDATE tasks SET vendor = ?, name = ? WHERE id = ?", ("VendorB", "Task B", active_b_task))
+    conn.execute("UPDATE tasks SET vendor = ?, name = ? WHERE id = ?", ("VendorZ", "Task Z", inactive_task))
+    conn.execute("UPDATE progress SET value = ? WHERE task_id IN (?, ?)", (module.WORKING_VALUE, active_a_task, active_b_task))
+    conn.execute("UPDATE progress SET value = ? WHERE task_id = ?", (module.DONE_VALUE, inactive_task))
+    conn.execute("DELETE FROM vendor_work_entries WHERE sheet_id = ?", (sheet_id,))
+    conn.execute("DELETE FROM vendor_contacts WHERE sheet_id = ?", (sheet_id,))
+    conn.execute(
+        "INSERT INTO vendor_contacts (sheet_id, vendor_name, contact_name, contact_phone, created_at, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        (sheet_id, "VendorA", "Alice", "0900000001"),
+    )
+
+    def insert_entry(vendor_name, planned_at, planned_headcount, actual_headcount, work_content, entry_order):
+        return int(
+            conn.execute(
+                '''
+                INSERT INTO vendor_work_entries (
+                    sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                    actual_headcount, work_content, work_headcount, entry_order, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                RETURNING id
+                ''',
+                (
+                    sheet_id,
+                    vendor_name,
+                    business_date,
+                    planned_at,
+                    planned_headcount,
+                    actual_headcount,
+                    work_content,
+                    entry_order,
+                ),
+            ).fetchone()["id"]
+        )
+
+    due_later_order_id = insert_entry("VendorA", "2026-07-10 23:00", 3, 0, "Due A2", 2)
+    due_equal_id = insert_entry("VendorA", "2026-07-11 01:00", 2, 0, "Due A1", 1)
+    insert_entry("VendorA", "2026-07-11 01:01", 1, 0, "Future", 3)
+    insert_entry("VendorA", "2026-07-10 22:00", 1, 2, "Entered", 4)
+    insert_entry("VendorA", "", 1, 0, "Empty planned time", 5)
+    insert_entry("VendorA", "invalid", 1, 0, "Invalid planned time", 6)
+    cross_midnight_id = insert_entry("VendorB", "2026-07-11 00:30", 4, 0, "Cross midnight", 0)
+    insert_entry("VendorZ", "2026-07-10 20:00", 5, 0, "Inactive vendor", 0)
+    conn.commit()
+
+    def snapshot():
+        return "\\n".join(conn.iterdump())
+
+    def read_only_call(label, callback):
+        before_call = snapshot()
+        try:
+            return callback()
+        finally:
+            if snapshot() != before_call:
+                raise SystemExit(f"{label} must not mutate the database")
+
+    payload = read_only_call(
+        "canonical crew missing source success",
+        lambda: module.build_crew_missing_source_payload(
+            conn,
+            sheet_id=sheet_id,
+            business_date=business_date,
+            as_of=trusted_as_of,
+        ),
+    )
+    expected_ids = [due_equal_id, due_later_order_id, cross_midnight_id]
+    if [item["id"] for item in payload["missing_entries"]] != expected_ids:
+        raise SystemExit("canonical crew missing source should preserve vendor_name/entry_order/id ordering")
+    if payload["summary"] != {"missing_count": 3}:
+        raise SystemExit("canonical crew missing summary must match missing entry length")
+    expected_internal_keys = {
+        "id", "sheet_id", "vendor_name", "business_date", "planned_at",
+        "planned_headcount", "actual_headcount", "work_content", "entry_order",
+    }
+    if any(set(item) != expected_internal_keys for item in payload["missing_entries"]):
+        raise SystemExit("canonical crew missing items should keep the exact internal source shape")
+    if payload["missing_entries"][0]["planned_at"] != "2026-07-11 01:00":
+        raise SystemExit("planned_at equal to trusted_as_of should be due")
+    if any(item["work_content"] in {"Future", "Entered", "Empty planned time", "Invalid planned time", "Inactive vendor"} for item in payload["missing_entries"]):
+        raise SystemExit("future, entered, invalid-time, and inactive-vendor entries must be excluded")
+    utc_payload = read_only_call(
+        "canonical crew missing UTC-aware source success",
+        lambda: module.build_crew_missing_source_payload(
+            conn,
+            sheet_id=sheet_id,
+            business_date=business_date,
+            as_of=datetime(2026, 7, 10, 17, 0, tzinfo=timezone.utc),
+        ),
+    )
+    if utc_payload["missing_entries"] != payload["missing_entries"]:
+        raise SystemExit("server timezone must not affect Asia/Taipei due evaluation")
+
+    trace_statements = []
+    if conn.in_transaction:
+        raise SystemExit("canonical source autocommit test must start outside a transaction")
+    conn.set_trace_callback(trace_statements.append)
+    try:
+        traced_payload = module.build_crew_missing_source_payload(
+            conn,
+            sheet_id=sheet_id,
+            business_date=business_date,
+            as_of=trusted_as_of,
+        )
+    finally:
+        conn.set_trace_callback(None)
+    if conn.in_transaction:
+        raise SystemExit("canonical source must clean up its own read transaction after success")
+    normalized_trace = [statement.strip().upper() for statement in trace_statements]
+    if normalized_trace.count("BEGIN") != 1 or normalized_trace.count("ROLLBACK") != 1:
+        raise SystemExit("canonical source must wrap autocommit reads in one BEGIN/ROLLBACK interval")
+    begin_index = normalized_trace.index("BEGIN")
+    rollback_index = normalized_trace.index("ROLLBACK")
+    select_indexes = [index for index, statement in enumerate(normalized_trace) if statement.startswith("SELECT")]
+    if not select_indexes or not all(begin_index < index < rollback_index for index in select_indexes):
+        raise SystemExit("all canonical source SELECT statements must execute inside one read snapshot")
+    if traced_payload != payload:
+        raise SystemExit("explicit read snapshot must not change canonical source results")
+    conn.execute("SELECT 1").fetchone()
+
+    caller_transaction_before = snapshot()
+    conn.execute("BEGIN")
+    caller_trace = []
+    conn.set_trace_callback(caller_trace.append)
+    try:
+        caller_owned_payload = module.build_crew_missing_source_payload(
+            conn,
+            sheet_id=sheet_id,
+            business_date=business_date,
+            as_of=trusted_as_of,
+        )
+        if not conn.in_transaction:
+            raise SystemExit("canonical source must not end a caller-owned transaction")
+    finally:
+        conn.set_trace_callback(None)
+        if conn.in_transaction:
+            conn.rollback()
+    if snapshot() != caller_transaction_before:
+        raise SystemExit("caller-owned read transaction test must not mutate the database")
+    caller_control_statements = {
+        statement.strip().upper()
+        for statement in caller_trace
+        if statement.strip().upper() in {"BEGIN", "COMMIT", "ROLLBACK"}
+    }
+    if caller_control_statements:
+        raise SystemExit("canonical source must not control a caller-owned transaction")
+    if caller_owned_payload != payload:
+        raise SystemExit("caller-owned snapshot must preserve canonical source results")
+
+    original_fetch = module.fetch_vendor_work_entries
+    valid_source_item = dict(payload["missing_entries"][0])
+
+    def expect_source_error(mutator):
+        source_item = dict(valid_source_item)
+        mutator(source_item)
+        before_error = snapshot()
+        try:
+            module.fetch_vendor_work_entries = lambda *_args, **_kwargs: {"VendorA": [source_item]}
+            try:
+                module.build_crew_missing_source_payload(
+                    conn,
+                    sheet_id=sheet_id,
+                    business_date=business_date,
+                    as_of=trusted_as_of,
+                )
+            except module.CrewMissingSourceError as exc:
+                if exc.code != "crew_missing_source_shape_mismatch":
+                    raise SystemExit("canonical source error code should remain deterministic")
+            else:
+                raise SystemExit("invalid canonical crew missing source should fail closed")
+        finally:
+            module.fetch_vendor_work_entries = original_fetch
+            if conn.in_transaction:
+                raise SystemExit("canonical source must clean up its own read transaction after error")
+            if snapshot() != before_error:
+                raise SystemExit("canonical crew missing source error path must not mutate the database")
+
+    for bad_actual in (-1, True, "0"):
+        expect_source_error(lambda item, value=bad_actual: item.__setitem__("actual_headcount", value))
+    for bad_planned in (-1, True, "1"):
+        expect_source_error(lambda item, value=bad_planned: item.__setitem__("planned_headcount", value))
+    for field, value in (("id", 0), ("id", True), ("sheet_id", sheet_id + 1), ("business_date", "2026-07-09")):
+        expect_source_error(lambda item, key=field, bad=value: item.__setitem__(key, bad))
+    duplicate_before = snapshot()
+    try:
+        module.fetch_vendor_work_entries = lambda *_args, **_kwargs: {
+            "VendorA": [valid_source_item, dict(valid_source_item)]
+        }
+        try:
+            module.build_crew_missing_source_payload(
+                conn,
+                sheet_id=sheet_id,
+                business_date=business_date,
+                as_of=trusted_as_of,
+            )
+        except module.CrewMissingSourceError:
+            pass
+        else:
+            raise SystemExit("duplicate canonical crew missing entry IDs should fail closed")
+    finally:
+        module.fetch_vendor_work_entries = original_fetch
+        if conn.in_transaction:
+            raise SystemExit("duplicate ID error must clean up the helper-owned read transaction")
+        if snapshot() != duplicate_before:
+            raise SystemExit("duplicate ID error must not mutate the database")
+
+    serializer_before = snapshot()
+    try:
+        module.serialize_crew_missing_public_items(
+            {"summary": {"missing_count": 2}, "missing_entries": [valid_source_item]},
+            contacts_by_vendor={},
+            pending_by_vendor={},
+        )
+    except module.CrewMissingSourceError:
+        pass
+    else:
+        raise SystemExit("crew missing public serializer should reject count/list mismatch")
+    finally:
+        if snapshot() != serializer_before:
+            raise SystemExit("serializer count/list mismatch must not mutate the database")
+
+client = module.app.test_client()
+with client.session_transaction() as session:
+    session["user_id"] = 1
+    session["username"] = "admin"
+    session["display_name"] = "Admin"
+    session["role"] = "admin"
+
+trusted_as_of_calls = 0
+source_calls = 0
+original_clock = module.get_crew_trusted_as_of
+original_builder = module.build_crew_missing_source_payload
+
+def fixed_clock():
+    global trusted_as_of_calls
+    trusted_as_of_calls += 1
+    return trusted_as_of
+
+def counted_builder(*args, **kwargs):
+    global source_calls
+    source_calls += 1
+    return original_builder(*args, **kwargs)
+
+try:
+    module.get_crew_trusted_as_of = fixed_clock
+    module.build_crew_missing_source_payload = counted_builder
+    response = read_only_call(
+        "crew missing real route success",
+        lambda: client.get(f"/api/crew-missing?sheet_id={sheet_id}&business_date={business_date}"),
+    )
+finally:
+    module.get_crew_trusted_as_of = original_clock
+    module.build_crew_missing_source_payload = original_builder
+if response.status_code != 200 or trusted_as_of_calls != 1 or source_calls != 1:
+    raise SystemExit("crew missing route must capture one trusted_as_of and call canonical source once")
+public_payload = response.get_json()
+expected_public_payload = {
+    "ok": True,
+    "sheet_id": sheet_id,
+    "business_date": business_date,
+    "items": [
+        {
+            "vendor_name": "VendorA",
+            "contact_name": "Alice",
+            "contact_phone": "0900000001",
+            "planned_at": "2026-07-11 01:00",
+            "planned_headcount": 2,
+            "actual_headcount": 0,
+            "pending_items": ["Task A"],
+        },
+        {
+            "vendor_name": "VendorA",
+            "contact_name": "Alice",
+            "contact_phone": "0900000001",
+            "planned_at": "2026-07-10 23:00",
+            "planned_headcount": 3,
+            "actual_headcount": 0,
+            "pending_items": ["Task A"],
+        },
+        {
+            "vendor_name": "VendorB",
+            "contact_name": "",
+            "contact_phone": "",
+            "planned_at": "2026-07-11 00:30",
+            "planned_headcount": 4,
+            "actual_headcount": 0,
+            "pending_items": ["Task B"],
+        },
+    ],
+}
+if public_payload != expected_public_payload:
+    raise SystemExit(f"crew missing public representative payload changed: {public_payload!r}")
+public_keys = {
+    "vendor_name", "contact_name", "contact_phone", "planned_at",
+    "planned_headcount", "actual_headcount", "pending_items",
+}
+if any(set(item) != public_keys for item in public_payload["items"]):
+    raise SystemExit("crew missing public item response shape must remain frozen")
+for forbidden_key in ("id", "sheet_id", "business_date", "work_content", "entry_order"):
+    if any(forbidden_key in item for item in public_payload["items"]):
+        raise SystemExit(f"crew missing public response leaked internal field: {forbidden_key}")
+unauthenticated_response = read_only_call(
+    "crew missing unauthenticated route",
+    lambda: module.app.test_client().get(
+        f"/api/crew-missing?sheet_id={sheet_id}&business_date={business_date}"
+    ),
+)
+if unauthenticated_response.status_code != 302:
+    raise SystemExit("crew missing unauthenticated redirect behavior must remain unchanged")
+
+source_error_calls = 0
+original_testing = module.app.testing
+original_propagate = module.app.config.get("PROPAGATE_EXCEPTIONS")
+
+def source_error_builder(*_args, **_kwargs):
+    global source_error_calls
+    source_error_calls += 1
+    raise module.CrewMissingSourceError("crew_missing_source_shape_mismatch")
+
+try:
+    module.build_crew_missing_source_payload = source_error_builder
+    module.app.testing = False
+    module.app.config["PROPAGATE_EXCEPTIONS"] = False
+    error_response = read_only_call(
+        "crew missing route source error",
+        lambda: client.get(f"/api/crew-missing?sheet_id={sheet_id}&business_date={business_date}"),
+    )
+finally:
+    module.build_crew_missing_source_payload = original_builder
+    module.app.testing = original_testing
+    module.app.config["PROPAGATE_EXCEPTIONS"] = original_propagate
+if source_error_calls != 1 or error_response.status_code != 500:
+    raise SystemExit("crew missing source error must fail closed once with HTTP 500")
+error_body = error_response.get_data(as_text=True)
+if "Internal Server Error" not in error_body:
+    raise SystemExit("crew missing source error should use Flask's generic 500 response")
+for leaked_fragment in (
+    "crew_missing_source_shape_mismatch",
+    "VendorA",
+    "VendorB",
+    "Traceback",
+    str(Path(root_dir)),
+    "missing_entries",
+):
+    if leaked_fragment in error_body:
+        raise SystemExit(f"crew missing generic 500 response leaked internal detail: {leaked_fragment}")
+
+print("canonical crew missing source smoke PASS")
+"""
+    result = subprocess.run(
+        [sys.executable, "-", str(db_path), str(ROOT_DIR)],
+        cwd=ROOT_DIR,
+        input=script,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"canonical crew missing source smoke failed:\n{result.stdout}{result.stderr}")
+    if "canonical crew missing source smoke PASS" not in result.stdout:
+        raise AssertionError("canonical crew missing source smoke did not report PASS.")
+
+
 def run_ai_read_formal_schedule_count_orchestration_smoke(db_path: Path) -> None:
     script = """
 import importlib.util
@@ -14776,6 +15192,9 @@ def main() -> int:
             raise AssertionError(f"Unexpected sample counts: {counts}")
 
         run_ai_read_supported_intent_registry_smoke(db_path)
+        crew_missing_source_db = Path(tmpdir) / "crew-missing-source.db"
+        create_sample_sqlite(crew_missing_source_db)
+        run_crew_missing_canonical_source_smoke(crew_missing_source_db)
         ai_read_orchestration_db = Path(tmpdir) / "ai-read-formal-schedule-count.db"
         create_sample_sqlite(ai_read_orchestration_db)
         run_ai_read_formal_schedule_count_orchestration_smoke(ai_read_orchestration_db)
