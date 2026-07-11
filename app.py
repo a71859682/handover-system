@@ -1309,7 +1309,7 @@ def _resolve_read_scope(conn: sqlite3.Connection) -> tuple[object | None, int | 
     if user is None:
         return None, None, True
     if is_global_admin(user):
-        return user, None, True
+        return user, resolve_admin_current_site_id(conn), False
     current_site_id = _resolve_non_admin_read_site_id(conn, user)
     return user, current_site_id, False
 
@@ -1618,9 +1618,7 @@ def authorize_sheet_read(conn: sqlite3.Connection, sheet_id: int) -> None:
     sheet_row = _get_sheet_row(conn, int(sheet_id))
     if sheet_row is None:
         raise LookupError("sheet_not_found")
-    _user, current_site_id, is_admin = _resolve_read_scope(conn)
-    if is_admin:
-        return
+    _user, current_site_id, _is_admin = _resolve_read_scope(conn)
     if int(sheet_row["site_id"] or 0) != int(current_site_id):
         raise LookupError("sheet_not_in_current_site")
 
@@ -4852,6 +4850,7 @@ def _write_current_site_session(*, site_id: int, site_name: str) -> None:
     session["current_site_id"] = int(site_id)
     session["current_site_name"] = str(site_name)
     session["site_selection_required"] = False
+    session.pop("sheet_id", None)
 
 
 def get_default_site_id(conn: sqlite3.Connection | None = None) -> int | None:
@@ -5659,9 +5658,7 @@ def bootstrap() -> None:
 
 
 def available_sheets(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    _user, current_site_id, is_admin = _resolve_read_scope(conn)
-    if is_admin:
-        return conn.execute("SELECT * FROM sheets ORDER BY sort_order, id").fetchall()
+    _user, current_site_id, _is_admin = _resolve_read_scope(conn)
     return conn.execute(
         "SELECT * FROM sheets WHERE site_id = ? ORDER BY sort_order, id",
         (current_site_id,),
@@ -5669,21 +5666,15 @@ def available_sheets(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def resolve_sheet_id(conn: sqlite3.Connection, sheet_id: int | None = None) -> int:
-    _user, current_site_id, is_admin = _resolve_read_scope(conn)
-    if is_admin:
-        if sheet_id:
-            row = conn.execute("SELECT id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
-            if row:
-                return row["id"]
-        row = conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()
-        if row:
-            return row["id"]
-        default_site_id = ensure_site_foundation_schema(conn)
-        cur = conn.execute(
-            "INSERT INTO sheets (name, sort_order, site_id) VALUES (?, ?, ?)",
-            (get_setting(conn, "tab_title"), 1, default_site_id),
-        )
-        return cur.lastrowid
+    _user, current_site_id, _is_admin = _resolve_read_scope(conn)
+
+    if _is_admin:
+        if sheet_id is None:
+            raise LookupError("site_context_invalid")
+        row = conn.execute("SELECT id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
+        if row is None:
+            raise LookupError("sheet_not_found")
+        return int(row["id"])
 
     if sheet_id is not None:
         row = conn.execute("SELECT id, site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
@@ -7409,7 +7400,17 @@ def users():
 @admin_required
 def table_admin():
     with db() as conn:
-        sheet_id = resolve_sheet_id(conn, request.values.get("sheet_id", type=int) or session.get("sheet_id"))
+        try:
+            sheet_id = resolve_sheet_id(
+                conn,
+                request.values.get("sheet_id", type=int) or session.get("sheet_id"),
+            )
+        except LookupError as exc:
+            if str(exc) == "sheet_not_in_current_site":
+                safe_sheet_id = resolve_sheet_id(conn)
+                flash("該表單不屬於目前工地。", "error")
+                return redirect(url_for("table_admin", sheet_id=safe_sheet_id))
+            return _handle_sheet_read_lookup_error(exc)
         session["sheet_id"] = sheet_id
         if request.method == "POST":
             actions = request.form.getlist("action")
