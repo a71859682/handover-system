@@ -13702,10 +13702,12 @@ module.app.testing = True
 taipei = ZoneInfo("Asia/Taipei")
 if module.CREW_OPERATIONAL_TIMEZONE.key != "Asia/Taipei":
     raise SystemExit("crew missing operational timezone must be Asia/Taipei")
-if module.resolve_crew_business_date(datetime(2026, 7, 11, 8, 29, tzinfo=taipei)) != "2026-07-10":
+if module.resolve_crew_business_date(datetime(2026, 7, 11, 8, 29, 59, tzinfo=taipei)) != "2026-07-10":
     raise SystemExit("crew business date should use previous date before 08:30 Asia/Taipei")
 if module.resolve_crew_business_date(datetime(2026, 7, 11, 8, 30, tzinfo=taipei)) != "2026-07-11":
     raise SystemExit("crew business date should switch at 08:30 Asia/Taipei")
+if module.resolve_crew_business_date(datetime(2026, 7, 11, 8, 30, 1, tzinfo=taipei)) != "2026-07-11":
+    raise SystemExit("crew business date should remain on the current date after 08:30 Asia/Taipei")
 if module.resolve_crew_business_date(datetime(2026, 7, 11, 0, 30, tzinfo=timezone.utc)) != "2026-07-11":
     raise SystemExit("aware as_of should be converted to Asia/Taipei before business-date resolution")
 
@@ -13714,6 +13716,7 @@ trusted_as_of = datetime(2026, 7, 11, 1, 0, tzinfo=taipei)
 with module.db() as conn:
     conn.row_factory = sqlite3.Row
     sheet_id = int(conn.execute("SELECT id FROM sheets ORDER BY sort_order, id LIMIT 1").fetchone()["id"])
+    site_id = int(conn.execute("SELECT site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()["site_id"])
     unit_id = int(conn.execute("SELECT id FROM units ORDER BY id LIMIT 1").fetchone()["id"])
     next_col_index = int(conn.execute("SELECT COALESCE(MAX(col_index), 0) FROM tasks").fetchone()[0])
     for offset in (1, 2):
@@ -13825,6 +13828,198 @@ with module.db() as conn:
     )
     if utc_payload["missing_entries"] != payload["missing_entries"]:
         raise SystemExit("server timezone must not affect Asia/Taipei due evaluation")
+
+    due_intent = module.get_supported_ai_read_intent("today_due_crew_entries_not_entered")
+    due_scope = {"current_site_id": site_id, "sheet_id": sheet_id}
+
+    def build_due_projection(source_payload, *, intent=None):
+        return module._build_due_crew_missing_ai_read_result(
+            source_payload,
+            intent=due_intent if intent is None else intent,
+            scope=due_scope,
+            actor_role="member",
+            actor_scope="site_member",
+            business_date=business_date,
+            as_of=trusted_as_of,
+        )
+
+    projection_trace = []
+    original_projection_clock = module.get_crew_trusted_as_of
+    projection_before = snapshot()
+    try:
+        conn.set_trace_callback(projection_trace.append)
+        module.get_crew_trusted_as_of = lambda: (_ for _ in ()).throw(
+            AssertionError("due projection must not read the clock")
+        )
+        due_result = build_due_projection(payload)
+    finally:
+        module.get_crew_trusted_as_of = original_projection_clock
+        conn.set_trace_callback(None)
+    if projection_trace:
+        raise SystemExit("due crew missing projection must not execute SQL or control transactions")
+    if snapshot() != projection_before:
+        raise SystemExit("due crew missing projection must not mutate the database")
+    caller_projection_before = snapshot()
+    conn.execute("BEGIN")
+    caller_projection_trace = []
+    conn.set_trace_callback(caller_projection_trace.append)
+    try:
+        caller_projection_result = build_due_projection(payload)
+        if not conn.in_transaction:
+            raise SystemExit("due crew missing projection must preserve a caller-owned transaction")
+    finally:
+        conn.set_trace_callback(None)
+        if conn.in_transaction:
+            conn.rollback()
+    if caller_projection_trace:
+        raise SystemExit("due crew missing projection must not execute SQL in a caller-owned transaction")
+    if caller_projection_result != due_result or snapshot() != caller_projection_before:
+        raise SystemExit("caller-owned due projection must preserve result and database state")
+    expected_due_top_level = {
+        "mode", "intent_key", "scope", "evidence", "total_count", "returned_count", "truncated", "items",
+    }
+    expected_due_item_keys = {
+        "id", "vendor_name", "business_date", "planned_at",
+        "planned_headcount", "actual_headcount", "work_content",
+    }
+    if set(due_result) != expected_due_top_level:
+        raise SystemExit("due crew missing projection must keep the exact bounded top-level contract")
+    if any(set(item) != expected_due_item_keys for item in due_result["items"]):
+        raise SystemExit("due crew missing projection must keep the exact seven-field item contract")
+    if [item["id"] for item in due_result["items"]] != expected_ids:
+        raise SystemExit("due crew missing projection must preserve canonical ordering")
+    if due_result["items"][0] != {
+        "id": due_equal_id,
+        "vendor_name": "VendorA",
+        "business_date": business_date,
+        "planned_at": "2026-07-11 01:00",
+        "planned_headcount": 2,
+        "actual_headcount": 0,
+        "work_content": "Due A1",
+    }:
+        raise SystemExit("due crew missing projection must preserve raw canonical values")
+    if due_result["scope"] != {
+        "current_site_id": site_id,
+        "sheet_id": sheet_id,
+        "business_date": business_date,
+    }:
+        raise SystemExit("due crew missing projection scope changed")
+    due_evidence = due_result["evidence"]
+    if not set(due_intent["evidence_fields"]).issubset(due_evidence):
+        raise SystemExit("due crew missing projection evidence must cover frozen registry metadata")
+    if (
+        due_evidence["source_family"] != "crew_missing"
+        or due_evidence["as_of"] != payload["as_of"]
+        or due_evidence["item_count"] != 3
+        or due_evidence["empty_state_reason"] is not None
+    ):
+        raise SystemExit("due crew missing projection evidence must remain grounded in the canonical source")
+    for forbidden_key in (
+        "sheet_id", "entry_order", "contact_name", "contact_phone", "pending_items",
+        "requirement_confirmed_by", "formal_approved_by", "created_at", "updated_at", "future_field",
+    ):
+        if any(forbidden_key in item for item in due_result["items"]):
+            raise SystemExit(f"due crew missing projection leaked source-only field: {forbidden_key}")
+
+    base_projection_item = dict(payload["missing_entries"][0])
+
+    def synthetic_due_payload(item_count):
+        items = []
+        for index in range(item_count):
+            item = dict(base_projection_item)
+            item.update(
+                {
+                    "id": 1000 + index,
+                    "entry_order": index,
+                    "work_content": f"Due {index}",
+                    "future_field": f"private-{index}",
+                }
+            )
+            items.append(item)
+        return {
+            "sheet_id": sheet_id,
+            "business_date": business_date,
+            "as_of": trusted_as_of.isoformat(),
+            "summary": {"missing_count": item_count},
+            "missing_entries": items,
+            "future_source_field": "private",
+        }
+
+    def expect_projection_error(callback):
+        before_error = snapshot()
+        try:
+            callback()
+        except module.AIReadOrchestrationError as exc:
+            if exc.code != "ai_read_source_shape_mismatch":
+                raise SystemExit("due projection error code must remain fail-closed and deterministic")
+        else:
+            raise SystemExit("invalid due projection source should fail closed")
+        finally:
+            if snapshot() != before_error:
+                raise SystemExit("due projection error path must not mutate the database")
+
+    for item_count, returned_count, truncated in (
+        (0, 0, False), (1, 1, False), (24, 24, False), (25, 25, False), (26, 25, True),
+    ):
+        bounded_result = read_only_call(
+            f"due crew bounded projection {item_count}",
+            lambda count=item_count: build_due_projection(synthetic_due_payload(count)),
+        )
+        if (
+            bounded_result["total_count"] != item_count
+            or bounded_result["returned_count"] != returned_count
+            or bounded_result["truncated"] is not truncated
+            or len(bounded_result["items"]) != returned_count
+        ):
+            raise SystemExit(f"due crew bounded projection failed at {item_count} items")
+        if item_count == 0:
+            if bounded_result["evidence"]["empty_state_reason"] != (
+                "no_due_crew_entries_not_entered_for_business_date"
+            ):
+                raise SystemExit("due crew empty projection reason changed")
+        elif bounded_result["evidence"]["empty_state_reason"] is not None:
+            raise SystemExit("non-empty due crew projection must not report an empty-state reason")
+        if any("future_field" in item for item in bounded_result["items"]):
+            raise SystemExit("due crew projection must not leak future source fields")
+
+    for bad_limit in (True, "25", 0, -1, 26):
+        drifted_intent = dict(due_intent)
+        drifted_intent["max_items"] = bad_limit
+        expect_projection_error(
+            lambda metadata=drifted_intent: build_due_projection(synthetic_due_payload(1), intent=metadata)
+        )
+    if module.get_supported_ai_read_intent("today_due_crew_entries_not_entered")["max_items"] != 25:
+        raise SystemExit("due crew registry max_items must remain frozen at 25")
+
+    invalid_twenty_sixth = synthetic_due_payload(26)
+    invalid_twenty_sixth["missing_entries"][25]["id"] = True
+    expect_projection_error(lambda: build_due_projection(invalid_twenty_sixth))
+
+    for field, bad_value in (
+        ("id", True), ("id", 0), ("id", -1), ("id", "1"),
+        ("sheet_id", sheet_id + 1), ("business_date", "2026-07-09"),
+        ("planned_headcount", -1), ("planned_headcount", True), ("planned_headcount", "1"),
+        ("actual_headcount", 1), ("actual_headcount", -1), ("actual_headcount", True),
+        ("actual_headcount", "0"),
+    ):
+        invalid_payload = synthetic_due_payload(1)
+        invalid_payload["missing_entries"][0][field] = bad_value
+        expect_projection_error(lambda source=invalid_payload: build_due_projection(source))
+    duplicate_payload = synthetic_due_payload(2)
+    duplicate_payload["missing_entries"][1]["id"] = duplicate_payload["missing_entries"][0]["id"]
+    expect_projection_error(lambda: build_due_projection(duplicate_payload))
+    cross_sheet_payload = synthetic_due_payload(1)
+    cross_sheet_payload["sheet_id"] = sheet_id + 1
+    expect_projection_error(lambda: build_due_projection(cross_sheet_payload))
+    wrong_date_payload = synthetic_due_payload(1)
+    wrong_date_payload["business_date"] = "2026-07-09"
+    expect_projection_error(lambda: build_due_projection(wrong_date_payload))
+    wrong_as_of_payload = synthetic_due_payload(1)
+    wrong_as_of_payload["as_of"] = datetime(2026, 7, 11, 1, 1, tzinfo=taipei).isoformat()
+    expect_projection_error(lambda: build_due_projection(wrong_as_of_payload))
+    count_mismatch_payload = synthetic_due_payload(1)
+    count_mismatch_payload["summary"]["missing_count"] = 2
+    expect_projection_error(lambda: build_due_projection(count_mismatch_payload))
 
     trace_statements = []
     if conn.in_transaction:
@@ -14821,6 +15016,13 @@ for known_key in (
 expect_lookup_error("site_context_invalid", lambda: call_helper({"user_id": member_id, "role": "member"}))
 expect_lookup_error(
     "site_context_invalid",
+    lambda: call_helper(
+        {"user_id": member_id, "role": "member"},
+        intent_key="today_due_crew_entries_not_entered",
+    ),
+)
+expect_lookup_error(
+    "site_context_invalid",
     lambda: call_helper({"user_id": member_id, "role": "member"}, intent_key="today_pending_requirements"),
 )
 expect_lookup_error(
@@ -14837,6 +15039,14 @@ expect_lookup_error(
 expect_lookup_error("sheet_not_found", lambda: call_helper(member_session, sheet_id=999999))
 expect_lookup_error(
     "sheet_not_found",
+    lambda: call_helper(
+        member_session,
+        sheet_id=999999,
+        intent_key="today_due_crew_entries_not_entered",
+    ),
+)
+expect_lookup_error(
+    "sheet_not_found",
     lambda: call_helper(member_session, sheet_id=999999, intent_key="today_pending_requirements"),
 )
 expect_lookup_error(
@@ -14844,6 +15054,14 @@ expect_lookup_error(
     lambda: call_helper(member_session, sheet_id=999999, intent_key="current_blocked_items"),
 )
 expect_lookup_error("sheet_not_in_current_site", lambda: call_helper(member_session, sheet_id=secondary_sheet_id))
+expect_lookup_error(
+    "sheet_not_in_current_site",
+    lambda: call_helper(
+        member_session,
+        sheet_id=secondary_sheet_id,
+        intent_key="today_due_crew_entries_not_entered",
+    ),
+)
 expect_lookup_error(
     "sheet_not_in_current_site",
     lambda: call_helper(member_session, sheet_id=secondary_sheet_id, intent_key="today_pending_requirements"),
@@ -14857,6 +15075,10 @@ with module.db() as conn:
     conn.execute("DELETE FROM user_site_permissions WHERE user_id = ? AND site_id = ?", (member_id, default_site_id))
     conn.commit()
 expect_lookup_error("site_permission_missing", lambda: call_helper(member_session))
+expect_lookup_error(
+    "site_permission_missing",
+    lambda: call_helper(member_session, intent_key="today_due_crew_entries_not_entered"),
+)
 expect_lookup_error(
     "site_permission_missing",
     lambda: call_helper(member_session, intent_key="today_pending_requirements"),

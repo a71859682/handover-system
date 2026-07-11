@@ -3119,6 +3119,167 @@ class AIReadOrchestrationError(RuntimeError):
         super().__init__(code)
 
 
+def _project_due_crew_missing_ai_read_item(
+    item: Mapping[str, object],
+    *,
+    sheet_id: int,
+    business_date: str,
+) -> dict[str, object]:
+    entry_id = item.get("id")
+    source_sheet_id = item.get("sheet_id")
+    entry_order = item.get("entry_order")
+    planned_headcount = item.get("planned_headcount")
+    actual_headcount = item.get("actual_headcount")
+    if isinstance(entry_id, bool) or not isinstance(entry_id, int) or entry_id <= 0:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if (
+        isinstance(source_sheet_id, bool)
+        or not isinstance(source_sheet_id, int)
+        or source_sheet_id != sheet_id
+    ):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if item.get("business_date") != business_date:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if isinstance(entry_order, bool) or not isinstance(entry_order, int) or entry_order < 0:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if (
+        isinstance(planned_headcount, bool)
+        or not isinstance(planned_headcount, int)
+        or planned_headcount < 0
+    ):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if isinstance(actual_headcount, bool) or not isinstance(actual_headcount, int) or actual_headcount != 0:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    for field in ("vendor_name", "planned_at", "work_content"):
+        if not isinstance(item.get(field), str):
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+
+    return {
+        "id": entry_id,
+        "vendor_name": item["vendor_name"],
+        "business_date": item["business_date"],
+        "planned_at": item["planned_at"],
+        "planned_headcount": planned_headcount,
+        "actual_headcount": actual_headcount,
+        "work_content": item["work_content"],
+    }
+
+
+def _build_due_crew_missing_ai_read_result(
+    payload: Mapping[str, object],
+    *,
+    intent: Mapping[str, object],
+    scope: Mapping[str, int],
+    actor_role: str,
+    actor_scope: str,
+    business_date: str,
+    as_of: datetime,
+) -> dict[str, object]:
+    if not isinstance(payload, Mapping):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    source_sheet_id = payload.get("sheet_id")
+    source_business_date = payload.get("business_date")
+    source_as_of = payload.get("as_of")
+    summary = payload.get("summary")
+    full_items = payload.get("missing_entries")
+    if (
+        isinstance(source_sheet_id, bool)
+        or not isinstance(source_sheet_id, int)
+        or source_sheet_id != scope.get("sheet_id")
+        or source_business_date != business_date
+        or not isinstance(source_as_of, str)
+        or not isinstance(summary, Mapping)
+        or not isinstance(full_items, list)
+    ):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    try:
+        normalized_as_of = normalize_crew_operational_as_of(as_of)
+    except CrewMissingSourceError:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch") from None
+    if source_as_of != normalized_as_of.isoformat():
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    summary_count = summary.get("missing_count")
+    if (
+        isinstance(summary_count, bool)
+        or not isinstance(summary_count, int)
+        or summary_count < 0
+        or summary_count != len(full_items)
+    ):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+
+    max_items = intent.get("max_items")
+    if (
+        intent.get("key") != "today_due_crew_entries_not_entered"
+        or intent.get("source_family") != "crew_missing"
+        or intent.get("result_kind") != "bounded_items"
+        or isinstance(max_items, bool)
+        or not isinstance(max_items, int)
+        or max_items <= 0
+        or max_items > 25
+    ):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    for field in ("authorization_policy", "business_date_policy"):
+        value = intent.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+
+    projected_items: list[dict[str, object]] = []
+    seen_entry_ids: set[int] = set()
+    for item in full_items:
+        if not isinstance(item, Mapping):
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+        projected_item = _project_due_crew_missing_ai_read_item(
+            item,
+            sheet_id=source_sheet_id,
+            business_date=business_date,
+        )
+        entry_id = int(projected_item["id"])
+        if entry_id in seen_entry_ids:
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+        seen_entry_ids.add(entry_id)
+        projected_items.append(projected_item)
+
+    returned_items = projected_items[:max_items]
+    total_count = len(projected_items)
+    returned_count = len(returned_items)
+    evidence = {
+        "actor_identity_type": "internal",
+        "actor_role": actor_role,
+        "actor_scope": actor_scope,
+        "current_site_id": int(scope["current_site_id"]),
+        "sheet_id": source_sheet_id,
+        "intent_key": intent["key"],
+        "source_family": intent["source_family"],
+        "business_date": business_date,
+        "authorization_policy": intent["authorization_policy"],
+        "as_of": source_as_of,
+        "item_count": total_count,
+        "empty_state_reason": (
+            "no_due_crew_entries_not_entered_for_business_date" if total_count == 0 else None
+        ),
+    }
+    required_evidence_fields = intent.get("evidence_fields")
+    if not isinstance(required_evidence_fields, (list, tuple)) or not set(required_evidence_fields).issubset(
+        evidence
+    ):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+
+    return {
+        "mode": "read_only",
+        "intent_key": intent["key"],
+        "scope": {
+            "current_site_id": int(scope["current_site_id"]),
+            "sheet_id": source_sheet_id,
+            "business_date": business_date,
+        },
+        "evidence": evidence,
+        "total_count": total_count,
+        "returned_count": returned_count,
+        "truncated": total_count > returned_count,
+        "items": returned_items,
+    }
+
+
 def _project_pending_requirement_ai_read_item(
     item: Mapping[str, object],
     *,
