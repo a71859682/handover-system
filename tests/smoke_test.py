@@ -999,6 +999,9 @@ with module.app.test_client() as client:
         session["username"] = "admin"
         session["display_name"] = "Admin"
         session["role"] = "admin"
+        session["current_site_id"] = sheet_site_id
+        session["current_site_name"] = module.DEFAULT_SITE_NAME
+        session["site_selection_required"] = False
 
     crew_forms_response = client.get(f"/api/crew-forms?sheet_id={sheet_id}")
     if crew_forms_response.status_code != 200:
@@ -1717,6 +1720,9 @@ with module.app.test_client() as client:
         session["username"] = "admin"
         session["display_name"] = "Admin"
         session["role"] = "admin"
+        session["current_site_id"] = sheet_site_id
+        session["current_site_name"] = module.DEFAULT_SITE_NAME
+        session["site_selection_required"] = False
 
     with client.session_transaction() as session:
         session.clear()
@@ -1791,6 +1797,9 @@ with module.app.test_client() as client:
         session["username"] = "admin"
         session["display_name"] = "Admin"
         session["role"] = "admin"
+        session["current_site_id"] = sheet_site_id
+        session["current_site_name"] = module.DEFAULT_SITE_NAME
+        session["site_selection_required"] = False
 
     missing_response = client.get(f"/api/crew-missing?sheet_id={sheet_id}&business_date={business_date}")
     if missing_response.status_code != 200:
@@ -6064,15 +6073,8 @@ if unexpected_cross is not None:
 
 set_admin_session()
 missing_site_page = client.get(f"/admin/table?sheet_id={sheet_a}")
-missing_site_html = missing_site_page.get_data(as_text=True)
-if missing_site_page.status_code != 200:
-    raise SystemExit("task admin page should still render without current site")
-if 'data-task-write-enabled="false"' not in missing_site_html:
-    raise SystemExit("task admin page should disable writes when current site is missing")
-if 'data-task-write-block-reason="missing_current_site"' not in missing_site_html:
-    raise SystemExit("task admin page should mark missing current-site block reason")
-if 'data-task-write-blocked="true"' not in missing_site_html:
-    raise SystemExit("task admin page should show blocked-state helper message")
+if missing_site_page.status_code != 302 or not missing_site_page.headers.get("Location", "").endswith("/site-selector"):
+    raise SystemExit("task admin page should fail closed to site selector when current site is missing")
 
 delete_task_id = int(created_task["id"])
 set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
@@ -6248,15 +6250,8 @@ if unexpected_floor is not None:
 
 set_admin_session()
 missing_site_page = client.get(f"/admin/table?sheet_id={sheet_a}")
-missing_site_html = missing_site_page.get_data(as_text=True)
-if missing_site_page.status_code != 200:
-    raise SystemExit("floor admin page should still render without current site")
-if 'data-floor-write-enabled="false"' not in missing_site_html:
-    raise SystemExit("floor admin page should disable writes when current site is missing")
-if 'data-floor-write-block-reason="missing_current_site"' not in missing_site_html:
-    raise SystemExit("floor admin page should mark missing current-site block reason")
-if 'data-floor-write-blocked="true"' not in missing_site_html:
-    raise SystemExit("floor admin page should show blocked-state helper message")
+if missing_site_page.status_code != 302 or not missing_site_page.headers.get("Location", "").endswith("/site-selector"):
+    raise SystemExit("floor admin page should fail closed to site selector when current site is missing")
 
 set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
 with module.db() as conn:
@@ -6496,15 +6491,8 @@ if unexpected_unit is not None:
 
 set_admin_session()
 missing_site_page = client.get(f"/admin/table?sheet_id={sheet_a}")
-missing_site_html = missing_site_page.get_data(as_text=True)
-if missing_site_page.status_code != 200:
-    raise SystemExit("unit admin page should still render without current site")
-if 'data-unit-write-enabled="false"' not in missing_site_html:
-    raise SystemExit("unit admin page should disable writes when current site is missing")
-if 'data-unit-write-block-reason="missing_current_site"' not in missing_site_html:
-    raise SystemExit("unit admin page should mark missing current-site block reason")
-if 'data-unit-write-blocked="true"' not in missing_site_html:
-    raise SystemExit("unit admin page should show blocked-state helper message")
+if missing_site_page.status_code != 302 or not missing_site_page.headers.get("Location", "").endswith("/site-selector"):
+    raise SystemExit("unit admin page should fail closed to site selector when current site is missing")
 
 delete_unit_id = int(added_unit["id"])
 set_admin_session(current_site_id=site_a, current_site_name=module.DEFAULT_SITE_NAME)
@@ -6699,15 +6687,8 @@ if unexpected_row is not None:
 
 set_admin_session()
 missing_site_page = client.get(f"/admin/table?sheet_id={sheet_a}")
-missing_site_html = missing_site_page.get_data(as_text=True)
-if missing_site_page.status_code != 200:
-    raise SystemExit("extra field admin page should still render without current site")
-if 'data-extra-field-write-enabled="false"' not in missing_site_html:
-    raise SystemExit("extra field admin page should disable writes when current site is missing")
-if 'data-extra-field-write-block-reason="missing_current_site"' not in missing_site_html:
-    raise SystemExit("extra field admin page should mark missing current-site block reason")
-if 'data-extra-field-write-blocked="true"' not in missing_site_html:
-    raise SystemExit("extra field admin page should show blocked-state helper message")
+if missing_site_page.status_code != 302 or not missing_site_page.headers.get("Location", "").endswith("/site-selector"):
+    raise SystemExit("extra field admin page should fail closed to site selector when current site is missing")
 with module.db() as conn:
     before_missing = conn.execute("SELECT COUNT(*) FROM extra_fields WHERE sheet_id = ?", (sheet_a,)).fetchone()[0]
 add_missing = client.post(
@@ -7387,8 +7368,10 @@ print("handover reset separation smoke PASS")
         cwd=ROOT_DIR,
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    if result.returncode != 0:
+        raise AssertionError(f"handover reset separation smoke failed:\n{result.stdout}{result.stderr}")
     if "handover reset separation smoke PASS" not in result.stdout:
         raise AssertionError("handover reset separation smoke subprocess did not report PASS.")
 
@@ -7422,6 +7405,9 @@ with module.app.test_client() as client:
         session["username"] = "admin"
         session["display_name"] = "Admin"
         session["role"] = "admin"
+        session["current_site_id"] = module.get_default_site_id()
+        session["current_site_name"] = module.DEFAULT_SITE_NAME
+        session["site_selection_required"] = False
 
     with module.db() as conn:
         conn.row_factory = sqlite3.Row
@@ -8805,6 +8791,211 @@ def run_site_read_isolation_smoke(db_path: Path) -> None:
     )
     if "PASS site read isolation check passed." not in result.stdout:
         raise AssertionError("check_site_read_isolation.py smoke subprocess did not report PASS.")
+
+
+def _run_internal_sheet_current_site_isolation_smoke(db_path: Path) -> None:
+    os.environ["APP_DB_PATH"] = str(db_path)
+    module_name = "internal_sheet_current_site_isolation_under_test"
+    spec = importlib.util.spec_from_file_location(module_name, str(ROOT_DIR / "app.py"))
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    module.app.testing = True
+
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        site_1 = int(conn.execute("SELECT id FROM sites ORDER BY id LIMIT 1").fetchone()["id"])
+        sheet_1 = int(conn.execute("SELECT id FROM sheets WHERE site_id = ? ORDER BY id LIMIT 1", (site_1,)).fetchone()["id"])
+        conn.execute("UPDATE sites SET site_name = 'ISO Site 1', is_active = 1 WHERE id = ?", (site_1,))
+        conn.execute("UPDATE sheets SET name = 'ISO S1 ONLY', sort_order = 1 WHERE id = ?", (sheet_1,))
+        site_2 = int(conn.execute("INSERT INTO sites (site_name, site_code, is_active) VALUES ('ISO Site 2', 'ISO2', 1) RETURNING id").fetchone()["id"])
+        site_3 = int(conn.execute("INSERT INTO sites (site_name, site_code, is_active) VALUES ('ISO Site 3', 'ISO3', 1) RETURNING id").fetchone()["id"])
+        sheet_ids = [sheet_1]
+        for name, order, site_id in (
+            ("ISO S2 FIRST", 2, site_2),
+            ("ISO S2 SECOND", 3, site_2),
+            ("ISO S3 FIRST", 4, site_3),
+            ("ISO S3 SECOND", 5, site_3),
+        ):
+            sheet_ids.append(
+                int(
+                    conn.execute(
+                        "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+                        (name, order, site_id),
+                    ).fetchone()["id"]
+                )
+            )
+        member_id = int(
+            conn.execute(
+                "INSERT INTO users (username, display_name, password_hash, role) VALUES ('iso_member', 'ISO Member', ?, 'member') RETURNING id",
+                (module.generate_password_hash("member-pass"),),
+            ).fetchone()["id"]
+        )
+        conn.executemany(
+            "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'member')",
+            ((member_id, site_2), (member_id, site_3)),
+        )
+        conn.commit()
+        baseline_counts = {
+            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("sites", "sheets", "tasks", "floors", "units", "progress")
+        }
+
+    client = module.app.test_client()
+
+    def set_session(*, user_id, username, role, current_site_id, sheet_id=None):
+        with client.session_transaction() as flask_session:
+            flask_session.clear()
+            flask_session["user_id"] = int(user_id)
+            flask_session["username"] = username
+            flask_session["display_name"] = username
+            flask_session["role"] = role
+            flask_session["current_site_id"] = int(current_site_id)
+            flask_session["current_site_name"] = f"ISO Site {current_site_id}"
+            flask_session["site_selection_required"] = False
+            if sheet_id is not None:
+                flask_session["sheet_id"] = int(sheet_id)
+
+    def assert_sheet_page(site_id, expected_ids, forbidden_ids, *, user_id=1, username="admin", role="admin"):
+        set_session(user_id=user_id, username=username, role=role, current_site_id=site_id)
+        response = client.get("/sheet", follow_redirects=False)
+        if response.status_code != 200:
+            raise AssertionError(f"current-site /sheet should return 200 for site {site_id}")
+        html = response.get_data(as_text=True)
+        for sheet_id in expected_ids:
+            if f"/sheet/{sheet_id}" not in html:
+                raise AssertionError(f"site {site_id} tabs missing current-site sheet {sheet_id}")
+        for sheet_id in forbidden_ids:
+            if f"/sheet/{sheet_id}" in html:
+                raise AssertionError(f"site {site_id} tabs leaked cross-site sheet {sheet_id}")
+        with client.session_transaction() as flask_session:
+            if int(flask_session["sheet_id"]) != int(expected_ids[0]):
+                raise AssertionError(f"site {site_id} default sheet should be its first current-site sheet")
+
+    site_matrix = {
+        site_1: ([sheet_ids[0]], sheet_ids[1:]),
+        site_2: (sheet_ids[1:3], [sheet_ids[0], *sheet_ids[3:]]),
+        site_3: (sheet_ids[3:5], sheet_ids[:3]),
+    }
+    for site_id, (expected, forbidden) in site_matrix.items():
+        assert_sheet_page(site_id, expected, forbidden)
+
+    set_session(user_id=1, username="admin", role="admin", current_site_id=site_1)
+    cross_page = client.get(f"/sheet/{sheet_ids[1]}", follow_redirects=False)
+    if cross_page.status_code != 302 or cross_page.headers.get("Location") != "/sheet":
+        raise AssertionError("admin cross-site /sheet/<id> must fail closed with the existing safe redirect")
+    if "ISO S2 FIRST" in cross_page.get_data(as_text=True):
+        raise AssertionError("admin cross-site sheet redirect must not contain target metadata")
+
+    cross_grid = client.get(f"/api/grid?sheet_id={sheet_ids[1]}")
+    if cross_grid.status_code != 403 or cross_grid.get_json()["error"]["code"] != "sheet_not_in_current_site":
+        raise AssertionError("admin cross-site /api/grid must return structured sheet_not_in_current_site 403")
+
+    cross_admin = client.get(f"/admin/table?sheet_id={sheet_ids[1]}", follow_redirects=False)
+    if cross_admin.status_code != 302 or "ISO S2 FIRST" in cross_admin.get_data(as_text=True):
+        raise AssertionError("admin table cross-site read must redirect without metadata")
+
+    for route in ("crew-forms", "crew-followups", "crew-daily-summary", "crew-missing"):
+        response = client.get(f"/api/{route}?sheet_id={sheet_ids[1]}")
+        payload = response.get_json(silent=True) or {}
+        if response.status_code != 403 or payload.get("error", {}).get("code") != "sheet_not_in_current_site":
+            raise AssertionError(f"admin cross-site /api/{route} must return structured 403")
+
+    for site_id, expected, forbidden in (
+        (site_2, sheet_ids[1:3], [sheet_ids[0], *sheet_ids[3:]]),
+        (site_3, sheet_ids[3:5], sheet_ids[:3]),
+    ):
+        assert_sheet_page(
+            site_id,
+            expected,
+            forbidden,
+            user_id=member_id,
+            username="iso_member",
+            role="member",
+        )
+
+    for user_id, username, role in ((1, "admin", "admin"), (member_id, "iso_member", "member")):
+        set_session(
+            user_id=user_id,
+            username=username,
+            role=role,
+            current_site_id=site_2,
+            sheet_id=sheet_ids[1],
+        )
+        switched = client.post("/site-selector", data={"site_id": str(site_3)}, follow_redirects=False)
+        if switched.status_code != 302 or switched.headers.get("Location") != "/sheet":
+            raise AssertionError("successful site switch should retain the existing /sheet redirect")
+        with client.session_transaction() as flask_session:
+            if "sheet_id" in flask_session:
+                raise AssertionError("successful site switch must clear stale session sheet_id")
+        new_sheet = client.get("/sheet")
+        if new_sheet.status_code != 200:
+            raise AssertionError("site switch should open the new current-site default sheet")
+        new_grid = client.get("/api/grid")
+        new_grid_payload = new_grid.get_json()
+        if new_grid.status_code != 200 or int(new_grid_payload["current_sheet"]["id"]) != sheet_ids[3]:
+            raise AssertionError("site switch grid must resolve the new site's first sheet")
+        if [int(row["id"]) for row in new_grid_payload["sheets"]] != sheet_ids[3:5]:
+            raise AssertionError("site switch grid tabs must contain only the new site's sheets")
+
+    set_session(
+        user_id=member_id,
+        username="iso_member",
+        role="member",
+        current_site_id=site_2,
+        sheet_id=sheet_ids[1],
+    )
+    forbidden_switch = client.post("/site-selector", data={"site_id": str(site_1)}, follow_redirects=False)
+    if forbidden_switch.status_code != 403:
+        raise AssertionError("forbidden site switch should remain rejected")
+    with client.session_transaction() as flask_session:
+        if int(flask_session["current_site_id"]) != site_2 or int(flask_session["sheet_id"]) != sheet_ids[1]:
+            raise AssertionError("forbidden site switch must preserve current_site_id and sheet_id")
+
+    with module.db() as conn:
+        final_counts = {
+            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in baseline_counts
+        }
+    if final_counts != baseline_counts:
+        raise AssertionError("read-isolation acceptance matrix must leave temporary DB unchanged")
+
+    from database import db as sqlalchemy_db
+
+    with module.app.app_context():
+        sqlalchemy_db.session.remove()
+        sqlalchemy_db.engine.dispose()
+
+
+def run_internal_sheet_current_site_isolation_smoke(db_path: Path) -> None:
+    script = """
+import importlib.util
+import sys
+from pathlib import Path
+
+db_path, root_dir = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location(
+    "sheet_current_site_smoke_module",
+    str(Path(root_dir) / "tests" / "smoke_test.py"),
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module._run_internal_sheet_current_site_isolation_smoke(Path(db_path))
+print("internal sheet current-site isolation smoke PASS")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(db_path), str(ROOT_DIR)],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"internal sheet current-site isolation smoke failed:\n{result.stdout}{result.stderr}"
+        )
+    if "internal sheet current-site isolation smoke PASS" not in result.stdout:
+        raise AssertionError("internal sheet current-site isolation smoke did not report PASS")
 
 
 def run_progress_write_isolation_smoke(db_path: Path) -> None:
@@ -14984,6 +15175,9 @@ with client.session_transaction() as session:
     session["username"] = "admin"
     session["display_name"] = "Admin"
     session["role"] = "admin"
+    session["current_site_id"] = site_id
+    session["current_site_name"] = "Canonical Source Site"
+    session["site_selection_required"] = False
 
 trusted_as_of_calls = 0
 source_calls = 0
@@ -16671,6 +16865,9 @@ def main() -> int:
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_site_permissions_smoke_guardrail(db_path, Path(tmpdir) / "app-smoke.db")
         run_site_read_isolation_smoke(db_path)
+        current_site_read_db = Path(tmpdir) / "internal-sheet-current-site-isolation.db"
+        create_sample_sqlite(current_site_read_db)
+        run_internal_sheet_current_site_isolation_smoke(current_site_read_db)
         run_progress_write_isolation_smoke(db_path)
         run_unit_extra_write_isolation_smoke(db_path)
         run_vendor_contact_write_isolation_smoke(db_path)

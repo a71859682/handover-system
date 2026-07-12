@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import os
 import shutil
@@ -196,6 +197,7 @@ def main() -> int:
     parser.parse_args()
 
     db_path = resolve_db_path()
+    source_sha256_before = hashlib.sha256(db_path.read_bytes()).hexdigest() if db_path.exists() else ""
     print("site_read_isolation_scope: sqlite_only")
     print(f"sqlite_source: {db_path}")
     if not db_path.exists():
@@ -223,12 +225,28 @@ def main() -> int:
             "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id, site_name",
             ("__read_secondary__", "read-secondary"),
         ).fetchone()
+        default_site_extra_sheet_id = int(
+            conn.execute(
+                "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                ("__read_default_extra_sheet__", 998, int(default_site_id)),
+            ).lastrowid
+        )
         secondary_sheet_id = int(
             conn.execute(
                 "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
                 ("__read_secondary_sheet__", 999, int(secondary_site["id"])),
             ).lastrowid
         )
+        secondary_extra_sheet_id = int(
+            conn.execute(
+                "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                ("__read_secondary_extra_sheet__", 1000, int(secondary_site["id"])),
+            ).lastrowid
+        )
+        inactive_site = conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 0) RETURNING id, site_name",
+            ("__read_inactive__", "read-inactive"),
+        ).fetchone()
 
         single_user = create_user(conn, module, username="__read_single__")
         multi_user = create_user(conn, module, username="__read_multi__")
@@ -252,13 +270,133 @@ def main() -> int:
         login_session(
             client,
             admin,
-            current_site_id=int(secondary_site["id"]),
-            current_site_name=str(secondary_site["site_name"]),
+            current_site_id=int(default_site_id),
+            current_site_name=str(module.DEFAULT_SITE_NAME),
         )
-        admin_sheet = client.get(f"/sheet/{default_sheet_id}", follow_redirects=False)
-        expect(admin_sheet.status_code == 200, "admin_global_sheet_read_failed", issues)
+        default_site_sheet_ids = [
+            int(row["id"])
+            for row in conn.execute(
+                "SELECT id FROM sheets WHERE site_id = ? ORDER BY sort_order, id",
+                (default_site_id,),
+            ).fetchall()
+        ]
+        secondary_site_sheet_ids = [secondary_sheet_id, secondary_extra_sheet_id]
+
+        admin_sheet = client.get("/sheet", follow_redirects=False)
+        admin_sheet_html = admin_sheet.get_data(as_text=True)
+        expect(admin_sheet.status_code == 200, "admin_current_site_sheet_page_failed", issues)
+        for sheet_id in default_site_sheet_ids:
+            expect(
+                f"/sheet/{sheet_id}" in admin_sheet_html,
+                "admin_current_site_sheet_list_missing",
+                issues,
+            )
+        for sheet_id, sheet_name in (
+            (secondary_sheet_id, "__read_secondary_sheet__"),
+            (secondary_extra_sheet_id, "__read_secondary_extra_sheet__"),
+        ):
+            expect(
+                f"/sheet/{sheet_id}" not in admin_sheet_html and sheet_name not in admin_sheet_html,
+                "admin_current_site_sheet_list_leak",
+                issues,
+            )
+        with client.session_transaction() as session:
+            expect(
+                int(session.get("sheet_id") or 0) == default_site_sheet_ids[0],
+                "admin_wrong_default_sheet",
+                issues,
+            )
+
         admin_grid = client.get(f"/api/grid?sheet_id={default_sheet_id}")
-        expect(admin_grid.status_code == 200, "admin_global_grid_read_failed", issues)
+        admin_grid_payload = admin_grid.get_json(silent=True) or {}
+        expect(admin_grid.status_code == 200, "admin_current_site_grid_read_failed", issues)
+        expect(
+            [int(row["id"]) for row in admin_grid_payload.get("sheets", [])] == default_site_sheet_ids,
+            "admin_current_site_grid_sheet_list_leak",
+            issues,
+        )
+
+        admin_cross_sheet = client.get(f"/sheet/{secondary_sheet_id}", follow_redirects=False)
+        admin_cross_sheet_html = admin_cross_sheet.get_data(as_text=True)
+        expect(admin_cross_sheet.status_code == 302, "admin_cross_site_sheet_read_allowed", issues)
+        expect(
+            "__read_secondary_sheet__" not in admin_cross_sheet_html
+            and f"/sheet/{secondary_sheet_id}" not in admin_cross_sheet_html,
+            "admin_cross_site_sheet_content_leak",
+            issues,
+        )
+        admin_cross_grid = client.get(f"/api/grid?sheet_id={secondary_sheet_id}")
+        admin_cross_grid_payload = admin_cross_grid.get_json(silent=True) or {}
+        expect(admin_cross_grid.status_code == 403, "admin_cross_site_grid_read_allowed", issues)
+        expect(
+            (admin_cross_grid_payload.get("error") or {}).get("code") == "sheet_not_in_current_site",
+            "admin_cross_site_grid_error_code_mismatch",
+            issues,
+        )
+        expect(
+            "__read_secondary_sheet__" not in admin_cross_grid.get_data(as_text=True),
+            "admin_cross_site_grid_content_leak",
+            issues,
+        )
+
+        with client.session_transaction() as session:
+            session["sheet_id"] = default_site_extra_sheet_id
+        admin_switch = client.post(
+            "/site-selector",
+            data={"site_id": str(secondary_site["id"])},
+            follow_redirects=False,
+        )
+        expect(admin_switch.status_code == 302, "admin_site_switch_failed", issues)
+        with client.session_transaction() as session:
+            expect("sheet_id" not in session, "admin_stale_sheet_session_retained", issues)
+            expect(
+                int(session.get("current_site_id") or 0) == int(secondary_site["id"]),
+                "admin_site_switch_current_site_mismatch",
+                issues,
+            )
+        switched_sheet = client.get("/sheet", follow_redirects=False)
+        switched_sheet_html = switched_sheet.get_data(as_text=True)
+        expect(switched_sheet.status_code == 200, "admin_switched_sheet_page_failed", issues)
+        for sheet_id in secondary_site_sheet_ids:
+            expect(f"/sheet/{sheet_id}" in switched_sheet_html, "admin_switched_site_sheet_missing", issues)
+        for sheet_id in default_site_sheet_ids:
+            expect(f"/sheet/{sheet_id}" not in switched_sheet_html, "admin_switched_site_sheet_leak", issues)
+        with client.session_transaction() as session:
+            expect(
+                int(session.get("sheet_id") or 0) == secondary_sheet_id,
+                "admin_switched_site_wrong_default_sheet",
+                issues,
+            )
+
+        with client.session_transaction() as session:
+            preserved_site_id = int(session["current_site_id"])
+            preserved_sheet_id = int(session["sheet_id"])
+        invalid_switch = client.post(
+            "/site-selector",
+            data={"site_id": "999999"},
+            follow_redirects=False,
+        )
+        expect(invalid_switch.status_code == 403, "admin_invalid_site_switch_not_rejected", issues)
+        with client.session_transaction() as session:
+            expect(
+                int(session.get("current_site_id") or 0) == preserved_site_id
+                and int(session.get("sheet_id") or 0) == preserved_sheet_id,
+                "admin_invalid_site_switch_polluted_session",
+                issues,
+            )
+        inactive_switch = client.post(
+            "/site-selector",
+            data={"site_id": str(inactive_site["id"])},
+            follow_redirects=False,
+        )
+        expect(inactive_switch.status_code == 403, "admin_inactive_site_switch_not_rejected", issues)
+        with client.session_transaction() as session:
+            expect(
+                int(session.get("current_site_id") or 0) == preserved_site_id
+                and int(session.get("sheet_id") or 0) == preserved_sheet_id,
+                "admin_inactive_site_switch_polluted_session",
+                issues,
+            )
 
         login_session(
             client,
@@ -385,12 +523,18 @@ def main() -> int:
             )
             expect(extra_response.status_code == 200, "unit_extra_write_regression", issues)
 
+        source_sha256_after = hashlib.sha256(db_path.read_bytes()).hexdigest()
+        expect(source_sha256_after == source_sha256_before, "source_db_changed", issues)
         print(f"issues_count: {len(issues)}")
         if issues:
             for issue in issues:
                 print(f"ISSUE {issue}")
             raise SystemExit("FAIL site read isolation check failed.")
 
+        print("admin_current_site_sheet_isolation: PASS")
+        print("member_current_site_sheet_isolation: PASS")
+        print("cross_site_content_non_leakage: PASS")
+        print("db_unchanged: PASS")
         print("PASS site read isolation check passed.")
         return 0
     finally:
