@@ -108,11 +108,16 @@ function initializeCrewFormalCancellationDialog() {
   crewFormalCancellationReason.addEventListener("input", updateCrewFormalCancellationCounter);
   document.querySelector("[data-testid='crew-formal-cancellation-close']")?.addEventListener("click", closeCrewFormalCancellationDialog);
   crewFormalCancellationDialog.addEventListener("cancel", (event) => {
-    if (crewFormalCancellationSubmitting) event.preventDefault();
+    event.preventDefault();
+    if (crewFormalCancellationSubmitting) return;
+    closeCrewFormalCancellationDialog();
   });
   crewFormalCancellationDialog.addEventListener("close", () => {
     const trigger = crewFormalCancellationTrigger;
     crewFormalCancellationTrigger = null;
+    crewFormalCancellationReason.value = "";
+    setCrewFormalCancellationFeedback("");
+    updateCrewFormalCancellationCounter();
     if (trigger?.isConnected) trigger.focus();
   });
   crewFormalCancellationForm.addEventListener("submit", (event) => {

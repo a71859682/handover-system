@@ -19274,6 +19274,11 @@ function element(overrides = {}) {
     closest() { return null; },
     addEventListener(name, fn) { listeners[name] = fn; },
     dispatch(name, event = {}) { return listeners[name]?.(event); },
+    dispatchEvent(event) {
+      const listener = listeners[event.type];
+      if (listener) listener.call(this, event);
+      return !event.defaultPrevented;
+    },
     focus() { this.focused = true; },
     remove() { this.removed = true; this.isConnected = false; },
     showModal() { this.open = true; }, close() { this.open = false; this.dispatch("close"); },
@@ -19325,7 +19330,9 @@ vm.runInThisContext(source + `\n;globalThis.__ui = {
   buildCrewRequirementMeta, buildCrewFormalApproveMeta, buildCrewFormalApprovalIndicatorMeta,
   openCrewFormalCancellationDialog, closeCrewFormalCancellationDialog,
   approveCrewWorkEntryFormal, cancelCrewWorkEntryFormal,
-  updateCrewFormalCancellationCounter, countUnicodeCodePoints
+  updateCrewFormalCancellationCounter, countUnicodeCodePoints,
+  isCrewFormalCancellationSubmitting: () => crewFormalCancellationSubmitting,
+  getCrewFormalCancellationTrigger: () => crewFormalCancellationTrigger
 };`);
 const ui = global.__ui;
 
@@ -19403,6 +19410,32 @@ ui.openCrewFormalCancellationDialog(maliciousDialogTrigger);
 assert.strictEqual(vendorContext.textContent, maliciousVendor); assert.strictEqual(vendorContext.innerHTML, "");
 ui.closeCrewFormalCancellationDialog();
 
+let idleEscapePosts = 0;
+global.fetch = async () => { idleEscapePosts++; throw new Error("idle Escape must not post"); };
+const idleEscapeTrigger = button({entryId:"31",sheetId:"3",vendor:"Escape Vendor"});
+ui.openCrewFormalCancellationDialog(idleEscapeTrigger);
+reason.value = "idle Escape reason";
+feedback.textContent = "stale feedback";
+ui.updateCrewFormalCancellationCounter();
+const idleCancelEvent = new Event("cancel", {bubbles:false,cancelable:true});
+assert.strictEqual(idleCancelEvent.type,"cancel");
+assert.strictEqual(idleCancelEvent.cancelable,true);
+assert.strictEqual(idleCancelEvent.bubbles,false);
+const idleDispatchResult = dialog.dispatchEvent(idleCancelEvent);
+assert(idleCancelEvent.defaultPrevented);
+assert.strictEqual(idleDispatchResult,false);
+assert(!dialog.open && idleEscapeTrigger.focused && idleEscapePosts === 0);
+assert.strictEqual(ui.isCrewFormalCancellationSubmitting(),false);
+assert.strictEqual(ui.getCrewFormalCancellationTrigger(),null);
+assert.strictEqual(reason.value, "");
+assert.strictEqual(feedback.textContent, "");
+assert.strictEqual(counter.textContent, "0 / 500");
+const escapeReopenTrigger = button({entryId:"32",sheetId:"4",vendor:"Escape Reopen Vendor"});
+ui.openCrewFormalCancellationDialog(escapeReopenTrigger);
+assert(dialog.open && form.dataset.entryId === "32" && form.dataset.sheetId === "4");
+assert.strictEqual(vendorContext.textContent, "Escape Reopen Vendor");
+ui.closeCrewFormalCancellationDialog();
+
 async function cancelCase({reasonValue, responses, expectedPosts, expectedRemoved, expectedReloads}) {
   const trigger = button();
   ui.openCrewFormalCancellationDialog(trigger);
@@ -19423,21 +19456,51 @@ async function cancelCase({reasonValue, responses, expectedPosts, expectedRemove
 
 (async () => {
   const pendingTrigger = button(); ui.openCrewFormalCancellationDialog(pendingTrigger); reason.value = "pending reason";
-  let pendingPosts = 0; let resolvePendingPost;
-  global.fetch = async (url) => {
-    if (url.includes("formal-approval-cancel")) { pendingPosts++; return new Promise(resolve => { resolvePendingPost = resolve; }); }
+  let pendingPosts = 0; let resolvePendingPost; let pendingRequestPayload = null;
+  global.fetch = async (url, options = {}) => {
+    if (url.includes("formal-approval-cancel")) {
+      pendingPosts++;
+      pendingRequestPayload = JSON.parse(options.body);
+      return new Promise(resolve => { resolvePendingPost = resolve; });
+    }
     return {ok:true,json:async()=>({ok:true,active_vendors:[]})};
   };
   const pendingRequest = ui.cancelCrewWorkEntryFormal(pendingTrigger);
   await Promise.resolve();
+  const pendingContextBeforeEscape = {
+    entryId: form.dataset.entryId,
+    sheetId: form.dataset.sheetId,
+    vendor: vendorContext.textContent,
+    reason: reason.value,
+    trigger: ui.getCrewFormalCancellationTrigger(),
+    payload: {...pendingRequestPayload},
+  };
+  assert.strictEqual(ui.isCrewFormalCancellationSubmitting(),true);
+  assert.strictEqual(pendingContextBeforeEscape.trigger,pendingTrigger);
   const secondTrigger = button({entryId:"2",sheetId:"4",vendor:"Second Vendor"});
   ui.openCrewFormalCancellationDialog(secondTrigger);
   assert.strictEqual(form.dataset.entryId,"1"); assert.strictEqual(reason.value,"pending reason");
-  let cancelPrevented = false; dialog.dispatch("cancel",{preventDefault(){cancelPrevented=true;}}); closeButton.dispatch("click");
+  const submittingCancelEvent = new Event("cancel", {bubbles:false,cancelable:true});
+  assert.strictEqual(submittingCancelEvent.type,"cancel");
+  assert.strictEqual(submittingCancelEvent.cancelable,true);
+  assert.strictEqual(submittingCancelEvent.bubbles,false);
+  const submittingDispatchResult = dialog.dispatchEvent(submittingCancelEvent);
+  closeButton.dispatch("click");
   await ui.cancelCrewWorkEntryFormal(secondTrigger);
-  assert(dialog.open && cancelPrevented && pendingPosts === 1 && form.dataset.entryId === "1");
+  assert(dialog.open && submittingCancelEvent.defaultPrevented && pendingPosts === 1 && form.dataset.entryId === "1");
+  assert.strictEqual(submittingDispatchResult,false);
+  assert.strictEqual(form.dataset.entryId,pendingContextBeforeEscape.entryId);
+  assert.strictEqual(form.dataset.sheetId,pendingContextBeforeEscape.sheetId);
+  assert.strictEqual(vendorContext.textContent,pendingContextBeforeEscape.vendor);
+  assert.strictEqual(reason.value,"pending reason");
+  assert.strictEqual(reason.value,pendingContextBeforeEscape.reason);
+  assert.strictEqual(ui.getCrewFormalCancellationTrigger(),pendingContextBeforeEscape.trigger);
+  assert.deepStrictEqual(pendingRequestPayload,pendingContextBeforeEscape.payload);
+  assert.strictEqual(ui.isCrewFormalCancellationSubmitting(),true);
   resolvePendingPost({ok:true,json:async()=>({ok:true})}); await pendingRequest;
   assert(pendingTrigger.removed && !dialog.open && !pendingTrigger.focused);
+  assert.strictEqual(ui.isCrewFormalCancellationSubmitting(),false);
+  assert.strictEqual(ui.getCrewFormalCancellationTrigger(),null);
   ui.openCrewFormalCancellationDialog(secondTrigger);
   assert.strictEqual(form.dataset.entryId,"2"); assert.strictEqual(form.dataset.sheetId,"4"); assert.strictEqual(vendorContext.textContent,"Second Vendor");
   assert.strictEqual(reason.value,""); assert.strictEqual(feedback.textContent,""); ui.closeCrewFormalCancellationDialog();
