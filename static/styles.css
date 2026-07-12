@@ -1152,6 +1152,109 @@ tfoot tr:nth-child(3) td {
   font-size: 12px;
 }
 
+.crew-formal-cancel-btn,
+.crew-formal-cancellation-actions button {
+  min-height: 44px;
+}
+
+.crew-formal-cancel-btn:focus-visible,
+.crew-formal-cancellation-dialog button:focus-visible,
+.crew-formal-cancellation-dialog textarea:focus-visible {
+  outline: 3px solid rgba(198, 40, 40, 0.32);
+  outline-offset: 3px;
+}
+
+.crew-formal-lifecycle-meta,
+.crew-formal-integrity-warning,
+.crew-formal-action-blocked {
+  grid-column: 1 / -1;
+}
+
+.crew-formal-lifecycle-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.crew-formal-integrity-warning,
+.crew-formal-action-blocked {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.crew-formal-cancellation-dialog {
+  width: min(560px, calc(100% - 32px));
+  max-width: 560px;
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  border: 1px solid rgba(198, 40, 40, 0.32);
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.28);
+  color: var(--ink);
+}
+
+.crew-formal-cancellation-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.46);
+}
+
+.crew-formal-cancellation-dialog-content {
+  display: grid;
+  gap: 16px;
+  max-height: calc(100dvh - 32px);
+  padding: 24px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.crew-formal-cancellation-dialog-content header,
+.crew-formal-cancellation-dialog-content h2,
+.crew-formal-cancellation-dialog-content p,
+.crew-formal-cancellation-context {
+  margin: 0;
+}
+
+.crew-formal-cancellation-context {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.crew-formal-cancellation-context div {
+  display: grid;
+  gap: 4px;
+}
+
+.crew-formal-cancellation-context dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.crew-formal-cancellation-context dd {
+  margin: 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.crew-formal-cancellation-dialog textarea {
+  min-height: 120px;
+  resize: vertical;
+}
+
+.crew-formal-cancellation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.crew-formal-cancellation-feedback[data-feedback-state="error"] {
+  color: var(--danger);
+}
+
 .unit-edit-item {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -1386,6 +1489,15 @@ tfoot tr:nth-child(3) td {
   .unit-edit-grid,
   .crew-vendor-meta,
   .crew-entry-row {
+    grid-template-columns: 1fr;
+  }
+
+  .crew-formal-cancellation-context {
+    grid-template-columns: 1fr;
+  }
+
+  .crew-formal-cancellation-actions {
+    display: grid;
     grid-template-columns: 1fr;
   }
 
@@ -1787,5 +1899,13 @@ tfoot tr:nth-child(3) td {
   .floor-report-context-grid div,
   .floor-report-table tr {
     break-inside: avoid;
+  }
+}
+
+@media print {
+  .crew-formal-cancel-btn,
+  .crew-formal-cancellation-dialog,
+  [data-testid="crew-work-entry-formal-approve-action"] {
+    display: none !important;
   }
 }

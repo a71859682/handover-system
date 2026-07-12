@@ -99,6 +99,39 @@
   </div>
 </dialog>
 
+<dialog
+  id="crew-formal-cancellation-dialog"
+  class="crew-formal-cancellation-dialog"
+  data-testid="crew-formal-cancellation-dialog"
+  aria-labelledby="crew-formal-cancellation-title"
+  aria-describedby="crew-formal-cancellation-description"
+>
+  <form method="dialog" class="crew-formal-cancellation-dialog-content" data-testid="crew-formal-cancellation-form">
+    <header>
+      <h2 id="crew-formal-cancellation-title">取消今日進場核准</h2>
+      <p id="crew-formal-cancellation-description">此操作會使該筆工班資料不可排程，不會取消需求確認。</p>
+    </header>
+    <dl class="crew-formal-cancellation-context">
+      <div><dt>Entry ID</dt><dd data-testid="crew-formal-cancellation-entry-id"></dd></div>
+      <div><dt>廠商</dt><dd data-testid="crew-formal-cancellation-vendor"></dd></div>
+      <div><dt>Sheet</dt><dd data-testid="crew-formal-cancellation-sheet-id"></dd></div>
+    </dl>
+    <label for="crew-formal-cancellation-reason">取消原因（必填，最多500字）</label>
+    <textarea
+      id="crew-formal-cancellation-reason"
+      data-testid="crew-formal-cancellation-reason"
+      required
+      aria-describedby="crew-formal-cancellation-counter crew-formal-cancellation-feedback"
+    ></textarea>
+    <div id="crew-formal-cancellation-counter" data-testid="crew-formal-cancellation-counter" aria-live="polite">0 / 500</div>
+    <div id="crew-formal-cancellation-feedback" class="crew-formal-cancellation-feedback" data-testid="crew-formal-cancellation-feedback" role="status" aria-live="polite"></div>
+    <div class="crew-formal-cancellation-actions">
+      <button type="button" data-testid="crew-formal-cancellation-close">返回</button>
+      <button type="submit" class="danger-button" data-testid="crew-formal-cancellation-submit">確認取消今日進場核准</button>
+    </div>
+  </form>
+</dialog>
+
 <div class="print-meta">
   <div class="print-date">列表日期：<span id="printDate"></span></div>
   <div class="print-maker">製表人：{{ session.get("display_name") or session.get("username") }}</div>

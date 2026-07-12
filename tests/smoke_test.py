@@ -19253,6 +19253,393 @@ print("formal approval cancelled projection smoke PASS")
     print(marker)
 
 
+def run_formal_approval_cancellation_ui_smoke(temp_root: Path) -> None:
+    temp_root.mkdir(parents=True, exist_ok=True)
+    script_path = temp_root / "formal-approval-cancellation-ui-smoke.js"
+    app_js_path = ROOT_DIR / "static" / "app.js"
+    script_path.write_text(
+        r'''
+const fs = require("fs");
+const vm = require("vm");
+const assert = require("assert");
+
+function element(overrides = {}) {
+  const listeners = {};
+  return Object.assign({
+    dataset: {}, value: "", textContent: "", innerHTML: "", disabled: false,
+    open: false, isConnected: true, removed: false, focused: false,
+    classList: { add() {}, remove() {} },
+    setAttribute() {}, removeAttribute() {}, appendChild() {},
+    querySelector() { return null; }, querySelectorAll() { return []; },
+    closest() { return null; },
+    addEventListener(name, fn) { listeners[name] = fn; },
+    dispatch(name, event = {}) { return listeners[name]?.(event); },
+    focus() { this.focused = true; },
+    remove() { this.removed = true; this.isConnected = false; },
+    showModal() { this.open = true; }, close() { this.open = false; this.dispatch("close"); },
+  }, overrides);
+}
+
+const crewShell = element({ dataset: { sheetId: "3" } });
+const vendorList = element();
+const dialog = element();
+const form = element();
+const reason = element();
+const counter = element();
+const feedback = element();
+const submit = element();
+const closeButton = element();
+const entryContext = element();
+const sheetContext = element();
+const vendorContext = element();
+const byId = {
+  crewVendorList: vendorList,
+  "crew-formal-cancellation-dialog": dialog,
+  "crew-formal-cancellation-reason": reason,
+  "crew-formal-cancellation-counter": counter,
+  "crew-formal-cancellation-feedback": feedback,
+};
+const bySelector = {
+  ".crew-form-shell": crewShell,
+  "[data-testid='crew-formal-cancellation-form']": form,
+  "[data-testid='crew-formal-cancellation-submit']": submit,
+  "[data-testid='crew-formal-cancellation-close']": closeButton,
+  "[data-testid='crew-formal-cancellation-entry-id']": entryContext,
+  "[data-testid='crew-formal-cancellation-sheet-id']": sheetContext,
+  "[data-testid='crew-formal-cancellation-vendor']": vendorContext,
+};
+global.document = {
+  activeElement: null,
+  getElementById(id) { return byId[id] || null; },
+  querySelector(selector) { return bySelector[selector] || null; },
+  querySelectorAll() { return []; },
+  addEventListener() {},
+  createElement() { return element({ firstElementChild: element() }); },
+};
+global.window = { setTimeout, print() {} };
+global.setInterval = () => 0;
+global.fetch = async () => { throw new Error("unexpected fetch"); };
+
+const source = fs.readFileSync(process.argv[2], "utf8");
+vm.runInThisContext(source + `\n;globalThis.__ui = {
+  buildCrewRequirementMeta, buildCrewFormalApproveMeta, buildCrewFormalApprovalIndicatorMeta,
+  openCrewFormalCancellationDialog, closeCrewFormalCancellationDialog,
+  approveCrewWorkEntryFormal, cancelCrewWorkEntryFormal,
+  updateCrewFormalCancellationCounter, countUnicodeCodePoints
+};`);
+const ui = global.__ui;
+
+function baseEntry(overrides = {}) {
+  return Object.assign({
+    id: 1, sheet_id: 3, vendor_name: "Synthetic Vendor",
+    requirement_status: "confirmed", readiness_state: "ready",
+    scheduling_gate_state: "allowed", scheduling_gate_reason: "requirement_confirmed",
+    formal_approval_state: "pending", formal_approval_status: "pending",
+    formal_approved_by: "", formal_approved_at: "", formal_cancelled_by: "",
+    formal_cancelled_at: "", formal_cancellation_reason: "",
+    formal_approval_integrity_warning: "", scheduled: false, blocked: true, schedulable: false,
+  }, overrides);
+}
+
+const requirementPending = baseEntry({ requirement_status: "pending", readiness_state: "not_ready", scheduling_gate_state: "warning", formal_approval_state: "pending", formal_approval_status: "pending" });
+assert(ui.buildCrewRequirementMeta(requirementPending).actionMarkup.includes("crew-work-entry-requirement-confirm-action"));
+assert.strictEqual(ui.buildCrewFormalApproveMeta(requirementPending).actionMarkup, "");
+const pendingFormal = ui.buildCrewFormalApproveMeta(baseEntry());
+assert.strictEqual((pendingFormal.actionMarkup.match(/formal-approve-action/g) || []).length, 1);
+assert(!pendingFormal.actionMarkup.includes("formal-cancel-action"));
+const approved = baseEntry({ formal_approval_state: "approved", formal_approval_status: "approved", formal_approved_by: "member", formal_approved_at: "2026-07-12 08:00:00", blocked: false, schedulable: true });
+const approvedAction = ui.buildCrewFormalApproveMeta(approved);
+assert.strictEqual((approvedAction.actionMarkup.match(/formal-cancel-action/g) || []).length, 1);
+assert(!approvedAction.actionMarkup.includes("formal-approve-action"));
+const scheduledAction = ui.buildCrewFormalApproveMeta({...approved, scheduled: true});
+assert.strictEqual(scheduledAction.actionMarkup, "");
+assert(scheduledAction.readonlyMarkup.includes("請先取消排程"));
+const cancelled = baseEntry({ formal_approval_state: "cancelled", formal_approval_status: "cancelled", formal_approved_by: "member", formal_approved_at: "2026-07-12 08:00:00", formal_cancelled_by: "admin", formal_cancelled_at: "2026-07-12 09:00:00", formal_cancellation_reason: "synthetic reason" });
+assert.strictEqual(ui.buildCrewFormalApproveMeta(cancelled).actionMarkup, "");
+const cancelledIndicator = ui.buildCrewFormalApprovalIndicatorMeta(cancelled);
+assert.strictEqual(cancelledIndicator.indicatorLabel, "今日進場核准已取消");
+for (const marker of ["原核准人", "原核准時間", "取消人", "取消時間", "取消原因", "synthetic reason"]) assert(cancelledIndicator.detailMarkup.includes(marker));
+const maliciousVendor = '<img src=x onerror=alert(1)>';
+const maliciousAction = ui.buildCrewFormalApproveMeta({...approved,vendor_name:maliciousVendor}).actionMarkup;
+assert(!maliciousAction.includes(maliciousVendor)); assert(maliciousAction.includes('&lt;img src=x onerror=alert(1)&gt;'));
+const maliciousCancelled = ui.buildCrewFormalApprovalIndicatorMeta({...cancelled,formal_approved_by:'<script>alert(1)</script>',formal_cancelled_by:"' onmouseover='alert(1)",formal_cancellation_reason:'<b>reason & "quoted"</b>'});
+for (const unsafe of ['<script>','<b>']) assert(!maliciousCancelled.detailMarkup.includes(unsafe));
+for (const escaped of ['&lt;script&gt;','&lt;b&gt;','&amp;','&quot;']) assert(maliciousCancelled.detailMarkup.includes(escaped));
+const invalidAction = ui.buildCrewFormalApproveMeta(baseEntry({ formal_approval_state: "invalid", formal_approval_status: "invalid", formal_approval_integrity_warning: "formal_approval_metadata_conflict" }));
+assert.strictEqual(invalidAction.actionMarkup, "");
+assert(invalidAction.readonlyMarkup.includes("formal_approval_metadata_conflict"));
+for (const missingKey of ["formal_approval_state", "formal_approval_status", "scheduled", "scheduling_gate_state", "formal_approval_integrity_warning"]) {
+  const malformed = baseEntry(); delete malformed[missingKey];
+  assert.strictEqual(ui.buildCrewFormalApproveMeta(malformed).actionMarkup, "", `missing ${missingKey} must fail closed`);
+}
+for (const malformed of [
+  baseEntry({formal_approval_state:"approved",formal_approval_status:"pending"}),
+  baseEntry({formal_approval_state:"unknown",formal_approval_status:"unknown"}),
+  baseEntry({scheduled:0}), baseEntry({blocked:1}), baseEntry({schedulable:"false"}),
+]) assert.strictEqual(ui.buildCrewFormalApproveMeta(malformed).actionMarkup, "");
+
+function button(datasetOverrides = {}) {
+  const slotFeedback = element();
+  const slot = element({ querySelector() { return slotFeedback; } });
+  return element({ dataset: Object.assign({ entryId: "1", sheetId: "3", vendor: "Synthetic Vendor" }, datasetOverrides), textContent: "action", closest() { return slot; }, slotFeedback });
+}
+
+const dialogTrigger = button();
+ui.openCrewFormalCancellationDialog(dialogTrigger);
+assert(dialog.open && reason.focused);
+assert.strictEqual(entryContext.textContent, "1");
+assert.strictEqual(vendorContext.textContent, "Synthetic Vendor");
+reason.value = "abc"; ui.updateCrewFormalCancellationCounter();
+assert.strictEqual(counter.textContent, "3 / 500");
+assert.strictEqual(ui.countUnicodeCodePoints("a中😀"), 3);
+reason.value = "😀".repeat(500); ui.updateCrewFormalCancellationCounter();
+assert.strictEqual(counter.textContent, "500 / 500"); assert.strictEqual(submit.disabled, false);
+reason.value = "😀".repeat(501); ui.updateCrewFormalCancellationCounter();
+assert.strictEqual(counter.textContent, "501 / 500"); assert.strictEqual(submit.disabled, true);
+ui.closeCrewFormalCancellationDialog();
+assert(!dialog.open && dialogTrigger.focused);
+const maliciousDialogTrigger = button({vendor:maliciousVendor});
+ui.openCrewFormalCancellationDialog(maliciousDialogTrigger);
+assert.strictEqual(vendorContext.textContent, maliciousVendor); assert.strictEqual(vendorContext.innerHTML, "");
+ui.closeCrewFormalCancellationDialog();
+
+async function cancelCase({reasonValue, responses, expectedPosts, expectedRemoved, expectedReloads}) {
+  const trigger = button();
+  ui.openCrewFormalCancellationDialog(trigger);
+  reason.value = reasonValue;
+  let posts = 0;
+  let reloads = 0;
+  global.fetch = async (url, options = {}) => {
+    if (url.includes("formal-approval-cancel")) { posts++; const response = responses.shift(); return {ok:response.ok, json:async()=>response.body}; }
+    if (url.includes("crew-forms")) { reloads++; return {ok:true, json:async()=>({ok:true, active_vendors:[], business_date:"2026-07-12"})}; }
+    throw new Error("unexpected URL " + url);
+  };
+  await Promise.all([ui.cancelCrewWorkEntryFormal(trigger), ui.cancelCrewWorkEntryFormal(trigger)]);
+  assert.strictEqual(posts, expectedPosts);
+  assert.strictEqual(trigger.removed, expectedRemoved);
+  assert.strictEqual(reloads, expectedReloads);
+  return {trigger, posts, reloads};
+}
+
+(async () => {
+  const pendingTrigger = button(); ui.openCrewFormalCancellationDialog(pendingTrigger); reason.value = "pending reason";
+  let pendingPosts = 0; let resolvePendingPost;
+  global.fetch = async (url) => {
+    if (url.includes("formal-approval-cancel")) { pendingPosts++; return new Promise(resolve => { resolvePendingPost = resolve; }); }
+    return {ok:true,json:async()=>({ok:true,active_vendors:[]})};
+  };
+  const pendingRequest = ui.cancelCrewWorkEntryFormal(pendingTrigger);
+  await Promise.resolve();
+  const secondTrigger = button({entryId:"2",sheetId:"4",vendor:"Second Vendor"});
+  ui.openCrewFormalCancellationDialog(secondTrigger);
+  assert.strictEqual(form.dataset.entryId,"1"); assert.strictEqual(reason.value,"pending reason");
+  let cancelPrevented = false; dialog.dispatch("cancel",{preventDefault(){cancelPrevented=true;}}); closeButton.dispatch("click");
+  await ui.cancelCrewWorkEntryFormal(secondTrigger);
+  assert(dialog.open && cancelPrevented && pendingPosts === 1 && form.dataset.entryId === "1");
+  resolvePendingPost({ok:true,json:async()=>({ok:true})}); await pendingRequest;
+  assert(pendingTrigger.removed && !dialog.open && !pendingTrigger.focused);
+  ui.openCrewFormalCancellationDialog(secondTrigger);
+  assert.strictEqual(form.dataset.entryId,"2"); assert.strictEqual(form.dataset.sheetId,"4"); assert.strictEqual(vendorContext.textContent,"Second Vendor");
+  assert.strictEqual(reason.value,""); assert.strictEqual(feedback.textContent,""); ui.closeCrewFormalCancellationDialog();
+
+  await cancelCase({reasonValue:"   ",responses:[],expectedPosts:0,expectedRemoved:false,expectedReloads:0});
+  await cancelCase({reasonValue:"x".repeat(501),responses:[],expectedPosts:0,expectedRemoved:false,expectedReloads:0});
+  await cancelCase({reasonValue:"😀".repeat(501),responses:[],expectedPosts:0,expectedRemoved:false,expectedReloads:0});
+  await cancelCase({reasonValue:"😀".repeat(500),responses:[{ok:true,body:{ok:true}}],expectedPosts:1,expectedRemoved:true,expectedReloads:1});
+  const fiveHundred = "x".repeat(500);
+  let exactPayload = null;
+  const exactTrigger = button(); ui.openCrewFormalCancellationDialog(exactTrigger); reason.value = `  ${fiveHundred}  `;
+  global.fetch = async (url, options = {}) => {
+    if (url.includes("formal-approval-cancel")) { exactPayload = JSON.parse(options.body); return {ok:true,json:async()=>({ok:true})}; }
+    return {ok:true,json:async()=>({ok:true,active_vendors:[]})};
+  };
+  await ui.cancelCrewWorkEntryFormal(exactTrigger);
+  assert.deepStrictEqual(exactPayload,{entry_id:1,sheet_id:3,action:"crew_formal_cancel_approval",reason:fiveHundred});
+  assert(exactTrigger.removed);
+  await cancelCase({reasonValue:" reason ",responses:[{ok:true,body:{ok:true}}],expectedPosts:1,expectedRemoved:true,expectedReloads:1});
+  const refreshFailureTrigger = button(); ui.openCrewFormalCancellationDialog(refreshFailureTrigger); reason.value = "reason";
+  let refreshFailureCalls = 0;
+  global.fetch = async (url) => {
+    refreshFailureCalls++;
+    if (url.includes("formal-approval-cancel")) return {ok:true,json:async()=>({ok:true})};
+    return {ok:false,json:async()=>({ok:false,error:{message:"refresh failed"}})};
+  };
+  await ui.cancelCrewWorkEntryFormal(refreshFailureTrigger);
+  assert(refreshFailureTrigger.removed && refreshFailureCalls === 2);
+  await cancelCase({reasonValue:" reason ",responses:[{ok:false,body:{ok:false,error:{code:"approval_has_schedule",message:"blocked"}}}],expectedPosts:1,expectedRemoved:true,expectedReloads:1});
+  await cancelCase({reasonValue:" reason ",responses:[{ok:false,body:{ok:false,error:{code:"approval_already_cancelled",message:"existing"}}}],expectedPosts:1,expectedRemoved:true,expectedReloads:1});
+  const rejected = await cancelCase({reasonValue:" reason ",responses:[{ok:false,body:{ok:false,error:{code:"write_conflict",message:"conflict"}}}],expectedPosts:1,expectedRemoved:false,expectedReloads:0});
+  assert(!rejected.trigger.disabled && !submit.disabled);
+  const maliciousError = '<svg onload=alert(1)>';
+  await cancelCase({reasonValue:" reason ",responses:[{ok:false,body:{ok:false,error:{code:"write_conflict",message:maliciousError}}}],expectedPosts:1,expectedRemoved:false,expectedReloads:0});
+  assert.strictEqual(feedback.textContent,maliciousError); assert.strictEqual(feedback.innerHTML,"");
+  const networkTrigger = button(); ui.openCrewFormalCancellationDialog(networkTrigger); reason.value = "reason";
+  global.fetch = async () => { throw new Error("network failed"); };
+  await ui.cancelCrewWorkEntryFormal(networkTrigger);
+  assert(!networkTrigger.removed && !networkTrigger.disabled && !submit.disabled);
+
+  const approveButton = button();
+  let approvePosts = 0; let approveReloads = 0;
+  global.fetch = async (url) => {
+    if (url.includes("formal-approve")) { approvePosts++; return {ok:true,json:async()=>({ok:true})}; }
+    approveReloads++; return {ok:true,json:async()=>({ok:true,active_vendors:[]})};
+  };
+  await Promise.all([ui.approveCrewWorkEntryFormal(approveButton),ui.approveCrewWorkEntryFormal(approveButton)]);
+  assert.strictEqual(approvePosts,1); assert.strictEqual(approveReloads,1); assert(approveButton.removed);
+  const approveRefreshFailure = button();
+  let approveRefreshCalls = 0;
+  global.fetch = async (url) => {
+    approveRefreshCalls++;
+    if (url.includes("formal-approve")) return {ok:true,json:async()=>({ok:true})};
+    return {ok:false,json:async()=>({ok:false,error:{message:"refresh failed"}})};
+  };
+  await ui.approveCrewWorkEntryFormal(approveRefreshFailure);
+  assert(approveRefreshFailure.removed && approveRefreshCalls === 2);
+  const approveRejected = button();
+  global.fetch = async () => ({ok:false,json:async()=>({ok:false,error:{code:"duplicate_approval",message:"duplicate"}})});
+  await ui.approveCrewWorkEntryFormal(approveRejected);
+  assert(!approveRejected.removed && !approveRejected.disabled && approveRejected.slotFeedback.textContent === "duplicate");
+
+  // Distinct-entry formal approve lifecycle evidence.
+  const approveABPayloads = [];
+  global.fetch = async (url, options = {}) => {
+    if (url.includes("formal-approve")) { approveABPayloads.push(JSON.parse(options.body)); return {ok:true,json:async()=>({ok:true})}; }
+    return {ok:true,json:async()=>({ok:true,active_vendors:[]})};
+  };
+  const approveA = button({entryId:"101",sheetId:"3"});
+  const approveB = button({entryId:"102",sheetId:"3"});
+  await ui.approveCrewWorkEntryFormal(approveA);
+  assert(approveA.removed);
+  await ui.approveCrewWorkEntryFormal(approveB);
+  assert(approveB.removed);
+  assert.deepStrictEqual(approveABPayloads.map(payload=>payload.entry_id),[101,102]);
+  assert.deepStrictEqual(approveABPayloads.map(payload=>payload.sheet_id),[3,3]);
+
+  const approveRefreshPayloads = []; let approveRefreshIndex = 0;
+  global.fetch = async (url, options = {}) => {
+    if (url.includes("formal-approve")) { approveRefreshPayloads.push(JSON.parse(options.body)); return {ok:true,json:async()=>({ok:true})}; }
+    approveRefreshIndex++;
+    return approveRefreshIndex === 1
+      ? {ok:false,json:async()=>({ok:false,error:{message:"refresh failed"}})}
+      : {ok:true,json:async()=>({ok:true,active_vendors:[]})};
+  };
+  const approveRefreshA = button({entryId:"111",sheetId:"3"});
+  const approveRefreshB = button({entryId:"112",sheetId:"3"});
+  await ui.approveCrewWorkEntryFormal(approveRefreshA);
+  assert(approveRefreshA.removed);
+  await ui.approveCrewWorkEntryFormal(approveRefreshB);
+  assert(approveRefreshB.removed);
+  assert.deepStrictEqual(approveRefreshPayloads.map(payload=>payload.entry_id),[111,112]);
+
+  const approveRetryPayloads = []; let approveRetryAttempt = 0;
+  global.fetch = async (url, options = {}) => {
+    if (url.includes("formal-approve")) {
+      approveRetryPayloads.push(JSON.parse(options.body)); approveRetryAttempt++;
+      return approveRetryAttempt === 1
+        ? {ok:false,json:async()=>({ok:false,error:{code:"write_conflict",message:"retry"}})}
+        : {ok:true,json:async()=>({ok:true})};
+    }
+    return {ok:true,json:async()=>({ok:true,active_vendors:[]})};
+  };
+  const approveRetry = button({entryId:"121",sheetId:"3"});
+  await ui.approveCrewWorkEntryFormal(approveRetry);
+  assert(!approveRetry.removed && !approveRetry.disabled && !("formalApproveInFlight" in approveRetry.dataset));
+  await ui.approveCrewWorkEntryFormal(approveRetry);
+  assert(approveRetry.removed);
+  assert.deepStrictEqual(approveRetryPayloads.map(payload=>payload.entry_id),[121,121]);
+
+  // Distinct-entry formal cancellation lifecycle evidence.
+  const cancelABPayloads = [];
+  global.fetch = async (url, options = {}) => {
+    if (url.includes("formal-approval-cancel")) { cancelABPayloads.push(JSON.parse(options.body)); return {ok:true,json:async()=>({ok:true})}; }
+    return {ok:true,json:async()=>({ok:true,active_vendors:[]})};
+  };
+  const cancelA = button({entryId:"201",sheetId:"3",vendor:"Vendor A"});
+  const cancelB = button({entryId:"202",sheetId:"3",vendor:"Vendor B"});
+  ui.openCrewFormalCancellationDialog(cancelA); reason.value = " reason A "; await ui.cancelCrewWorkEntryFormal(cancelA);
+  assert(cancelA.removed);
+  ui.openCrewFormalCancellationDialog(cancelB);
+  assert(form.dataset.entryId === "202" && vendorContext.textContent === "Vendor B" && reason.value === "");
+  reason.value = " reason B "; await ui.cancelCrewWorkEntryFormal(cancelB);
+  assert(cancelB.removed);
+  assert.deepStrictEqual(cancelABPayloads.map(payload=>payload.entry_id),[201,202]);
+  assert.deepStrictEqual(cancelABPayloads.map(payload=>payload.sheet_id),[3,3]);
+  assert.deepStrictEqual(cancelABPayloads.map(payload=>payload.reason),["reason A","reason B"]);
+
+  const cancelRefreshPayloads = []; let cancelRefreshIndex = 0;
+  global.fetch = async (url, options = {}) => {
+    if (url.includes("formal-approval-cancel")) { cancelRefreshPayloads.push(JSON.parse(options.body)); return {ok:true,json:async()=>({ok:true})}; }
+    cancelRefreshIndex++;
+    return cancelRefreshIndex === 1
+      ? {ok:false,json:async()=>({ok:false,error:{message:"refresh failed"}})}
+      : {ok:true,json:async()=>({ok:true,active_vendors:[]})};
+  };
+  const cancelRefreshA = button({entryId:"211",sheetId:"3",vendor:"Refresh A"});
+  const cancelRefreshB = button({entryId:"212",sheetId:"3",vendor:"Refresh B"});
+  ui.openCrewFormalCancellationDialog(cancelRefreshA); reason.value = "refresh A"; await ui.cancelCrewWorkEntryFormal(cancelRefreshA);
+  assert(cancelRefreshA.removed);
+  ui.openCrewFormalCancellationDialog(cancelRefreshB); reason.value = "refresh B"; await ui.cancelCrewWorkEntryFormal(cancelRefreshB);
+  assert(cancelRefreshB.removed);
+  assert.deepStrictEqual(cancelRefreshPayloads.map(payload=>payload.entry_id),[211,212]);
+
+  const cancelRetryPayloads = []; let cancelRetryAttempt = 0;
+  global.fetch = async (url, options = {}) => {
+    if (url.includes("formal-approval-cancel")) {
+      cancelRetryPayloads.push(JSON.parse(options.body)); cancelRetryAttempt++;
+      return cancelRetryAttempt === 1
+        ? {ok:false,json:async()=>({ok:false,error:{code:"write_conflict",message:"retry"}})}
+        : {ok:true,json:async()=>({ok:true})};
+    }
+    return {ok:true,json:async()=>({ok:true,active_vendors:[]})};
+  };
+  const cancelRetry = button({entryId:"221",sheetId:"3",vendor:"Retry Vendor"});
+  ui.openCrewFormalCancellationDialog(cancelRetry); reason.value = "  retained reason  ";
+  await ui.cancelCrewWorkEntryFormal(cancelRetry);
+  assert(!cancelRetry.removed && !cancelRetry.disabled && !submit.disabled && reason.value === "  retained reason  ");
+  await ui.cancelCrewWorkEntryFormal(cancelRetry);
+  assert(cancelRetry.removed);
+  assert.deepStrictEqual(cancelRetryPayloads.map(payload=>payload.entry_id),[221,221]);
+  assert.deepStrictEqual(cancelRetryPayloads.map(payload=>payload.reason),["retained reason","retained reason"]);
+
+  let closePosts = 0; global.fetch = async()=>{closePosts++;throw new Error("must not post")};
+  const closeTrigger = button(); ui.openCrewFormalCancellationDialog(closeTrigger); closeButton.dispatch("click");
+  assert(!dialog.open && closePosts === 0 && closeTrigger.focused);
+
+  const renderSource = source.slice(source.indexOf("function renderCrewForms"), source.indexOf("async function loadCrewForms"));
+  assert(renderSource.indexOf('crew-work-entry-requirement-action-slot') < renderSource.indexOf('crew-work-entry-formal-approval-indicator'));
+  assert(renderSource.indexOf('crew-work-entry-formal-approve-slot') < renderSource.indexOf('crew-work-entry-scheduling-gate-indicator'));
+
+  assert(!source.includes("requirement-confirmation-cancel"));
+  assert(!source.includes("crew_cancel_requirement_confirmation"));
+  assert(!source.includes("crew_formal_reapprove"));
+  assert(!source.includes("crew_cancel_schedule"));
+  assert(!source.includes("/api/crew-work-entry/schedule-cancel"));
+  console.log("formal approval cancellation UI smoke PASS");
+})().catch(error => { console.error(error); process.exit(1); });
+''',
+        encoding="utf-8",
+    )
+    template_text = (ROOT_DIR / "templates" / "sheet.html").read_text(encoding="utf-8")
+    if 'id="crew-formal-cancellation-reason"' not in template_text or 'maxlength="500"' in template_text:
+        raise AssertionError("formal cancellation reason must rely on Unicode code-point validation, not HTML maxlength")
+    result = subprocess.run(
+        ["node", str(script_path), str(app_js_path)],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    marker = "formal approval cancellation UI smoke PASS"
+    if result.returncode != 0:
+        raise AssertionError(f"formal cancellation UI child failed: {result.stderr or result.stdout}")
+    if result.stderr:
+        raise AssertionError(f"formal cancellation UI child stderr was not empty: {result.stderr}")
+    if result.stdout.count(marker) != 1:
+        raise AssertionError("formal cancellation UI child marker count must be exactly one")
+    print(marker)
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         run_dev_vendor_credential_rotation_smoke(Path(tmpdir) / "dev-vendor-credential-rotation")
@@ -19305,6 +19692,9 @@ def main() -> int:
         )
         run_formal_approval_cancelled_projection_smoke(
             Path(tmpdir) / "formal-approval-cancelled-projection"
+        )
+        run_formal_approval_cancellation_ui_smoke(
+            Path(tmpdir) / "formal-approval-cancellation-ui"
         )
         run_crew_schema_smoke_v2(Path(tmpdir) / "crew-schema-smoke.db")
         run_crew_schema_migration_smoke(Path(tmpdir) / "crew-schema-migration-smoke.db")

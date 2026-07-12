@@ -8,6 +8,12 @@ const crewFormError = document.getElementById("crewFormError");
 const crewManagementInsightSummary = document.getElementById("crewManagementInsightSummary");
 const crewWorkHubCards = document.getElementById("crewWorkHubCards");
 const crewWorkHubFocusSections = document.getElementById("crewWorkHubFocusSections");
+const crewFormalCancellationDialog = document.getElementById("crew-formal-cancellation-dialog");
+const crewFormalCancellationForm = document.querySelector("[data-testid='crew-formal-cancellation-form']");
+const crewFormalCancellationReason = document.getElementById("crew-formal-cancellation-reason");
+const crewFormalCancellationCounter = document.getElementById("crew-formal-cancellation-counter");
+const crewFormalCancellationFeedback = document.getElementById("crew-formal-cancellation-feedback");
+const crewFormalCancellationSubmit = document.querySelector("[data-testid='crew-formal-cancellation-submit']");
 const progressControls = new Map();
 const extraControls = new Map();
 const parentCells = new Map();
@@ -31,6 +37,8 @@ let crewWorkHubFocusHighlightTimeoutId = 0;
 let crewWorkHubFocusItemActiveTimeoutId = 0;
 let crewManagementInsightActiveTimeoutId = 0;
 let crewWorkHubDestinationActiveTimeoutId = 0;
+let crewFormalCancellationTrigger = null;
+let crewFormalCancellationSubmitting = false;
 
 function initializeSheetAiUx001bDialogShell() {
   const aiButton = document.getElementById("sheet-ai-assistant-entry");
@@ -55,6 +63,61 @@ function initializeSheetAiUx001bDialogShell() {
   dialog.addEventListener("close", () => {
     aiButton.setAttribute("aria-expanded", "false");
     aiButton.focus();
+  });
+}
+
+function setCrewFormalCancellationFeedback(message, state = "") {
+  if (!crewFormalCancellationFeedback) return;
+  crewFormalCancellationFeedback.textContent = message || "";
+  if (state) crewFormalCancellationFeedback.setAttribute("data-feedback-state", state);
+  else crewFormalCancellationFeedback.removeAttribute("data-feedback-state");
+}
+
+function updateCrewFormalCancellationCounter() {
+  if (!crewFormalCancellationReason || !crewFormalCancellationCounter) return;
+  const count = countUnicodeCodePoints(crewFormalCancellationReason.value);
+  crewFormalCancellationCounter.textContent = `${count} / 500`;
+  if (crewFormalCancellationSubmit && !crewFormalCancellationSubmitting) {
+    crewFormalCancellationSubmit.disabled = count === 0 || count > 500;
+  }
+}
+
+function closeCrewFormalCancellationDialog() {
+  if (crewFormalCancellationSubmitting) return;
+  if (crewFormalCancellationDialog?.open) crewFormalCancellationDialog.close();
+}
+
+function openCrewFormalCancellationDialog(button) {
+  if (crewFormalCancellationSubmitting) return;
+  if (!button || !crewFormalCancellationDialog || typeof crewFormalCancellationDialog.showModal !== "function") return;
+  crewFormalCancellationTrigger = button;
+  crewFormalCancellationForm.dataset.entryId = button.dataset.entryId || "";
+  crewFormalCancellationForm.dataset.sheetId = button.dataset.sheetId || "";
+  document.querySelector("[data-testid='crew-formal-cancellation-entry-id']").textContent = button.dataset.entryId || "";
+  document.querySelector("[data-testid='crew-formal-cancellation-sheet-id']").textContent = button.dataset.sheetId || "";
+  document.querySelector("[data-testid='crew-formal-cancellation-vendor']").textContent = button.dataset.vendor || "";
+  crewFormalCancellationReason.value = "";
+  setCrewFormalCancellationFeedback("");
+  updateCrewFormalCancellationCounter();
+  crewFormalCancellationDialog.showModal();
+  crewFormalCancellationReason.focus();
+}
+
+function initializeCrewFormalCancellationDialog() {
+  if (!crewFormalCancellationDialog || !crewFormalCancellationForm || !crewFormalCancellationReason) return;
+  crewFormalCancellationReason.addEventListener("input", updateCrewFormalCancellationCounter);
+  document.querySelector("[data-testid='crew-formal-cancellation-close']")?.addEventListener("click", closeCrewFormalCancellationDialog);
+  crewFormalCancellationDialog.addEventListener("cancel", (event) => {
+    if (crewFormalCancellationSubmitting) event.preventDefault();
+  });
+  crewFormalCancellationDialog.addEventListener("close", () => {
+    const trigger = crewFormalCancellationTrigger;
+    crewFormalCancellationTrigger = null;
+    if (trigger?.isConnected) trigger.focus();
+  });
+  crewFormalCancellationForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    cancelCrewWorkEntryFormal(crewFormalCancellationTrigger);
   });
 }
 
@@ -830,29 +893,74 @@ function buildCrewSchedulingGateMeta(entry) {
 }
 
 function buildCrewFormalApproveMeta(entry) {
+  const hasOwn = (key) => Object.prototype.hasOwnProperty.call(entry || {}, key);
+  const formalApprovalState = hasOwn("formal_approval_state") && typeof entry.formal_approval_state === "string" ? entry.formal_approval_state.trim() : "";
+  const formalApprovalStatus = hasOwn("formal_approval_status") && typeof entry.formal_approval_status === "string" ? entry.formal_approval_status.trim() : "";
+  const schedulingGateState = hasOwn("scheduling_gate_state") && typeof entry.scheduling_gate_state === "string" ? entry.scheduling_gate_state.trim() : "";
+  const readinessState = hasOwn("readiness_state") && typeof entry.readiness_state === "string" ? entry.readiness_state.trim() : "";
+  const requirementStatusValid = hasOwn("requirement_status") && typeof entry.requirement_status === "string" && Boolean(entry.requirement_status.trim());
+  const scheduledValid = hasOwn("scheduled") && typeof entry.scheduled === "boolean";
+  const blockedValid = hasOwn("blocked") && typeof entry.blocked === "boolean";
+  const schedulableValid = hasOwn("schedulable") && typeof entry.schedulable === "boolean";
+  const integrityValid = hasOwn("formal_approval_integrity_warning") && typeof entry.formal_approval_integrity_warning === "string";
+  const scheduled = scheduledValid ? entry.scheduled : false;
+  const integrityWarning = integrityValid ? entry.formal_approval_integrity_warning.trim() : "formal_approval_integrity_conflict";
+  const canonicalComplete = requirementStatusValid && scheduledValid && blockedValid && schedulableValid && integrityValid;
+  const canApprove = canonicalComplete && readinessState === "ready" && schedulingGateState === "allowed" && formalApprovalState === "pending" && formalApprovalStatus === "pending" && entry.blocked === true && entry.schedulable === false && !scheduled && !integrityWarning;
+  const canCancel = canonicalComplete && formalApprovalState === "approved" && formalApprovalStatus === "approved" && entry.blocked === false && entry.schedulable === true && !scheduled && !integrityWarning;
+  let actionMarkup = "";
+  let readonlyMarkup = "";
+
+  if (canApprove) {
+    actionMarkup = `<button type="button" class="crew-formal-approve-btn" data-testid="crew-work-entry-formal-approve-action" data-entry-id="${escapeHtml(entry?.id ?? "")}" data-sheet-id="${escapeHtml(entry?.sheet_id ?? "")}">正式核准</button>`;
+  } else if (canCancel) {
+    actionMarkup = `<button type="button" class="danger-button crew-formal-cancel-btn" data-testid="crew-work-entry-formal-cancel-action" data-entry-id="${escapeHtml(entry?.id ?? "")}" data-sheet-id="${escapeHtml(entry?.sheet_id ?? "")}" data-vendor="${escapeHtml(entry?.vendor_name ?? "")}">取消今日進場核准</button>`;
+  } else if (formalApprovalState === "approved" && formalApprovalStatus === "approved" && scheduledValid && scheduled) {
+    readonlyMarkup = '<div class="crew-formal-action-blocked" data-testid="crew-work-entry-formal-cancel-scheduled">請先取消排程</div>';
+  } else if (formalApprovalState === "invalid") {
+    readonlyMarkup = `<div class="crew-formal-integrity-warning" data-testid="crew-work-entry-formal-integrity-warning">${escapeHtml(entry?.formal_approval_integrity_warning || "formal_approval_integrity_conflict")}</div>`;
+  }
+
   return {
     actionLabel: "正式核准",
     successMessage: "已完成正式核准",
     blockedMessage: "無法完成正式核准：進場前需求尚未確認",
-    actionMarkup: `<button type="button" class="crew-formal-approve-btn" data-testid="crew-work-entry-formal-approve-action" data-entry-id="${escapeHtml(entry?.id ?? "")}" data-sheet-id="${escapeHtml(entry?.sheet_id ?? "")}">正式核准</button>`,
+    actionMarkup,
+    readonlyMarkup,
   };
 }
 
+function countUnicodeCodePoints(value) {
+  return Array.from(String(value ?? "")).length;
+}
+
 function buildCrewFormalApprovalIndicatorMeta(entry) {
-  const formalApprovalState = String(entry?.formal_approval_state || "pending").trim() || "pending";
-  const formalApprovalStatus = String(entry?.formal_approval_status || "pending").trim() || "pending";
+  const formalApprovalState = typeof entry?.formal_approval_state === "string" ? entry.formal_approval_state.trim() : "";
+  const formalApprovalStatus = typeof entry?.formal_approval_status === "string" ? entry.formal_approval_status.trim() : "";
   const formalApprovedBy = String(entry?.formal_approved_by || "").trim();
   const formalApprovedAt = String(entry?.formal_approved_at || "").trim();
-  const indicatorLabel = formalApprovalState === "approved" ? "正式核准：已完成" : "正式核准：待核准";
-  const detailMarkup =
-    formalApprovalState === "approved" && (formalApprovedBy || formalApprovedAt)
-      ? `<div data-testid="crew-work-entry-formal-approval-meta"><span class="crew-label">核准資訊</span><strong data-testid="crew-work-entry-formal-approved-by">${escapeHtml(formalApprovedBy || "已完成正式核准")}</strong>${formalApprovedAt ? `<span data-testid="crew-work-entry-formal-approved-at">${escapeHtml(formatCrewDateTime(formalApprovedAt))}</span>` : ""}</div>`
-      : "";
+  const formalCancelledBy = String(entry?.formal_cancelled_by || "").trim();
+  const formalCancelledAt = String(entry?.formal_cancelled_at || "").trim();
+  const formalCancellationReason = String(entry?.formal_cancellation_reason || "").trim();
+  let indicatorLabel = "正式核准資料異常";
+  if (formalApprovalState === "pending" && formalApprovalStatus === "pending") indicatorLabel = "正式核准：待核准";
+  if (formalApprovalState === "approved") indicatorLabel = "正式核准：已完成";
+  else if (formalApprovalState === "cancelled") indicatorLabel = "今日進場核准已取消";
+  else if (formalApprovalState === "invalid") indicatorLabel = "正式核准資料異常";
+  let detailMarkup = "";
+  if (formalApprovalState === "approved" && (formalApprovedBy || formalApprovedAt)) {
+    detailMarkup = `<div data-testid="crew-work-entry-formal-approval-meta"><span class="crew-label">核准資訊</span><strong data-testid="crew-work-entry-formal-approved-by">${escapeHtml(formalApprovedBy || "已完成正式核准")}</strong>${formalApprovedAt ? `<span data-testid="crew-work-entry-formal-approved-at">${escapeHtml(formatCrewDateTime(formalApprovedAt))}</span>` : ""}</div>`;
+  } else if (formalApprovalState === "cancelled") {
+    detailMarkup = `<div class="crew-formal-lifecycle-meta" data-testid="crew-work-entry-formal-cancelled-meta"><div><span class="crew-label">原核准人</span><strong data-testid="crew-work-entry-formal-approved-by">${escapeHtml(formalApprovedBy)}</strong></div><div><span class="crew-label">原核准時間</span><strong data-testid="crew-work-entry-formal-approved-at">${escapeHtml(formatCrewDateTime(formalApprovedAt))}</strong></div><div><span class="crew-label">取消人</span><strong data-testid="crew-work-entry-formal-cancelled-by">${escapeHtml(formalCancelledBy)}</strong></div><div><span class="crew-label">取消時間</span><strong data-testid="crew-work-entry-formal-cancelled-at">${escapeHtml(formatCrewDateTime(formalCancelledAt))}</strong></div><div><span class="crew-label">取消原因</span><strong data-testid="crew-work-entry-formal-cancellation-reason">${escapeHtml(formalCancellationReason)}</strong></div></div>`;
+  }
   return {
     formalApprovalState,
     formalApprovalStatus,
     formalApprovedBy,
     formalApprovedAt,
+    formalCancelledBy,
+    formalCancelledAt,
+    formalCancellationReason,
     indicatorLabel,
     detailMarkup,
   };
@@ -965,14 +1073,16 @@ function renderCrewForms(data) {
       readinessNode.innerHTML = `<span class="crew-label">進場條件</span><strong>${escapeHtml(readinessMeta.readinessLabel)}</strong>`;
       row.appendChild(readinessNode);
 
-      if (schedulingGateMeta.schedulingGateLabel) {
-        const schedulingGateNode = document.createElement("div");
-        schedulingGateNode.setAttribute("data-testid", "crew-work-entry-scheduling-gate-indicator");
-        schedulingGateNode.setAttribute("data-scheduling-gate-state", schedulingGateMeta.schedulingGateState);
-        schedulingGateNode.setAttribute("data-scheduling-gate-reason", schedulingGateMeta.schedulingGateReason);
-        schedulingGateNode.innerHTML = `<span class="crew-label">排程提醒</span><strong>${escapeHtml(schedulingGateMeta.schedulingGateLabel)}</strong>`;
-        row.appendChild(schedulingGateNode);
+      if (requirementMeta.confirmedMeta) {
+        const confirmedMetaNode = document.createElement("div");
+        confirmedMetaNode.innerHTML = requirementMeta.confirmedMeta;
+        row.appendChild(confirmedMetaNode.firstElementChild);
       }
+
+      const actionSlot = document.createElement("div");
+      actionSlot.setAttribute("data-testid", "crew-work-entry-requirement-action-slot");
+      actionSlot.innerHTML = requirementMeta.actionMarkup;
+      row.appendChild(actionSlot);
 
       const formalApprovalNode = document.createElement("div");
       formalApprovalNode.setAttribute("data-testid", "crew-work-entry-formal-approval-indicator");
@@ -987,28 +1097,26 @@ function renderCrewForms(data) {
         row.appendChild(formalApprovalMetaNode.firstElementChild);
       }
 
-      if (requirementMeta.confirmedMeta) {
-        const confirmedMetaNode = document.createElement("div");
-        confirmedMetaNode.innerHTML = requirementMeta.confirmedMeta;
-        row.appendChild(confirmedMetaNode.firstElementChild);
-      }
-
-      const actionSlot = document.createElement("div");
-      actionSlot.setAttribute("data-testid", "crew-work-entry-requirement-action-slot");
-      actionSlot.innerHTML = requirementMeta.actionMarkup;
-      row.appendChild(actionSlot);
-
       const formalApproveSlot = document.createElement("div");
       formalApproveSlot.setAttribute("data-testid", "crew-work-entry-formal-approve-slot");
-      formalApproveSlot.innerHTML = `${formalApproveMeta.actionMarkup}<div data-testid="crew-work-entry-formal-approve-feedback"></div>`;
+      formalApproveSlot.innerHTML = `${formalApproveMeta.actionMarkup}${formalApproveMeta.readonlyMarkup}<div data-testid="crew-work-entry-formal-approve-feedback"></div>`;
       row.appendChild(formalApproveSlot);
+
+      if (schedulingGateMeta.schedulingGateLabel) {
+        const schedulingGateNode = document.createElement("div");
+        schedulingGateNode.setAttribute("data-testid", "crew-work-entry-scheduling-gate-indicator");
+        schedulingGateNode.setAttribute("data-scheduling-gate-state", schedulingGateMeta.schedulingGateState);
+        schedulingGateNode.setAttribute("data-scheduling-gate-reason", schedulingGateMeta.schedulingGateReason);
+        schedulingGateNode.innerHTML = `<span class="crew-label">排程提醒</span><strong>${escapeHtml(schedulingGateMeta.schedulingGateLabel)}</strong>`;
+        row.appendChild(schedulingGateNode);
+      }
     });
   });
   syncCrewScheduledRowMarkers();
 }
 
 async function loadCrewForms(sheetId) {
-  if (!crewFormShell || !sheetId) return;
+  if (!crewFormShell || !sheetId) return false;
   try {
     const response = await fetch(`/api/crew-forms?sheet_id=${encodeURIComponent(sheetId)}`);
     const data = await response.json().catch(() => ({}));
@@ -1016,8 +1124,10 @@ async function loadCrewForms(sheetId) {
       throw new Error(data?.error?.message || "crew forms request failed");
     }
     renderCrewForms(data);
+    return true;
   } catch (error) {
     renderCrewFormError(error?.message || "crew forms request failed");
+    return false;
   }
 }
 
@@ -1210,6 +1320,7 @@ function setCrewFormalApproveFeedback(button, message, state = "") {
 }
 
 async function approveCrewWorkEntryFormal(button) {
+  if (!button || button.disabled || button.dataset.formalApproveInFlight === "true") return;
   const entryId = Number.parseInt(button?.dataset.entryId || "", 10);
   const sheetId = Number.parseInt(button?.dataset.sheetId || crewFormShell?.dataset.sheetId || "", 10);
   if (!entryId || !sheetId) {
@@ -1218,6 +1329,8 @@ async function approveCrewWorkEntryFormal(button) {
   }
 
   const originalText = button.textContent;
+  let approvalSucceeded = false;
+  button.dataset.formalApproveInFlight = "true";
   button.disabled = true;
   button.textContent = "核准中...";
   setCrewFormalApproveFeedback(button, "");
@@ -1241,12 +1354,97 @@ async function approveCrewWorkEntryFormal(button) {
       }
       throw new Error(data?.error?.message || "crew formal approve failed");
     }
+    approvalSucceeded = true;
     setCrewFormalApproveFeedback(button, "已完成正式核准", "success");
+    button.remove();
+    const refreshed = await loadCrewForms(sheetId);
+    if (!refreshed) {
+      renderCrewFormError("核准已完成，但畫面重新載入失敗，請手動重新整理頁面。");
+    }
   } catch (error) {
-    setCrewFormalApproveFeedback(button, error?.message || "crew formal approve failed", "error");
+    if (!approvalSucceeded) {
+      setCrewFormalApproveFeedback(button, error?.message || "crew formal approve failed", "error");
+    }
   } finally {
-    button.disabled = false;
-    button.textContent = originalText;
+    if (!approvalSucceeded) {
+      button.disabled = false;
+      button.textContent = originalText;
+      delete button.dataset.formalApproveInFlight;
+    }
+  }
+}
+
+async function cancelCrewWorkEntryFormal(button) {
+  if (crewFormalCancellationSubmitting || !button || !crewFormalCancellationReason) return;
+  const entryId = Number.parseInt(button.dataset.entryId || "", 10);
+  const sheetId = Number.parseInt(button.dataset.sheetId || crewFormShell?.dataset.sheetId || "", 10);
+  const reason = String(crewFormalCancellationReason.value || "").trim();
+  if (!entryId || !sheetId) {
+    setCrewFormalCancellationFeedback("缺少取消今日進場核准context。", "error");
+    return;
+  }
+  if (!reason || countUnicodeCodePoints(reason) > 500) {
+    setCrewFormalCancellationFeedback("取消原因需為trim後1至500字。", "error");
+    return;
+  }
+  const requestContext = Object.freeze({
+    entryId,
+    sheetId,
+    vendor: String(button.dataset.vendor || ""),
+    trigger: button,
+    reason,
+  });
+
+  let cancellationSucceeded = false;
+  let terminalRejected = false;
+  crewFormalCancellationSubmitting = true;
+  requestContext.trigger.disabled = true;
+  crewFormalCancellationSubmit.disabled = true;
+  setCrewFormalCancellationFeedback("取消處理中...");
+  try {
+    const response = await fetch("/api/crew-work-entry/formal-approval-cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        entry_id: requestContext.entryId,
+        sheet_id: requestContext.sheetId,
+        action: "crew_formal_cancel_approval",
+        reason: requestContext.reason,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) {
+      const error = new Error(data?.error?.message || "crew formal approval cancellation failed");
+      error.code = data?.error?.code || "";
+      throw error;
+    }
+
+    cancellationSucceeded = true;
+    requestContext.trigger.remove();
+    crewFormalCancellationDialog.close();
+    const refreshed = await loadCrewForms(requestContext.sheetId);
+    if (!refreshed) {
+      renderCrewFormError("取消已完成，但畫面重新載入失敗，請手動重新整理頁面。");
+    }
+  } catch (error) {
+    if (error?.code === "approval_has_schedule" || error?.code === "approval_already_cancelled") {
+      terminalRejected = true;
+      requestContext.trigger.remove();
+      const message = error.code === "approval_has_schedule" ? "請先取消排程" : "此筆今日進場核准已取消，正在重新載入最新狀態。";
+      setCrewFormalCancellationFeedback(message, "error");
+      const refreshed = await loadCrewForms(requestContext.sheetId);
+      if (!refreshed) {
+        setCrewFormalCancellationFeedback(`${message} 畫面重新載入失敗，請手動重新整理頁面。`, "error");
+      }
+    } else if (!cancellationSucceeded) {
+      setCrewFormalCancellationFeedback(error?.message || "crew formal approval cancellation failed", "error");
+    }
+  } finally {
+    crewFormalCancellationSubmitting = false;
+    if (!cancellationSucceeded && !terminalRejected) {
+      requestContext.trigger.disabled = false;
+      crewFormalCancellationSubmit.disabled = false;
+    }
   }
 }
 
@@ -1559,6 +1757,9 @@ document.addEventListener("click", (event) => {
   const crewFormalApprove = event.target.closest("[data-testid='crew-work-entry-formal-approve-action']");
   if (crewFormalApprove) return approveCrewWorkEntryFormal(crewFormalApprove);
 
+  const crewFormalCancel = event.target.closest("[data-testid='crew-work-entry-formal-cancel-action']");
+  if (crewFormalCancel) return openCrewFormalCancellationDialog(crewFormalCancel);
+
   const head = event.target.closest(".selectable-head[data-task-id], .selectable-head[data-vendor-task]");
   if (head) {
     toggleTaskSelection(head.dataset.taskId || head.dataset.vendorTask);
@@ -1620,6 +1821,7 @@ document.addEventListener("change", (event) => {
 buildDomCache();
 updatePrintDate();
 initializeSheetAiUx001bDialogShell();
+initializeCrewFormalCancellationDialog();
 if (crewFormShell?.dataset.sheetId) {
   loadCrewWorkHubSummary(crewFormShell.dataset.sheetId);
   loadCrewForms(crewFormShell.dataset.sheetId);
