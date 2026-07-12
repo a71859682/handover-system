@@ -5811,16 +5811,25 @@ def ensure_unit_extra_rows(conn: sqlite3.Connection) -> None:
 
 
 def ensure_extra_fields(conn: sqlite3.Connection) -> None:
-    for sheet in conn.execute("SELECT id FROM sheets"):
+    existing_pairs = {
+        (row["sheet_id"], row["field_key"])
+        for row in conn.execute("SELECT sheet_id, field_key FROM extra_fields")
+    }
+    sheet_ids = [row["id"] for row in conn.execute("SELECT id FROM sheets")]
+    for sheet_id in sheet_ids:
         for field_key, field in BUILTIN_EXTRA_FIELDS.items():
+            pair = (sheet_id, field_key)
+            if pair in existing_pairs:
+                continue
             conn.execute(
                 """
                 INSERT OR IGNORE INTO extra_fields
                 (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
                 VALUES (?, ?, ?, ?, ?, 1, 1)
                 """,
-                (sheet["id"], field_key, field["name"], field["type"], field["sort_order"]),
+                (sheet_id, field_key, field["name"], field["type"], field["sort_order"]),
             )
+            existing_pairs.add(pair)
 
 
 def bootstrap() -> None:

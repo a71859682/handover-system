@@ -2941,6 +2941,347 @@ print("formal approval cancellation schema smoke PASS")
     print("formal approval cancellation schema focused smoke PASS")
 
 
+def run_extra_field_startup_noop_sequence_smoke(temp_root: Path) -> None:
+    import hashlib
+
+    temp_root.mkdir(parents=True, exist_ok=True)
+    repository_db = ROOT_DIR / "site.db"
+
+    def repository_db_state():
+        if not repository_db.exists():
+            return None
+        return (
+            hashlib.sha256(repository_db.read_bytes()).hexdigest(),
+            repository_db.stat().st_size,
+            repository_db.stat().st_mtime_ns,
+        )
+
+    repository_db_before = repository_db_state()
+    child_path = temp_root / "extra-field-startup-noop-smoke.py"
+    child_path.write_text(
+        r'''
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+temp_root = Path(sys.argv[1]).resolve()
+root_dir = Path(sys.argv[2]).resolve()
+if temp_root == root_dir or root_dir in temp_root.parents:
+    raise AssertionError("focused DB root must be disposable and outside the repository")
+sys.dont_write_bytecode = True
+os.environ["APP_DB_PATH"] = str(temp_root / "bootstrap.db")
+os.environ["DATABASE_URL"] = "postgresql://DATABASE_URL_SENTINEL"
+os.environ["RUNTIME_DATA_SMOKE_SECRET"] = "SYNTHETIC_SECRET"
+sys.path.insert(0, str(root_dir))
+
+import psycopg
+
+postgres_connect_calls = []
+original_postgres_connect = psycopg.connect
+
+
+def forbidden_postgres_connect(*args, **kwargs):
+    postgres_connect_calls.append((args, kwargs))
+    raise AssertionError("PostgreSQL connection path must not run")
+
+
+psycopg.connect = forbidden_postgres_connect
+try:
+    spec = importlib.util.spec_from_file_location(
+        "extra_field_startup_noop_app_under_test", root_dir / "app.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+finally:
+    psycopg.connect = original_postgres_connect
+
+
+class CountingConnection:
+    def __init__(self, connection, *, before_extra_insert=None):
+        self.connection = connection
+        self.before_extra_insert = before_extra_insert
+        self.extra_insert_attempts = 0
+
+    @property
+    def in_transaction(self):
+        return self.connection.in_transaction
+
+    def execute(self, sql, parameters=()):
+        normalized = " ".join(str(sql).split()).lower()
+        if normalized.startswith("insert or ignore into extra_fields"):
+            self.extra_insert_attempts += 1
+            if self.before_extra_insert is not None:
+                callback = self.before_extra_insert
+                self.before_extra_insert = None
+                callback(sql, parameters)
+        return self.connection.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+
+def create_fixture(path, *, sheet_count=5):
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE sheets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL);
+        CREATE TABLE extra_fields (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sheet_id INTEGER NOT NULL,
+            field_key TEXT NOT NULL,
+            name TEXT NOT NULL,
+            field_type TEXT NOT NULL DEFAULT 'date',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_builtin INTEGER NOT NULL DEFAULT 0,
+            active INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(sheet_id, field_key)
+        );
+        CREATE TABLE caller_sentinel (value TEXT PRIMARY KEY);
+        CREATE TABLE unrelated_rows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            value TEXT NOT NULL
+        );
+        INSERT INTO unrelated_rows (value) VALUES ('stable');
+        """
+    )
+    for sheet_id in range(1, sheet_count + 1):
+        conn.execute("INSERT INTO sheets (id, name) VALUES (?, ?)", (sheet_id, f"Sheet {sheet_id}"))
+        for field_key, field in module.BUILTIN_EXTRA_FIELDS.items():
+            conn.execute(
+                """
+                INSERT INTO extra_fields
+                (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+                VALUES (?, ?, ?, ?, ?, 1, 1)
+                """,
+                (sheet_id, field_key, field["name"], field["type"], field["sort_order"]),
+            )
+    conn.commit()
+    return conn
+
+
+def state(conn):
+    rows = [
+        tuple(row)
+        for row in conn.execute(
+            """
+            SELECT id, sheet_id, field_key, name, field_type, sort_order, is_builtin, active
+            FROM extra_fields ORDER BY id
+            """
+        )
+    ]
+    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    sequences = dict(conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name").fetchall())
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "hash": hashlib.sha256(payload).hexdigest(),
+        "extra_sequence": sequences.get("extra_fields"),
+        "other_sequences": {key: value for key, value in sequences.items() if key != "extra_fields"},
+        "unrelated": [tuple(row) for row in conn.execute("SELECT * FROM unrelated_rows ORDER BY id")],
+    }
+
+
+def assert_existing_rows_unchanged(before_rows, after_rows):
+    before = {(row[1], row[2]): row for row in before_rows}
+    after = {(row[1], row[2]): row for row in after_rows}
+    for pair, row in before.items():
+        if after.get(pair) != row:
+            raise AssertionError(f"existing extra field changed: {pair}")
+
+
+def missing_case(name, missing_pairs):
+    path = temp_root / f"{name}.db"
+    conn = create_fixture(path)
+    conn.executemany(
+        "DELETE FROM extra_fields WHERE sheet_id = ? AND field_key = ?",
+        sorted(missing_pairs),
+    )
+    conn.commit()
+    before = state(conn)
+    proxy = CountingConnection(conn)
+    module.ensure_extra_fields(proxy)
+    conn.commit()
+    after = state(conn)
+    if proxy.extra_insert_attempts != len(missing_pairs):
+        raise AssertionError(f"{name}: unexpected INSERT attempt count")
+    if after["count"] != before["count"] + len(missing_pairs):
+        raise AssertionError(f"{name}: unexpected row count")
+    if after["extra_sequence"] != before["extra_sequence"] + len(missing_pairs):
+        raise AssertionError(f"{name}: sequence did not match successful inserts")
+    if after["other_sequences"] != before["other_sequences"] or after["unrelated"] != before["unrelated"]:
+        raise AssertionError(f"{name}: unrelated data or sequence changed")
+    assert_existing_rows_unchanged(before["rows"], after["rows"])
+    conn.close()
+
+
+# Complete 5-sheet/20-pair steady state is SELECT-only.
+complete = create_fixture(temp_root / "complete.db")
+complete_before = state(complete)
+complete_proxy = CountingConnection(complete)
+module.ensure_extra_fields(complete_proxy)
+complete_after = state(complete)
+if complete_proxy.extra_insert_attempts != 0:
+    raise AssertionError("steady-state helper reached the INSERT path")
+if complete_after != complete_before:
+    raise AssertionError("steady-state helper changed rows, hashes, sequences, or unrelated data")
+complete.close()
+
+missing_case("one-missing", {(5, "handover")})
+missing_case(
+    "multi-missing",
+    {(1, "initial_check"), (3, "recheck_2"), (5, "handover")},
+)
+
+# New sheet gets exactly four builtin rows.
+new_sheet = create_fixture(temp_root / "new-sheet.db")
+new_sheet.execute("INSERT INTO sheets (id, name) VALUES (6, 'Sheet 6')")
+new_sheet.commit()
+new_sheet_proxy = CountingConnection(new_sheet)
+module.ensure_extra_fields(new_sheet_proxy)
+new_sheet.commit()
+new_keys = [
+    row[0]
+    for row in new_sheet.execute(
+        "SELECT field_key FROM extra_fields WHERE sheet_id = 6 ORDER BY sort_order"
+    )
+]
+if new_sheet_proxy.extra_insert_attempts != 4 or new_keys != list(module.BUILTIN_EXTRA_FIELDS):
+    raise AssertionError("new sheet did not receive exactly four builtin rows")
+new_sheet.close()
+
+# Divergent builtin values and a custom field remain unchanged.
+divergent = create_fixture(temp_root / "divergent-custom.db")
+divergent.execute(
+    """
+    UPDATE extra_fields
+    SET name='Custom builtin label', field_type='status', sort_order=99,
+        is_builtin=0, active=0
+    WHERE sheet_id=1 AND field_key='initial_check'
+    """
+)
+divergent.execute(
+    """
+    INSERT INTO extra_fields
+    (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+    VALUES (1, 'custom_field', 'Custom Field', 'date', 100, 0, 1)
+    """
+)
+divergent.commit()
+divergent_before = state(divergent)
+divergent_proxy = CountingConnection(divergent)
+module.ensure_extra_fields(divergent_proxy)
+if divergent_proxy.extra_insert_attempts != 0 or state(divergent) != divergent_before:
+    raise AssertionError("helper rewrote divergent builtin or custom field data")
+divergent.close()
+
+# Repeated ensure: first repairs one row, second is a total no-op.
+repeated = create_fixture(temp_root / "repeated.db")
+repeated.execute("DELETE FROM extra_fields WHERE sheet_id=5 AND field_key='handover'")
+repeated.commit()
+first_proxy = CountingConnection(repeated)
+module.ensure_extra_fields(first_proxy)
+repeated.commit()
+second_before = state(repeated)
+second_proxy = CountingConnection(repeated)
+module.ensure_extra_fields(second_proxy)
+if first_proxy.extra_insert_attempts != 1 or second_proxy.extra_insert_attempts != 0:
+    raise AssertionError("repeated ensure did not become a no-op")
+if state(repeated) != second_before:
+    raise AssertionError("second ensure changed rows or sequences")
+repeated.close()
+
+# Deterministic race after snapshot and before helper INSERT.
+race_path = temp_root / "race.db"
+race = create_fixture(race_path)
+race.execute("DELETE FROM extra_fields WHERE sheet_id=2 AND field_key='recheck_1'")
+race.commit()
+
+
+def competing_insert(sql, parameters):
+    competitor = sqlite3.connect(race_path)
+    competitor.execute(sql, parameters)
+    competitor.commit()
+    competitor.close()
+
+
+race_proxy = CountingConnection(race, before_extra_insert=competing_insert)
+module.ensure_extra_fields(race_proxy)
+race.commit()
+race_count = race.execute(
+    "SELECT COUNT(*) FROM extra_fields WHERE sheet_id=2 AND field_key='recheck_1'"
+).fetchone()[0]
+if race_proxy.extra_insert_attempts != 1 or race_count != 1:
+    raise AssertionError("deterministic race did not converge to one row")
+race.close()
+
+# Helper preserves caller transaction ownership.
+outer = create_fixture(temp_root / "outer-transaction.db")
+outer.execute("DELETE FROM extra_fields WHERE sheet_id=4 AND field_key='recheck_2'")
+outer.commit()
+outer.execute("BEGIN")
+outer.execute("INSERT INTO caller_sentinel (value) VALUES ('caller-owned')")
+module.ensure_extra_fields(outer)
+if not outer.in_transaction:
+    raise AssertionError("helper ended the caller transaction")
+outer.rollback()
+if outer.execute("SELECT COUNT(*) FROM caller_sentinel").fetchone()[0] != 0:
+    raise AssertionError("caller rollback did not remove sentinel")
+if outer.execute(
+    "SELECT COUNT(*) FROM extra_fields WHERE sheet_id=4 AND field_key='recheck_2'"
+).fetchone()[0] != 0:
+    raise AssertionError("caller rollback did not remove helper row")
+outer.close()
+
+if postgres_connect_calls:
+    raise AssertionError(
+        f"PostgreSQL connection sentinel call count: {len(postgres_connect_calls)}"
+    )
+print("extra field startup no-op sequence smoke PASS")
+''',
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "DATABASE_URL": "",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": str((temp_root / "pycache").resolve()),
+    }
+    result = subprocess.run(
+        [sys.executable, "-B", str(child_path), str(temp_root), str(ROOT_DIR)],
+        cwd=ROOT_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            "extra field startup no-op child failed\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+    if result.stderr:
+        raise AssertionError(f"extra field startup no-op child wrote stderr: {result.stderr}")
+    if "extra field startup no-op sequence smoke PASS" not in result.stdout:
+        raise AssertionError("extra field startup no-op child did not report PASS")
+    for marker in ("SYNTHETIC_SECRET", "DATABASE_URL_SENTINEL", "password_hash"):
+        if marker in result.stdout + result.stderr:
+            raise AssertionError(f"extra field startup no-op child leaked marker: {marker}")
+    repository_db_after = repository_db_state()
+    if repository_db_after != repository_db_before:
+        raise AssertionError("repository site.db changed during focused smoke")
+    print("extra field startup no-op focused smoke PASS")
+
+
 def run_scheduler_schema_smoke(app_db_path: Path) -> None:
     if app_db_path.exists():
         app_db_path.unlink()
@@ -17964,6 +18305,9 @@ def main() -> int:
         run_users_read_compare_readiness_smoke(Path(tmpdir) / "app-smoke.db")
         run_formal_approval_cancellation_schema_smoke(
             Path(tmpdir) / "formal-approval-cancellation-schema"
+        )
+        run_extra_field_startup_noop_sequence_smoke(
+            Path(tmpdir) / "extra-field-startup-noop"
         )
         run_crew_schema_smoke_v2(Path(tmpdir) / "crew-schema-smoke.db")
         run_crew_schema_migration_smoke(Path(tmpdir) / "crew-schema-migration-smoke.db")
