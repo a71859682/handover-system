@@ -4666,60 +4666,125 @@ def ensure_formal_approvals_schema(conn: sqlite3.Connection) -> None:
     existing_tables = {
         row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
-    if "formal_approvals" not in existing_tables:
-        conn.executescript(
+    conn.execute("SAVEPOINT formal_approval_cancellation_schema_ensure")
+    try:
+        if "formal_approvals" not in existing_tables:
+            conn.execute(
+                """
+                CREATE TABLE formal_approvals (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    entry_id INTEGER NOT NULL,
+                    sheet_id INTEGER NOT NULL,
+                    action TEXT NOT NULL DEFAULT 'crew_formal_approve_entry',
+                    approval_status TEXT NOT NULL DEFAULT 'approved',
+                    approved_by TEXT,
+                    approved_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (entry_id) REFERENCES vendor_work_entries(id),
+                    FOREIGN KEY (sheet_id) REFERENCES sheets(id)
+                )
+                """
+            )
+
+        formal_approvals_columns = _table_columns(conn, "formal_approvals")
+        if "entry_id" not in formal_approvals_columns:
+            conn.execute("ALTER TABLE formal_approvals ADD COLUMN entry_id INTEGER")
+        if "sheet_id" not in formal_approvals_columns:
+            conn.execute("ALTER TABLE formal_approvals ADD COLUMN sheet_id INTEGER")
+        if "action" not in formal_approvals_columns:
+            conn.execute(
+                "ALTER TABLE formal_approvals ADD COLUMN action TEXT NOT NULL "
+                "DEFAULT 'crew_formal_approve_entry'"
+            )
+        if "approval_status" not in formal_approvals_columns:
+            conn.execute(
+                "ALTER TABLE formal_approvals ADD COLUMN approval_status TEXT NOT NULL "
+                "DEFAULT 'approved'"
+            )
+        if "approved_by" not in formal_approvals_columns:
+            conn.execute("ALTER TABLE formal_approvals ADD COLUMN approved_by TEXT")
+        if "approved_at" not in formal_approvals_columns:
+            conn.execute("ALTER TABLE formal_approvals ADD COLUMN approved_at TEXT")
+        if "created_at" not in formal_approvals_columns:
+            conn.execute(
+                "ALTER TABLE formal_approvals ADD COLUMN created_at TEXT NOT NULL "
+                "DEFAULT CURRENT_TIMESTAMP"
+            )
+        if "updated_at" not in formal_approvals_columns:
+            conn.execute(
+                "ALTER TABLE formal_approvals ADD COLUMN updated_at TEXT NOT NULL "
+                "DEFAULT CURRENT_TIMESTAMP"
+            )
+        if "cancelled_by" not in formal_approvals_columns:
+            conn.execute("ALTER TABLE formal_approvals ADD COLUMN cancelled_by TEXT")
+        if "cancelled_at" not in formal_approvals_columns:
+            conn.execute("ALTER TABLE formal_approvals ADD COLUMN cancelled_at TEXT")
+        if "cancellation_reason" not in formal_approvals_columns:
+            conn.execute("ALTER TABLE formal_approvals ADD COLUMN cancellation_reason TEXT")
+
+        conn.execute(
             """
-            CREATE TABLE formal_approvals (
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_formal_approvals_entry_action_unique
+            ON formal_approvals (entry_id, action)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_formal_approvals_sheet_id
+            ON formal_approvals (sheet_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS formal_approval_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                approval_id INTEGER NOT NULL,
                 entry_id INTEGER NOT NULL,
                 sheet_id INTEGER NOT NULL,
-                action TEXT NOT NULL DEFAULT 'crew_formal_approve_entry',
-                approval_status TEXT NOT NULL DEFAULT 'approved',
-                approved_by TEXT,
-                approved_at TEXT,
+                event_sequence INTEGER NOT NULL CHECK (event_sequence > 0),
+                event_type TEXT NOT NULL,
+                actor_username TEXT,
+                reason TEXT,
+                occurred_at TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (approval_id) REFERENCES formal_approvals(id),
                 FOREIGN KEY (entry_id) REFERENCES vendor_work_entries(id),
-                FOREIGN KEY (sheet_id) REFERENCES sheets(id)
-            );
-
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_formal_approvals_entry_action_unique
-            ON formal_approvals (entry_id, action);
-
-            CREATE INDEX IF NOT EXISTS idx_formal_approvals_sheet_id
-            ON formal_approvals (sheet_id);
+                FOREIGN KEY (sheet_id) REFERENCES sheets(id),
+                UNIQUE (approval_id, event_sequence)
+            )
             """
         )
-        return
-
-    formal_approvals_columns = _table_columns(conn, "formal_approvals")
-    if "entry_id" not in formal_approvals_columns:
-        conn.execute("ALTER TABLE formal_approvals ADD COLUMN entry_id INTEGER")
-    if "sheet_id" not in formal_approvals_columns:
-        conn.execute("ALTER TABLE formal_approvals ADD COLUMN sheet_id INTEGER")
-    if "action" not in formal_approvals_columns:
         conn.execute(
-            "ALTER TABLE formal_approvals ADD COLUMN action TEXT NOT NULL DEFAULT 'crew_formal_approve_entry'"
+            """
+            CREATE INDEX IF NOT EXISTS idx_formal_approval_events_entry_sequence
+            ON formal_approval_events (entry_id, event_sequence)
+            """
         )
-    if "approval_status" not in formal_approvals_columns:
-        conn.execute("ALTER TABLE formal_approvals ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'approved'")
-    if "approved_by" not in formal_approvals_columns:
-        conn.execute("ALTER TABLE formal_approvals ADD COLUMN approved_by TEXT")
-    if "approved_at" not in formal_approvals_columns:
-        conn.execute("ALTER TABLE formal_approvals ADD COLUMN approved_at TEXT")
-    if "created_at" not in formal_approvals_columns:
-        conn.execute("ALTER TABLE formal_approvals ADD COLUMN created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
-    if "updated_at" not in formal_approvals_columns:
-        conn.execute("ALTER TABLE formal_approvals ADD COLUMN updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
-    conn.executescript(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_formal_approvals_entry_action_unique
-        ON formal_approvals (entry_id, action);
-
-        CREATE INDEX IF NOT EXISTS idx_formal_approvals_sheet_id
-        ON formal_approvals (sheet_id);
-        """
-    )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_formal_approval_events_sheet_occurred_at
+            ON formal_approval_events (sheet_id, occurred_at)
+            """
+        )
+    except BaseException as original_exception:
+        cleanup_failures = []
+        for cleanup_statement in (
+            "ROLLBACK TO SAVEPOINT formal_approval_cancellation_schema_ensure",
+            "RELEASE SAVEPOINT formal_approval_cancellation_schema_ensure",
+        ):
+            try:
+                conn.execute(cleanup_statement)
+            except BaseException as cleanup_exception:
+                cleanup_failures.append(cleanup_exception)
+        for cleanup_exception in cleanup_failures:
+            original_exception.add_note(
+                "formal approval schema savepoint cleanup failed: "
+                f"{type(cleanup_exception).__name__}: {cleanup_exception}"
+            )
+        raise
+    else:
+        conn.execute("RELEASE SAVEPOINT formal_approval_cancellation_schema_ensure")
 
 
 def ensure_scheduling_entries_schema(conn: sqlite3.Connection) -> None:

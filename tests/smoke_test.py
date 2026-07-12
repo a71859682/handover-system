@@ -2336,6 +2336,611 @@ print("crew schema migration smoke PASS")
         raise AssertionError("crew schema migration smoke subprocess did not report PASS.")
 
 
+def run_formal_approval_cancellation_schema_smoke(temp_root: Path) -> None:
+    temp_root.mkdir(parents=True, exist_ok=True)
+    child_path = temp_root / "formal-approval-cancellation-schema-smoke.py"
+    child_path.write_text(
+        r'''
+from __future__ import annotations
+
+import importlib.util
+import inspect
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+
+temp_root = Path(sys.argv[1]).resolve()
+root_dir = Path(sys.argv[2]).resolve()
+if str(root_dir) not in sys.path:
+    sys.path.insert(0, str(root_dir))
+fresh_db_path = (temp_root / "fresh-bootstrap.db").resolve()
+if root_dir in fresh_db_path.parents or fresh_db_path == root_dir / "site.db":
+    raise AssertionError("Focused schema smoke target must stay outside the repository")
+
+os.environ["APP_DB_PATH"] = str(fresh_db_path)
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
+import psycopg
+
+postgres_connect_calls = []
+original_postgres_connect = psycopg.connect
+
+
+def reject_postgres_connect(*args, **kwargs):
+    postgres_connect_calls.append("connect")
+    raise AssertionError("PostgreSQL connection is forbidden in cancellation schema smoke")
+
+
+psycopg.connect = reject_postgres_connect
+try:
+    spec = importlib.util.spec_from_file_location(
+        "formal_approval_cancellation_schema_app_under_test",
+        str(root_dir / "app.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    cancellation_columns = ("cancelled_by", "cancelled_at", "cancellation_reason")
+    required_event_indexes = {
+        "idx_formal_approval_events_entry_sequence": ("entry_id", "event_sequence"),
+        "idx_formal_approval_events_sheet_occurred_at": ("sheet_id", "occurred_at"),
+    }
+
+    def table_names(conn):
+        return tuple(
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        )
+
+    def data_manifest(conn, names, columns_by_table=None):
+        manifest = []
+        for table_name in names:
+            quoted = table_name.replace('"', '""')
+            columns = (
+                tuple(columns_by_table[table_name])
+                if columns_by_table is not None
+                else tuple(row[1] for row in conn.execute(f"PRAGMA table_info({table_name})"))
+            )
+            column_sql = ", ".join(f'"{column.replace(chr(34), chr(34) * 2)}"' for column in columns)
+            manifest.append(
+                (
+                    table_name,
+                    columns,
+                    tuple(
+                        conn.execute(
+                            f'SELECT {column_sql} FROM "{quoted}" ORDER BY rowid'
+                        ).fetchall()
+                    ),
+                )
+            )
+        return tuple(manifest)
+
+    def sequence_snapshot(conn):
+        if "sqlite_sequence" not in {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }:
+            return ()
+        return tuple(conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name").fetchall())
+
+    def schema_signature(conn):
+        result = []
+        for table_name in ("formal_approvals", "formal_approval_events"):
+            columns = tuple(conn.execute(f"PRAGMA table_info({table_name})").fetchall())
+            foreign_keys = tuple(conn.execute(f"PRAGMA foreign_key_list({table_name})").fetchall())
+            indexes = []
+            for index_row in conn.execute(f"PRAGMA index_list({table_name})").fetchall():
+                indexes.append(
+                    (
+                        index_row[1],
+                        index_row[2],
+                        tuple(row[2] for row in conn.execute(f"PRAGMA index_info({index_row[1]})").fetchall()),
+                    )
+                )
+            result.append((table_name, columns, foreign_keys, tuple(sorted(indexes))))
+        return tuple(result)
+
+    def assert_cancellation_schema(conn, label):
+        tables = set(table_names(conn))
+        if "formal_approvals" not in tables or "formal_approval_events" not in tables:
+            raise AssertionError(f"{label}: formal approval schema tables are incomplete")
+
+        formal_columns = {
+            row[1]: row for row in conn.execute("PRAGMA table_info(formal_approvals)").fetchall()
+        }
+        for column_name in cancellation_columns:
+            row = formal_columns.get(column_name)
+            if row is None or row[3] != 0 or str(row[2]).upper() != "TEXT":
+                raise AssertionError(f"{label}: {column_name} must be nullable TEXT")
+
+        event_columns = {
+            row[1]: row for row in conn.execute("PRAGMA table_info(formal_approval_events)").fetchall()
+        }
+        expected_event_columns = (
+            "id", "approval_id", "entry_id", "sheet_id", "event_sequence", "event_type",
+            "actor_username", "reason", "occurred_at", "created_at",
+        )
+        if tuple(event_columns) != expected_event_columns:
+            raise AssertionError(f"{label}: unexpected event columns: {tuple(event_columns)}")
+
+        event_indexes = conn.execute("PRAGMA index_list(formal_approval_events)").fetchall()
+        index_columns = {
+            row[1]: tuple(
+                info[2] for info in conn.execute(f"PRAGMA index_info({row[1]})").fetchall()
+            )
+            for row in event_indexes
+        }
+        for index_name, expected_columns in required_event_indexes.items():
+            if index_columns.get(index_name) != expected_columns:
+                raise AssertionError(f"{label}: missing or invalid index {index_name}")
+        if any(columns == ("approval_id", "event_type") for columns in index_columns.values()):
+            raise AssertionError(f"{label}: forbidden approval_id/event_type index exists")
+        if not any(
+            row[2] == 1 and index_columns.get(row[1]) == ("approval_id", "event_sequence")
+            for row in event_indexes
+        ):
+            raise AssertionError(f"{label}: UNIQUE(approval_id, event_sequence) is missing")
+
+        table_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='formal_approval_events'"
+        ).fetchone()[0]
+        normalized_sql = " ".join(str(table_sql).split()).lower()
+        if "check (event_sequence > 0)" not in normalized_sql:
+            raise AssertionError(f"{label}: positive event sequence CHECK is missing")
+        if "event_type in" in normalized_sql:
+            raise AssertionError(f"{label}: event_type must not have a narrow CHECK")
+
+        foreign_keys = {
+            (row[3], row[2], row[4])
+            for row in conn.execute("PRAGMA foreign_key_list(formal_approval_events)").fetchall()
+        }
+        expected_foreign_keys = {
+            ("approval_id", "formal_approvals", "id"),
+            ("entry_id", "vendor_work_entries", "id"),
+            ("sheet_id", "sheets", "id"),
+        }
+        if foreign_keys != expected_foreign_keys:
+            raise AssertionError(f"{label}: unexpected event foreign keys: {foreign_keys}")
+
+    def create_pre_003d_database(path, variant):
+        cancellation_definitions = {
+            "current": (),
+            "legacy": (),
+            "partial_one_missing": ("cancelled_by TEXT", "cancelled_at TEXT"),
+            "partial_two_missing": ("cancelled_by TEXT",),
+            "events_missing_indexes": (
+                "cancelled_by TEXT", "cancelled_at TEXT", "cancellation_reason TEXT"
+            ),
+            "failure_retry": (),
+        }[variant]
+        extra_columns = "".join(f", {definition}" for definition in cancellation_definitions)
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            f"""
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE
+            );
+            CREATE TABLE sheets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL
+            );
+            CREATE TABLE vendor_work_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sheet_id INTEGER NOT NULL,
+                vendor_name TEXT NOT NULL,
+                business_date TEXT NOT NULL
+            );
+            CREATE TABLE formal_approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id INTEGER NOT NULL,
+                sheet_id INTEGER NOT NULL,
+                action TEXT NOT NULL DEFAULT 'crew_formal_approve_entry',
+                approval_status TEXT NOT NULL DEFAULT 'approved',
+                approved_by TEXT,
+                approved_at TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                {extra_columns}
+            );
+            INSERT INTO users (username) VALUES ('schema-member');
+            INSERT INTO sheets (name) VALUES ('Schema Sheet');
+            INSERT INTO vendor_work_entries (sheet_id, vendor_name, business_date)
+            VALUES (1, 'Schema Vendor', '2030-01-01');
+            INSERT INTO vendor_work_entries (sheet_id, vendor_name, business_date)
+            VALUES (1, 'Legacy Status Vendor', '2030-01-02');
+            INSERT INTO formal_approvals (
+                entry_id, sheet_id, action, approval_status, approved_by, approved_at,
+                created_at, updated_at
+            ) VALUES (
+                1, 1, 'crew_formal_approve_entry', 'approved', 'schema-member',
+                '2030-01-01 09:00:00', '2030-01-01 09:00:00', '2030-01-01 09:00:00'
+            );
+            INSERT INTO formal_approvals (
+                entry_id, sheet_id, action, approval_status, approved_by, approved_at,
+                created_at, updated_at
+            ) VALUES (
+                2, 1, 'crew_formal_approve_entry', 'cancelled_legacy_unknown', NULL,
+                '2030-01-02 09:00:00', '2030-01-02 09:00:00', '2030-01-02 09:00:00'
+            );
+            """
+        )
+        if variant != "legacy":
+            conn.execute(
+                "CREATE UNIQUE INDEX idx_formal_approvals_entry_action_unique "
+                "ON formal_approvals (entry_id, action)"
+            )
+            conn.execute(
+                "CREATE INDEX idx_formal_approvals_sheet_id ON formal_approvals (sheet_id)"
+            )
+        if variant == "events_missing_indexes":
+            conn.execute(
+                """
+                CREATE TABLE formal_approval_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    approval_id INTEGER NOT NULL,
+                    entry_id INTEGER NOT NULL,
+                    sheet_id INTEGER NOT NULL,
+                    event_sequence INTEGER NOT NULL CHECK (event_sequence > 0),
+                    event_type TEXT NOT NULL,
+                    actor_username TEXT,
+                    reason TEXT,
+                    occurred_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (approval_id) REFERENCES formal_approvals(id),
+                    FOREIGN KEY (entry_id) REFERENCES vendor_work_entries(id),
+                    FOREIGN KEY (sheet_id) REFERENCES sheets(id),
+                    UNIQUE (approval_id, event_sequence)
+                )
+                """
+            )
+        conn.commit()
+        conn.close()
+
+    def assert_empty_event_state(conn, label):
+        count = conn.execute("SELECT COUNT(*) FROM formal_approval_events").fetchone()[0]
+        if count != 0:
+            raise AssertionError(f"{label}: event backfill is forbidden")
+        if any(name == "formal_approval_events" for name, _seq in sequence_snapshot(conn)):
+            raise AssertionError(f"{label}: empty event table must not have a sequence row")
+
+    def assert_caller_transaction_ownership(path, *, missing_formal_table):
+        if missing_formal_table:
+            conn = sqlite3.connect(path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("CREATE TABLE caller_sentinel (value TEXT NOT NULL)")
+            conn.commit()
+        else:
+            create_pre_003d_database(path, "current")
+            conn = sqlite3.connect(path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("CREATE TABLE caller_sentinel (value TEXT NOT NULL)")
+            conn.commit()
+        conn.execute("BEGIN")
+        conn.execute("INSERT INTO caller_sentinel (value) VALUES ('caller-owned')")
+        if not conn.in_transaction:
+            raise AssertionError("caller transaction was not active before schema ensure")
+        module.ensure_formal_approvals_schema(conn)
+        if not conn.in_transaction:
+            raise AssertionError("schema ensure committed the caller transaction")
+        if conn.execute("SELECT COUNT(*) FROM caller_sentinel").fetchone()[0] != 1:
+            raise AssertionError("schema ensure changed the caller sentinel")
+        conn.rollback()
+        if conn.execute("SELECT COUNT(*) FROM caller_sentinel").fetchone()[0] != 0:
+            raise AssertionError("caller rollback did not remove the sentinel")
+        post_rollback_tables = set(table_names(conn))
+        if "formal_approval_events" in post_rollback_tables:
+            raise AssertionError("caller rollback did not roll back helper event DDL")
+        if missing_formal_table and "formal_approvals" in post_rollback_tables:
+            raise AssertionError("caller rollback did not roll back missing-table helper DDL")
+        conn.close()
+
+    assert_caller_transaction_ownership(
+        temp_root / "outer-transaction-missing.db",
+        missing_formal_table=True,
+    )
+    assert_caller_transaction_ownership(
+        temp_root / "outer-transaction-existing.db",
+        missing_formal_table=False,
+    )
+
+    with module.db() as fresh_conn:
+        fresh_conn.row_factory = sqlite3.Row
+        assert_cancellation_schema(fresh_conn, "fresh bootstrap")
+        assert_empty_event_state(fresh_conn, "fresh bootstrap")
+        fresh_tables = table_names(fresh_conn)
+        fresh_before = (
+            schema_signature(fresh_conn),
+            data_manifest(fresh_conn, fresh_tables),
+            sequence_snapshot(fresh_conn),
+        )
+        module.ensure_formal_approvals_schema(fresh_conn)
+        module.ensure_formal_approvals_schema(fresh_conn)
+        fresh_after = (
+            schema_signature(fresh_conn),
+            data_manifest(fresh_conn, fresh_tables),
+            sequence_snapshot(fresh_conn),
+        )
+        if fresh_after != fresh_before:
+            raise AssertionError("fresh bootstrap repeated ensure must be fully idempotent")
+
+    canonical_schema = None
+    current_path = None
+    for variant in (
+        "current",
+        "legacy",
+        "partial_one_missing",
+        "partial_two_missing",
+        "events_missing_indexes",
+    ):
+        path = temp_root / f"{variant}.db"
+        create_pre_003d_database(path, variant)
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        before_tables = table_names(conn)
+        before_data = data_manifest(conn, before_tables)
+        before_columns = {table: columns for table, columns, _rows in before_data}
+        before_sequences = sequence_snapshot(conn)
+        module.ensure_formal_approvals_schema(conn)
+        after_tables = table_names(conn)
+        expected_delta = () if variant == "events_missing_indexes" else ("formal_approval_events",)
+        actual_delta = tuple(sorted(set(after_tables) - set(before_tables)))
+        if actual_delta != expected_delta:
+            raise AssertionError(f"{variant}: unexpected table delta {actual_delta}")
+        if data_manifest(conn, before_tables, before_columns) != before_data:
+            raise AssertionError(f"{variant}: existing application rows changed")
+        if sequence_snapshot(conn) != before_sequences:
+            raise AssertionError(f"{variant}: existing sequences changed")
+        assert_cancellation_schema(conn, variant)
+        assert_empty_event_state(conn, variant)
+        first_schema = schema_signature(conn)
+        first_data = data_manifest(conn, after_tables)
+        first_sequences = sequence_snapshot(conn)
+        module.ensure_formal_approvals_schema(conn)
+        second_state = (
+            schema_signature(conn),
+            data_manifest(conn, after_tables),
+            sequence_snapshot(conn),
+        )
+        if second_state != (first_schema, first_data, first_sequences):
+            raise AssertionError(f"{variant}: second ensure changed schema or data")
+        if canonical_schema is None:
+            canonical_schema = first_schema
+            current_path = path
+        elif first_schema != canonical_schema:
+            raise AssertionError(f"{variant}: schema did not converge to canonical result")
+        conn.commit()
+        conn.close()
+
+    failure_path = temp_root / "failure-retry.db"
+    create_pre_003d_database(failure_path, "failure_retry")
+    failure_conn = sqlite3.connect(failure_path)
+    failure_conn.row_factory = sqlite3.Row
+    failure_conn.execute("CREATE TABLE caller_sentinel (value TEXT NOT NULL)")
+    failure_conn.commit()
+    failure_tables = table_names(failure_conn)
+    failure_data = data_manifest(failure_conn, failure_tables)
+    failure_sequences = sequence_snapshot(failure_conn)
+    failure_conn.execute("BEGIN")
+    failure_conn.execute("INSERT INTO caller_sentinel (value) VALUES ('failure-owned')")
+    if not failure_conn.in_transaction:
+        raise AssertionError("failure-path caller transaction was not active")
+
+    class FailureOnceConnection:
+        def __init__(self, inner):
+            self.inner = inner
+            self.failed = False
+
+        def execute(self, sql, parameters=()):
+            if not self.failed and "CREATE TABLE IF NOT EXISTS formal_approval_events" in str(sql):
+                self.failed = True
+                raise RuntimeError("synthetic_schema_ddl_failure")
+            return self.inner.execute(sql, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    try:
+        module.ensure_formal_approvals_schema(FailureOnceConnection(failure_conn))
+    except RuntimeError as exc:
+        if str(exc) != "synthetic_schema_ddl_failure":
+            raise
+    else:
+        raise AssertionError("failure/retry smoke did not enter the synthetic failure path")
+    if not failure_conn.in_transaction:
+        raise AssertionError("failed schema ensure ended the caller transaction")
+    if failure_conn.execute("SELECT COUNT(*) FROM caller_sentinel").fetchone()[0] != 1:
+        raise AssertionError("failed schema ensure lost the caller sentinel")
+    failed_columns = {row[1] for row in failure_conn.execute("PRAGMA table_info(formal_approvals)")}
+    if any(name in failed_columns for name in cancellation_columns):
+        raise AssertionError("failed ensure did not roll back cancellation columns")
+    if "formal_approval_events" in table_names(failure_conn):
+        raise AssertionError("failed ensure did not roll back the event table")
+    failure_conn.rollback()
+    if failure_conn.execute("SELECT COUNT(*) FROM caller_sentinel").fetchone()[0] != 0:
+        raise AssertionError("failure-path caller rollback did not remove the sentinel")
+    if data_manifest(failure_conn, failure_tables) != failure_data:
+        raise AssertionError("failed ensure or caller rollback changed existing application data")
+    if sequence_snapshot(failure_conn) != failure_sequences:
+        raise AssertionError("failed ensure or caller rollback changed existing sequences")
+    module.ensure_formal_approvals_schema(failure_conn)
+    if schema_signature(failure_conn) != canonical_schema:
+        raise AssertionError("retry did not converge to the canonical schema")
+    assert_empty_event_state(failure_conn, "failure retry")
+    failure_conn.commit()
+    failure_conn.close()
+
+    cleanup_failure_path = temp_root / "cleanup-failure-preservation.db"
+    create_pre_003d_database(cleanup_failure_path, "failure_retry")
+    cleanup_failure_conn = sqlite3.connect(cleanup_failure_path)
+    cleanup_failure_conn.row_factory = sqlite3.Row
+    cleanup_failure_conn.execute("CREATE TABLE caller_sentinel (value TEXT NOT NULL)")
+    cleanup_failure_conn.commit()
+    cleanup_failure_conn.execute("BEGIN")
+    cleanup_failure_conn.execute(
+        "INSERT INTO caller_sentinel (value) VALUES ('cleanup-failure-owned')"
+    )
+
+    class DdlAndCleanupFailureConnection:
+        def __init__(self, inner):
+            self.inner = inner
+            self.ddl_failed = False
+            self.cleanup_failed = False
+
+        def execute(self, sql, parameters=()):
+            sql_text = str(sql)
+            if not self.ddl_failed and "CREATE TABLE IF NOT EXISTS formal_approval_events" in sql_text:
+                self.ddl_failed = True
+                raise RuntimeError("original_synthetic_schema_ddl_failure")
+            if not self.cleanup_failed and sql_text.startswith("ROLLBACK TO SAVEPOINT"):
+                self.cleanup_failed = True
+                raise RuntimeError("synthetic_savepoint_cleanup_failure")
+            return self.inner.execute(sql, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    try:
+        module.ensure_formal_approvals_schema(
+            DdlAndCleanupFailureConnection(cleanup_failure_conn)
+        )
+    except RuntimeError as exc:
+        if str(exc) != "original_synthetic_schema_ddl_failure":
+            raise AssertionError("savepoint cleanup failure replaced the original DDL exception") from exc
+        notes = tuple(getattr(exc, "__notes__", ()))
+        if not any("synthetic_savepoint_cleanup_failure" in note for note in notes):
+            raise AssertionError("savepoint cleanup failure was not attached to the original exception")
+    else:
+        raise AssertionError("cleanup failure preservation smoke did not enter the failure path")
+    if not cleanup_failure_conn.in_transaction:
+        raise AssertionError("cleanup failure ended the caller transaction")
+    if cleanup_failure_conn.execute("SELECT COUNT(*) FROM caller_sentinel").fetchone()[0] != 1:
+        raise AssertionError("cleanup failure lost the caller sentinel")
+    cleanup_failure_conn.rollback()
+    if cleanup_failure_conn.execute("SELECT COUNT(*) FROM caller_sentinel").fetchone()[0] != 0:
+        raise AssertionError("cleanup-failure caller rollback did not remove the sentinel")
+    cleanup_columns = {
+        row[1] for row in cleanup_failure_conn.execute("PRAGMA table_info(formal_approvals)")
+    }
+    if any(name in cleanup_columns for name in cancellation_columns):
+        raise AssertionError("outer rollback did not remove cleanup-failure partial columns")
+    if "formal_approval_events" in table_names(cleanup_failure_conn):
+        raise AssertionError("outer rollback did not remove cleanup-failure partial event schema")
+    cleanup_failure_conn.close()
+
+    constraint_conn = sqlite3.connect(current_path)
+    constraint_conn.execute("PRAGMA foreign_keys = ON")
+    if constraint_conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+        raise AssertionError("test-only foreign key enforcement was not enabled")
+    constraint_conn.execute("SAVEPOINT event_constraint_smoke")
+    constraint_conn.execute(
+        """
+        INSERT INTO formal_approval_events (
+            approval_id, entry_id, sheet_id, event_sequence, event_type,
+            actor_username, occurred_at
+        ) VALUES (1, 1, 1, 1, 'approved', 'schema-member', '2030-01-01 09:00:00')
+        """
+    )
+    for label, sql, parameters in (
+        (
+            "duplicate sequence",
+            "INSERT INTO formal_approval_events (approval_id, entry_id, sheet_id, event_sequence, event_type, occurred_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (1, 1, 1, 1, "cancelled", "2030-01-01 10:00:00"),
+        ),
+        (
+            "non-positive sequence",
+            "INSERT INTO formal_approval_events (approval_id, entry_id, sheet_id, event_sequence, event_type, occurred_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (1, 1, 1, 0, "approved", "2030-01-01 10:00:00"),
+        ),
+        (
+            "invalid foreign key",
+            "INSERT INTO formal_approval_events (approval_id, entry_id, sheet_id, event_sequence, event_type, occurred_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (999, 999, 999, 1, "approved", "2030-01-01 10:00:00"),
+        ),
+    ):
+        try:
+            constraint_conn.execute(sql, parameters)
+        except sqlite3.IntegrityError:
+            pass
+        else:
+            raise AssertionError(f"{label} constraint was not enforced")
+    constraint_conn.execute("ROLLBACK TO SAVEPOINT event_constraint_smoke")
+    constraint_conn.execute("RELEASE SAVEPOINT event_constraint_smoke")
+    assert_empty_event_state(constraint_conn, "constraint rollback")
+    constraint_conn.close()
+
+    ensure_source = inspect.getsource(module.ensure_formal_approvals_schema)
+    for forbidden_statement in ("INSERT INTO", "UPDATE formal_approvals", "DELETE FROM"):
+        if forbidden_statement in ensure_source:
+            raise AssertionError(f"schema ensure contains forbidden application mutation: {forbidden_statement}")
+    if "executescript" in ensure_source:
+        raise AssertionError("schema ensure must not use executescript")
+    if ".commit(" in ensure_source or ".rollback(" in ensure_source:
+        raise AssertionError("schema ensure must not own the caller transaction")
+    savepoint_position = ensure_source.find(
+        'conn.execute("SAVEPOINT formal_approval_cancellation_schema_ensure")'
+    )
+    first_helper_ddl_position = min(
+        position
+        for position in (
+            ensure_source.find("CREATE TABLE formal_approvals"),
+            ensure_source.find("ALTER TABLE formal_approvals"),
+        )
+        if position >= 0
+    )
+    if savepoint_position < 0 or savepoint_position > first_helper_ddl_position:
+        raise AssertionError("schema ensure SAVEPOINT must precede every helper DDL statement")
+    if "idx_formal_approval_events_approval_type" in ensure_source:
+        raise AssertionError("schema ensure contains the forbidden third event index")
+    if "PRAGMA foreign_keys" in ensure_source:
+        raise AssertionError("schema ensure must not enable global foreign key enforcement")
+    if postgres_connect_calls:
+        raise AssertionError(f"PostgreSQL connection sentinel was called: {postgres_connect_calls}")
+finally:
+    psycopg.connect = original_postgres_connect
+
+print("formal approval cancellation schema smoke PASS")
+''',
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "APP_DB_PATH": str((temp_root / "fresh-bootstrap.db").resolve()),
+        "DATABASE_URL": "postgresql://schema-sentinel-must-not-be-used",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": str((temp_root / "pycache").resolve()),
+        "SCHEMA_SMOKE_SECRET": "schema-sensitive-marker-must-not-leak",
+    }
+    result = subprocess.run(
+        [sys.executable, "-B", str(child_path), str(temp_root), str(ROOT_DIR)],
+        cwd=ROOT_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    combined_output = result.stdout + result.stderr
+    for marker in (
+        "postgresql://schema-sentinel-must-not-be-used",
+        "schema-sensitive-marker-must-not-leak",
+    ):
+        if marker in combined_output:
+            raise AssertionError(f"Cancellation schema smoke leaked sensitive marker: {marker}")
+    if result.returncode != 0:
+        raise AssertionError(
+            "Cancellation schema smoke child failed\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+    if "formal approval cancellation schema smoke PASS" not in result.stdout:
+        raise AssertionError("Cancellation schema smoke child did not report PASS")
+    print("formal approval cancellation schema focused smoke PASS")
+
+
 def run_scheduler_schema_smoke(app_db_path: Path) -> None:
     if app_db_path.exists():
         app_db_path.unlink()
@@ -17357,6 +17962,9 @@ def main() -> int:
         run_users_read_inventory_smoke()
         run_users_read_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_users_read_compare_readiness_smoke(Path(tmpdir) / "app-smoke.db")
+        run_formal_approval_cancellation_schema_smoke(
+            Path(tmpdir) / "formal-approval-cancellation-schema"
+        )
         run_crew_schema_smoke_v2(Path(tmpdir) / "crew-schema-smoke.db")
         run_crew_schema_migration_smoke(Path(tmpdir) / "crew-schema-migration-smoke.db")
         run_scheduler_schema_smoke(Path(tmpdir) / "scheduler-schema-smoke.db")
