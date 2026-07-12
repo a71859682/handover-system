@@ -379,6 +379,7 @@
       }
 
       submitButton.disabled = true;
+      let navigationScheduled = false;
       try {
         const formData = new FormData(form);
         const plannedAtValue = String(formData.get("planned_at") || "").trim();
@@ -431,6 +432,7 @@
           planned_headcount: plannedHeadcountValue,
           actual_headcount: actualHeadcountValue,
           work_content: formData.get("work_content") || "",
+          pre_entry_requirement: formData.get("pre_entry_requirement") || "",
           work_headcount: workHeadcountValue,
           entry_order: entryOrderValue,
         };
@@ -446,9 +448,31 @@
           },
           body: JSON.stringify(payload),
         });
-        const data = await response.json();
-        if (!response.ok || !data.ok) {
-          throw new Error((data.error && data.error.message) || "Submit failed.");
+        const responseText = await response.text();
+        let data;
+        try {
+          data = JSON.parse(responseText);
+        } catch (_parseError) {
+          throw new Error("伺服器回傳非JSON內容，請稍後再試。");
+        }
+        if (!response.ok || !data || data.ok !== true) {
+          const errorCode = data && data.error ? data.error.code : "";
+          let message = data && data.error && data.error.message
+            ? data.error.message
+            : "伺服器回傳未預期的結果。";
+          if (response.status === 401) {
+            message = "登入狀態已失效，請重新登入。";
+          } else if (errorCode === "vendor_scope_ambiguous") {
+            message = "廠商對應多個工程表單，請聯絡管理者。";
+          } else if (response.status === 403) {
+            message = `廠商身分或工程表單範圍無法使用：${message}`;
+          } else if (response.status === 409) {
+            message = `目前資料範圍或寫入狀態衝突：${message}`;
+          }
+          throw new Error(message);
+        }
+        if (!data.entry || !data.entry.id) {
+          throw new Error("伺服器回傳未預期的結果。");
         }
 
         if (successMessage) {
@@ -467,13 +491,19 @@
         if (submitMode === "create") {
           reloadUrl.searchParams.delete("new_entry");
         }
+        navigationScheduled = true;
         window.setTimeout(() => window.location.assign(reloadUrl.toString()), 300);
       } catch (error) {
         if (errorMessage) {
-          errorMessage.textContent = error instanceof Error ? error.message : "Submit failed.";
+          errorMessage.textContent = error instanceof TypeError
+            ? "網路連線失敗，請確認連線後重試。"
+            : (error instanceof Error ? error.message : "送出失敗，請稍後再試。");
           errorMessage.hidden = false;
         }
-        submitButton.disabled = false;
+      } finally {
+        if (!navigationScheduled) {
+          submitButton.disabled = false;
+        }
       }
     });
   })();

@@ -12,6 +12,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from werkzeug.security import generate_password_hash
+
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 TOOLS_DIR = ROOT_DIR / "tools"
@@ -161,11 +163,13 @@ def create_sample_sqlite(path: Path) -> None:
     conn.execute("INSERT INTO meta (key, value) VALUES ('site_title', 'demo')")
     conn.execute("INSERT INTO meta (key, value) VALUES ('excel_seeded', '1')")
     conn.execute("INSERT INTO meta (key, value) VALUES ('unit_layout_version', '2026-06-26-ab')")
+    admin_password_hash = generate_password_hash("admin")
     conn.execute(
         """
         INSERT INTO users (id, username, display_name, password_hash, role, created_at)
-        VALUES (1, 'admin', 'Admin', 'hash', 'admin', '2026-06-27T00:00:00')
-        """
+        VALUES (1, 'admin', 'Admin', ?, 'admin', '2026-06-27T00:00:00')
+        """,
+        (admin_password_hash,),
     )
     conn.execute(
         """
@@ -11981,6 +11985,7 @@ import importlib.util
 import os
 import sqlite3
 import sys
+from contextlib import closing
 from pathlib import Path
 
 db_path, root_dir = sys.argv[1:3]
@@ -12337,7 +12342,14 @@ vendor_work_preflight_business_date_mismatch_payload = vendor_work_preflight_bus
 if vendor_work_preflight_business_date_mismatch_payload["error"]["code"] != "vendor_business_date_mismatch":
     raise SystemExit("vendor update preflight business_date mismatch should preserve vendor_business_date_mismatch")
 
-vendor_work_internal_route_with_vendor_session = client.post(
+with closing(module.db()) as snapshot_conn:
+    vendor_work_entry_rows_before_submit = snapshot_conn.execute(
+        "SELECT id FROM vendor_work_entries ORDER BY id"
+    ).fetchall()
+    vendor_work_entry_ids_before_submit = [int(row["id"]) for row in vendor_work_entry_rows_before_submit]
+    vendor_work_entry_count_before_submit = len(vendor_work_entry_ids_before_submit)
+
+vendor_work_submit_with_vendor_session = client.post(
     "/api/vendor-work-entry",
     json={
         "sheet_id": 1,
@@ -12352,8 +12364,73 @@ vendor_work_internal_route_with_vendor_session = client.post(
     },
     follow_redirects=False,
 )
-if vendor_work_internal_route_with_vendor_session.status_code != 302 or not vendor_work_internal_route_with_vendor_session.headers.get("Location", "").endswith("/login"):
-    raise SystemExit("vendor session must not pass internal /api/vendor-work-entry route")
+if vendor_work_submit_with_vendor_session.status_code != 200:
+    raise SystemExit("authenticated vendor /api/vendor-work-entry should return 200 for its unique trusted target")
+if vendor_work_submit_with_vendor_session.headers.get("Location"):
+    raise SystemExit("authenticated vendor /api/vendor-work-entry must not redirect to the internal login route")
+if not vendor_work_submit_with_vendor_session.is_json:
+    raise SystemExit("authenticated vendor /api/vendor-work-entry should return JSON")
+vendor_work_submit_payload = vendor_work_submit_with_vendor_session.get_json()
+if not isinstance(vendor_work_submit_payload, dict) or set(vendor_work_submit_payload) != {"ok", "entry"}:
+    raise SystemExit("authenticated vendor /api/vendor-work-entry should preserve the dual-actor success shape")
+if vendor_work_submit_payload.get("ok") is not True or not isinstance(vendor_work_submit_payload.get("entry"), dict):
+    raise SystemExit("authenticated vendor /api/vendor-work-entry should return ok=true with an entry")
+vendor_work_submit_entry = vendor_work_submit_payload["entry"]
+if (
+    int(vendor_work_submit_entry.get("sheet_id") or 0) != 1
+    or vendor_work_submit_entry.get("vendor_name") != "Vendor A"
+    or vendor_work_submit_entry.get("business_date") != business_date
+    or vendor_work_submit_entry.get("work_content") != "Vendor Route Should Not Hit Internal Route"
+):
+    raise SystemExit("authenticated vendor submit must use its trusted sheet, identity, date, and request content")
+created_vendor_work_entry_id = int(vendor_work_submit_entry.get("id") or 0)
+if created_vendor_work_entry_id <= 0 or created_vendor_work_entry_id in vendor_work_entry_ids_before_submit:
+    raise SystemExit("authenticated vendor submit must return a new entry id")
+
+with closing(module.db()) as persistence_conn:
+    created_vendor_work_entry = persistence_conn.execute(
+        "SELECT id, sheet_id, vendor_name, business_date, work_content "
+        "FROM vendor_work_entries WHERE id = ?",
+        (created_vendor_work_entry_id,),
+    ).fetchall()
+    if len(created_vendor_work_entry) != 1:
+        raise SystemExit("authenticated vendor submit must persist exactly one row for the returned entry id")
+    persisted_vendor_work_entry = created_vendor_work_entry[0]
+    if (
+        int(persisted_vendor_work_entry["sheet_id"]) != 1
+        or str(persisted_vendor_work_entry["vendor_name"]) != "Vendor A"
+        or str(persisted_vendor_work_entry["business_date"]) != business_date
+        or str(persisted_vendor_work_entry["work_content"]) != "Vendor Route Should Not Hit Internal Route"
+    ):
+        raise SystemExit("persisted vendor submit row must preserve its trusted target and submitted content")
+    vendor_work_entry_count_after_submit = int(
+        persistence_conn.execute("SELECT COUNT(*) FROM vendor_work_entries").fetchone()[0]
+    )
+    if vendor_work_entry_count_after_submit != vendor_work_entry_count_before_submit + 1:
+        raise SystemExit("authenticated vendor submit must add exactly one temporary fixture row")
+
+    cleanup = persistence_conn.execute(
+        "DELETE FROM vendor_work_entries WHERE id = ?",
+        (created_vendor_work_entry_id,),
+    )
+    if cleanup.rowcount != 1:
+        raise SystemExit("vendor submit fixture cleanup must delete exactly the returned entry id")
+    persistence_conn.commit()
+
+with closing(module.db()) as restoration_conn:
+    if restoration_conn.execute(
+        "SELECT COUNT(*) FROM vendor_work_entries WHERE id = ?",
+        (created_vendor_work_entry_id,),
+    ).fetchone()[0] != 0:
+        raise SystemExit("vendor submit fixture cleanup must remove the created entry id")
+    vendor_work_entry_ids_after_cleanup = [
+        int(row["id"])
+        for row in restoration_conn.execute("SELECT id FROM vendor_work_entries ORDER BY id").fetchall()
+    ]
+    if vendor_work_entry_ids_after_cleanup != vendor_work_entry_ids_before_submit:
+        raise SystemExit("vendor submit fixture cleanup must preserve every original entry id")
+    if len(vendor_work_entry_ids_after_cleanup) != vendor_work_entry_count_before_submit:
+        raise SystemExit("vendor submit fixture cleanup must restore the original row count")
 
 vendor_logged_in_page = client.get("/vendor/login")
 if vendor_logged_in_page.status_code != 200:
@@ -13542,6 +13619,763 @@ def run_vendor_work_entry_submit_pipeline_regression_smoke(db_path: Path) -> Non
         raise AssertionError("vendor submit pipeline regression smoke update path should preserve target id and updated fields")
 
 
+def run_vendor_authenticated_submit_path_smoke(db_path: Path) -> None:
+    resolved_db_path = db_path.resolve()
+    expected_temp_root = resolved_db_path.parent
+    system_temp_root = Path(tempfile.gettempdir()).resolve()
+    repository_db_path = (ROOT_DIR / "site.db").resolve()
+    if not resolved_db_path.exists():
+        raise AssertionError("vendor authenticated submit child DB must exist before launch")
+    if resolved_db_path == repository_db_path or resolved_db_path.is_relative_to(ROOT_DIR.resolve()):
+        raise AssertionError("vendor authenticated submit child must not target a repository DB")
+    if not resolved_db_path.is_relative_to(system_temp_root):
+        raise AssertionError("vendor authenticated submit child DB must be inside the system temporary directory")
+
+    app_db_path_was_present = "APP_DB_PATH" in os.environ
+    original_app_db_path = os.environ["APP_DB_PATH"] if app_db_path_was_present else None
+    child_env = os.environ.copy()
+    child_env["APP_DB_PATH"] = str(resolved_db_path)
+    child_env["DATABASE_URL"] = ""
+    child_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    command = [
+        sys.executable,
+        "-B",
+        str(Path(__file__).resolve()),
+        "--internal-vendor-authenticated-submit",
+        str(resolved_db_path),
+        str(expected_temp_root),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT_DIR,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        app_db_path_is_present = "APP_DB_PATH" in os.environ
+        current_app_db_path = os.environ["APP_DB_PATH"] if app_db_path_is_present else None
+        if app_db_path_is_present != app_db_path_was_present or current_app_db_path != original_app_db_path:
+            raise AssertionError("vendor authenticated submit child changed parent APP_DB_PATH")
+
+    if result.returncode != 0:
+        safe_stdout = _redact_vendor_smoke_child_output(result.stdout)
+        safe_stderr = _redact_vendor_smoke_child_output(result.stderr)
+        raise AssertionError(
+            "vendor authenticated submit child failed "
+            f"with exit code {result.returncode}\nstdout:\n{safe_stdout}\nstderr:\n{safe_stderr}"
+        )
+    if "vendor authenticated submit child smoke PASS" not in result.stdout:
+        raise AssertionError("vendor authenticated submit child did not report PASS")
+
+
+def _redact_vendor_smoke_child_output(value: str) -> str:
+    redacted = value.replace("vendor-pass", "[REDACTED]")
+    return re.sub(
+        r"(?i)(password|password_hash|token|secret|credential)\s*[:=]\s*([^\s,;]+)",
+        r"\1=[REDACTED]",
+        redacted,
+    )
+
+
+def _run_vendor_authenticated_submit_child(db_path: Path, expected_temp_root: Path) -> int:
+    import gc
+
+    resolved_db_path = db_path.resolve()
+    resolved_temp_root = expected_temp_root.resolve()
+    system_temp_root = Path(tempfile.gettempdir()).resolve()
+    raw_app_db_path = os.environ.get("APP_DB_PATH")
+    if not raw_app_db_path:
+        raise AssertionError("vendor authenticated submit child requires APP_DB_PATH")
+    if Path(raw_app_db_path).resolve() != resolved_db_path:
+        raise AssertionError("vendor authenticated submit child APP_DB_PATH does not match its target")
+    if resolved_db_path.parent != resolved_temp_root or not resolved_db_path.is_relative_to(resolved_temp_root):
+        raise AssertionError("vendor authenticated submit child target is outside its expected temporary directory")
+    if resolved_db_path == (ROOT_DIR / "site.db").resolve() or resolved_db_path.is_relative_to(ROOT_DIR.resolve()):
+        raise AssertionError("vendor authenticated submit child refused a repository DB target")
+    if not resolved_db_path.is_relative_to(system_temp_root):
+        raise AssertionError("vendor authenticated submit child refused a non-temporary DB target")
+    if not resolved_db_path.exists():
+        raise AssertionError("vendor authenticated submit child target DB does not exist")
+
+    if str(ROOT_DIR) not in sys.path:
+        sys.path.insert(0, str(ROOT_DIR))
+    module_name = "vendor_authenticated_submit_path_under_test"
+    spec = importlib.util.spec_from_file_location(module_name, str(ROOT_DIR / "app.py"))
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    try:
+        _run_vendor_authenticated_submit_path_smoke(resolved_db_path, module)
+    finally:
+        from database import db as sqlalchemy_db
+
+        with module.app.app_context():
+            sqlalchemy_db.session.remove()
+            sqlalchemy_db.engine.dispose()
+        gc.collect()
+
+    print("vendor authenticated submit child smoke PASS")
+    return 0
+
+
+def _run_vendor_authenticated_submit_path_smoke(db_path: Path, module) -> None:
+    from contextlib import closing
+    import hashlib
+    import json
+
+    with closing(module.db()) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("UPDATE sites SET site_name = 'Vendor Site 1', site_code = 'VS1', is_active = 1 WHERE id = 1")
+        conn.execute("UPDATE sheets SET site_id = 1 WHERE id = 1")
+        conn.execute("INSERT INTO sites (site_name, site_code, is_active) VALUES ('Vendor Site 2', 'VS2', 1)")
+        site_2 = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.execute("INSERT INTO sites (site_name, site_code, is_active) VALUES ('Vendor Site Inactive', 'VSI', 0)")
+        inactive_site = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        next_sheet_order = int(conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM sheets").fetchone()[0])
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) "
+            "VALUES ('Vendor Sheet 2', ?, ?, CURRENT_TIMESTAMP)",
+            (next_sheet_order, site_2),
+        )
+        sheet_2 = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) "
+            "VALUES ('Vendor Sheet 3', ?, ?, CURRENT_TIMESTAMP)",
+            (next_sheet_order + 1, 1),
+        )
+        sheet_3 = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) "
+            "VALUES ('Vendor Sheet Inactive', ?, ?, CURRENT_TIMESTAMP)",
+            (next_sheet_order + 2, inactive_site),
+        )
+        inactive_sheet = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+        accounts = (
+            ("vendor_unique_submit", "Vendor Unique"),
+            ("vendor_ambiguous_same_site", "Vendor Ambiguous Same"),
+            ("vendor_ambiguous_cross_site", "Vendor Ambiguous Cross"),
+            ("vendor_no_scope", "Vendor No Scope"),
+            ("vendor_inactive_site", "Vendor Inactive Site"),
+            ("vendor_other_owner", "Vendor Other Owner"),
+        )
+        for username, vendor_name in accounts:
+            conn.execute(
+                "INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active) VALUES (?, ?, ?, 1)",
+                (username, module.generate_password_hash("vendor-pass"), vendor_name),
+            )
+        next_col = int(conn.execute("SELECT COALESCE(MAX(col_index), 0) + 1 FROM tasks").fetchone()[0])
+        task_rows = (
+            (1, "Vendor Unique"),
+            (1, "Vendor Ambiguous Same"),
+            (sheet_3, "Vendor Ambiguous Same"),
+            (1, "Vendor Ambiguous Cross"),
+            (sheet_2, "Vendor Ambiguous Cross"),
+            (inactive_sheet, "Vendor Inactive Site"),
+            (1, "Vendor Other Owner"),
+        )
+        for offset, (sheet_id, vendor_name) in enumerate(task_rows):
+            conn.execute(
+                "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, '', ?)",
+                (sheet_id, next_col + offset, vendor_name, f"{vendor_name} Task"),
+            )
+        conn.commit()
+
+    canonical_date = module.resolve_crew_business_date()
+    with closing(module.db()) as conn:
+        conn.execute(
+            "INSERT INTO vendor_work_entries "
+            "(sheet_id, vendor_name, business_date, planned_at, planned_headcount, actual_headcount, "
+            "work_content, pre_entry_requirement, work_headcount, entry_order, created_at, updated_at) "
+            "VALUES (1, 'Vendor Unique', ?, '', 0, 0, 'Rejected-path guard', '', 0, 0, "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            (canonical_date,),
+        )
+        guard_entry_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.commit()
+
+    def payload(**overrides):
+        value = {
+            "sheet_id": 1,
+            "vendor_name": "Vendor Unique",
+            "business_date": canonical_date,
+            "planned_at": "2030-01-01 09:00",
+            "planned_headcount": 3,
+            "actual_headcount": 1,
+            "work_content": "Vendor authenticated work",
+            "pre_entry_requirement": "  Permit required  ",
+            "work_headcount": 1,
+            "entry_order": 0,
+        }
+        value.update(overrides)
+        return value
+
+    def login(username):
+        test_client = module.app.test_client()
+        response = test_client.post(
+            "/vendor/login",
+            data={"username": username, "password": "vendor-pass"},
+            follow_redirects=False,
+        )
+        if response.status_code != 302:
+            raise AssertionError(f"vendor authenticated submit login failed for {username}")
+        return test_client
+
+    def expect_error(response, status, code):
+        body = response.get_json(silent=True)
+        if (
+            response.status_code != status
+            or not response.is_json
+            or not isinstance(body, dict)
+            or body.get("ok") is not False
+            or not isinstance(body.get("error"), dict)
+            or body["error"].get("code") != code
+            or not isinstance(body["error"].get("message"), str)
+        ):
+            raise AssertionError(f"expected {status}/{code}, got {response.status_code}/{body}")
+
+    def logical_manifest():
+        with closing(module.db()) as manifest_conn:
+            table_names = [
+                str(row["name"])
+                for row in manifest_conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                ).fetchall()
+            ]
+            manifest = {}
+            for table_name in table_names:
+                quoted_table_name = table_name.replace('"', '""')
+                rows = manifest_conn.execute(
+                    f'SELECT * FROM "{quoted_table_name}" ORDER BY rowid'
+                ).fetchall()
+                encoded_rows = json.dumps(
+                    [list(row) for row in rows],
+                    ensure_ascii=False,
+                    default=str,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                manifest[table_name] = {
+                    "count": len(rows),
+                    "sha256": hashlib.sha256(encoded_rows).hexdigest(),
+                }
+            return manifest
+
+    def fetch_entry_snapshot(entry_id):
+        with closing(module.db()) as snapshot_conn:
+            row = snapshot_conn.execute(
+                "SELECT * FROM vendor_work_entries WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+    def expect_rejected_request(
+        *,
+        label,
+        request_call,
+        expected_status,
+        expected_code,
+        target_entry_id=None,
+    ):
+        before = logical_manifest()
+        target_before = fetch_entry_snapshot(target_entry_id) if target_entry_id is not None else None
+        response = request_call()
+        expect_error(response, expected_status, expected_code)
+        after = logical_manifest()
+        if after != before:
+            raise AssertionError(f"{label} rejection must keep the full logical DB manifest unchanged")
+        for workflow_table in ("formal_approvals", "scheduling_entries"):
+            if workflow_table not in before or after[workflow_table] != before[workflow_table]:
+                raise AssertionError(f"{label} rejection must not mutate {workflow_table}")
+        if target_entry_id is not None:
+            target_after = fetch_entry_snapshot(target_entry_id)
+            if target_after != target_before:
+                raise AssertionError(f"{label} rejection must keep the complete target row unchanged")
+        return response
+
+    vendor_marker_keys = ("identity_type", *module.VENDOR_SESSION_MARKER_KEYS)
+
+    def expect_rejected_session_case(
+        *,
+        label,
+        session_values,
+        expected_status,
+        expected_code,
+        expect_vendor_cleanup,
+        expect_internal_session=False,
+    ):
+        case_client = module.app.test_client()
+        with case_client.session_transaction() as case_session:
+            case_session.clear()
+            case_session.update(session_values)
+        expect_rejected_request(
+            label=label,
+            request_call=lambda: case_client.post(
+                "/api/vendor-work-entry",
+                json=payload(),
+                follow_redirects=False,
+            ),
+            expected_status=expected_status,
+            expected_code=expected_code,
+        )
+        with case_client.session_transaction() as case_session:
+            if expect_vendor_cleanup:
+                if any(key in case_session for key in vendor_marker_keys):
+                    raise AssertionError(f"{label} must clear every vendor session marker")
+            else:
+                for key, value in session_values.items():
+                    if case_session.get(key) != value:
+                        raise AssertionError(f"{label} must preserve existing mixed-session marker {key}")
+            if expect_internal_session:
+                if case_session.get("user_id") != session_values.get("user_id"):
+                    raise AssertionError(f"{label} must preserve the internal session")
+            elif any(key in case_session for key in ("user_id", "username", "role")):
+                raise AssertionError(f"{label} must not create an internal session")
+
+    expect_rejected_session_case(
+        label="unauthenticated",
+        session_values={},
+        expected_status=401,
+        expected_code="auth_required",
+        expect_vendor_cleanup=True,
+    )
+
+    partial_vendor_sessions = (
+        ("identity_and_account_only", {"identity_type": "vendor", "vendor_account_id": 1}),
+        ("username_only", {"vendor_username": "partial-vendor"}),
+        ("account_without_identity", {"vendor_account_id": 1}),
+        ("identity_only", {"identity_type": "vendor"}),
+    )
+    for label, session_values in partial_vendor_sessions:
+        expect_rejected_session_case(
+            label=label,
+            session_values=session_values,
+            expected_status=401,
+            expected_code="vendor_session_inactive",
+            expect_vendor_cleanup=True,
+        )
+
+    expect_rejected_session_case(
+        label="mixed_internal_partial_vendor",
+        session_values={
+            "user_id": 1,
+            "username": "admin",
+            "role": "admin",
+            "vendor_account_id": 1,
+        },
+        expected_status=409,
+        expected_code="ambiguous_actor_session",
+        expect_vendor_cleanup=False,
+        expect_internal_session=True,
+    )
+
+    mismatch_client = login("vendor_unique_submit")
+    with mismatch_client.session_transaction() as mismatch_session:
+        mismatch_session["vendor_username"] = "forged-session-username"
+    expect_rejected_request(
+        label="forged_vendor",
+        request_call=lambda: mismatch_client.post("/api/vendor-work-entry", json=payload()),
+        expected_status=401,
+        expected_code="vendor_session_inactive",
+    )
+    with mismatch_client.session_transaction() as mismatch_session:
+        if any(key in mismatch_session for key in vendor_marker_keys):
+            raise AssertionError("forged vendor session rejection must clear every vendor session marker")
+
+    inactive_client = login("vendor_unique_submit")
+    with closing(module.db()) as conn:
+        conn.execute("UPDATE vendor_accounts SET is_active = 0 WHERE username = 'vendor_unique_submit'")
+        conn.commit()
+    expect_rejected_request(
+        label="inactive_vendor",
+        request_call=lambda: inactive_client.post("/api/vendor-work-entry", json=payload()),
+        expected_status=401,
+        expected_code="vendor_session_inactive",
+    )
+    with inactive_client.session_transaction() as inactive_session:
+        if any(key in inactive_session for key in vendor_marker_keys):
+            raise AssertionError("inactive vendor session rejection must clear every vendor session marker")
+    with closing(module.db()) as conn:
+        conn.execute("UPDATE vendor_accounts SET is_active = 1 WHERE username = 'vendor_unique_submit'")
+        conn.commit()
+
+    no_scope_client = login("vendor_no_scope")
+    expect_rejected_request(
+        label="no_trusted_target",
+        request_call=lambda: no_scope_client.post(
+            "/api/vendor-work-entry", json=payload(vendor_name="Vendor No Scope")
+        ),
+        expected_status=403,
+        expected_code="vendor_scope_unavailable",
+    )
+    ambiguous_same_site_client = login("vendor_ambiguous_same_site")
+    expect_rejected_request(
+        label="ambiguous_trusted_target_same_site",
+        request_call=lambda: ambiguous_same_site_client.post(
+            "/api/vendor-work-entry", json=payload(vendor_name="Vendor Ambiguous Same")
+        ),
+        expected_status=409,
+        expected_code="vendor_scope_ambiguous",
+    )
+    ambiguous_cross_site_client = login("vendor_ambiguous_cross_site")
+    expect_rejected_request(
+        label="ambiguous_trusted_target_cross_site",
+        request_call=lambda: ambiguous_cross_site_client.post(
+            "/api/vendor-work-entry", json=payload(vendor_name="Vendor Ambiguous Cross")
+        ),
+        expected_status=409,
+        expected_code="vendor_scope_ambiguous",
+    )
+    inactive_site_client = login("vendor_inactive_site")
+    expect_rejected_request(
+        label="inactive_site_no_trusted_target",
+        request_call=lambda: inactive_site_client.post(
+            "/api/vendor-work-entry",
+            json=payload(sheet_id=inactive_sheet, vendor_name="Vendor Inactive Site"),
+        ),
+        expected_status=403,
+        expected_code="vendor_scope_unavailable",
+    )
+
+    unique_client = login("vendor_unique_submit")
+    expect_rejected_request(
+        label="target_sheet_mismatch",
+        request_call=lambda: unique_client.post(
+            "/api/vendor-work-entry", json=payload(id=guard_entry_id, sheet_id=sheet_2)
+        ),
+        expected_status=403,
+        expected_code="vendor_target_sheet_mismatch",
+        target_entry_id=guard_entry_id,
+    )
+    expect_rejected_request(
+        label="vendor_identity_mismatch",
+        request_call=lambda: unique_client.post(
+            "/api/vendor-work-entry", json=payload(id=guard_entry_id, vendor_name="Vendor Other Owner")
+        ),
+        expected_status=403,
+        expected_code="vendor_identity_mismatch",
+        target_entry_id=guard_entry_id,
+    )
+    expect_rejected_request(
+        label="business_date_mismatch_create",
+        request_call=lambda: unique_client.post(
+            "/api/vendor-work-entry", json=payload(business_date="2000-01-01")
+        ),
+        expected_status=409,
+        expected_code="vendor_business_date_mismatch",
+    )
+    expect_rejected_request(
+        label="invalid_payload",
+        request_call=lambda: unique_client.post(
+            "/api/vendor-work-entry", json=payload(pre_entry_requirement="x" * 501)
+        ),
+        expected_status=400,
+        expected_code="invalid_pre_entry_requirement",
+    )
+
+    first_create = unique_client.post("/api/vendor-work-entry", json=payload())
+    if first_create.status_code != 200 or first_create.get_json().get("ok") is not True:
+        raise AssertionError("active vendor create should succeed")
+    first_entry = first_create.get_json()["entry"]
+    if first_entry["vendor_name"] != "Vendor Unique" or first_entry["sheet_id"] != 1:
+        raise AssertionError("vendor create must use trusted identity and target")
+    if first_entry["pre_entry_requirement"] != "Permit required":
+        raise AssertionError("vendor create must trim and persist pre_entry_requirement")
+
+    second_create = unique_client.post("/api/vendor-work-entry", json=payload(entry_order=1, work_content="Second planned entry"))
+    second_entry = second_create.get_json()["entry"]
+    if second_create.status_code != 200 or second_entry["id"] == first_entry["id"]:
+        raise AssertionError("second planned entry should create a distinct row")
+
+    with closing(module.db()) as conn:
+        first_before = dict(conn.execute("SELECT * FROM vendor_work_entries WHERE id = ?", (first_entry["id"],)).fetchone())
+        workflow_before = {
+            "formal_approvals": conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0],
+            "scheduling_entries": conn.execute("SELECT COUNT(*) FROM scheduling_entries").fetchone()[0],
+        }
+        conn.execute(
+            "INSERT INTO vendor_work_entries "
+            "(sheet_id, vendor_name, business_date, planned_at, planned_headcount, actual_headcount, "
+            "work_content, pre_entry_requirement, work_headcount, entry_order, created_at, updated_at) "
+            "VALUES (?, ?, ?, '', 0, 0, '', '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            (1, "Vendor Other Owner", canonical_date),
+        )
+        other_entry = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.execute(
+            "INSERT INTO vendor_work_entries "
+            "(sheet_id, vendor_name, business_date, planned_at, planned_headcount, actual_headcount, "
+            "work_content, pre_entry_requirement, work_headcount, entry_order, created_at, updated_at) "
+            "VALUES (?, ?, ?, '', 0, 0, '', '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            (sheet_2, "Vendor Unique", canonical_date),
+        )
+        cross_sheet_entry = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.execute(
+            "INSERT INTO vendor_work_entries "
+            "(sheet_id, vendor_name, business_date, planned_at, planned_headcount, actual_headcount, "
+            "work_content, pre_entry_requirement, work_headcount, entry_order, created_at, updated_at) "
+            "VALUES (?, 'Vendor Ambiguous Cross', ?, '', 0, 0, '', '', 0, 0, "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+            (sheet_2, canonical_date),
+        )
+        internal_cross_site_entry = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.commit()
+
+    update_second = unique_client.post(
+        "/api/vendor-work-entry",
+        json=payload(id=second_entry["id"], entry_order=1, work_content="Second planned entry updated"),
+    )
+    if update_second.status_code != 200 or update_second.get_json()["entry"]["work_content"] != "Second planned entry updated":
+        raise AssertionError("vendor should update the specified owned entry")
+    expect_rejected_request(
+        label="missing_entry",
+        request_call=lambda: unique_client.post(
+            "/api/vendor-work-entry", json=payload(id=999999)
+        ),
+        expected_status=404,
+        expected_code="entry_not_found",
+    )
+    expect_rejected_request(
+        label="cross_vendor_update",
+        request_call=lambda: unique_client.post(
+            "/api/vendor-work-entry", json=payload(id=other_entry)
+        ),
+        expected_status=403,
+        expected_code="vendor_entry_owner_mismatch",
+        target_entry_id=other_entry,
+    )
+    expect_rejected_request(
+        label="cross_sheet_update",
+        request_call=lambda: unique_client.post(
+            "/api/vendor-work-entry", json=payload(id=cross_sheet_entry)
+        ),
+        expected_status=403,
+        expected_code="vendor_entry_sheet_mismatch",
+        target_entry_id=cross_sheet_entry,
+    )
+    expect_rejected_request(
+        label="business_date_mismatch_update",
+        request_call=lambda: unique_client.post(
+            "/api/vendor-work-entry",
+            json=payload(id=second_entry["id"], business_date="2000-01-01"),
+        ),
+        expected_status=409,
+        expected_code="vendor_business_date_mismatch",
+        target_entry_id=second_entry["id"],
+    )
+
+    class WriteConflictCursorProxy:
+        rowcount = 0
+
+    class WriteConflictConnectionProxy:
+        def __init__(self, connection, target_entry_id):
+            self._connection = connection
+            self._target_entry_id = int(target_entry_id)
+
+        def __enter__(self):
+            self._connection.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return self._connection.__exit__(exc_type, exc_value, traceback)
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+        def execute(self, sql, parameters=()):
+            normalized_sql = " ".join(str(sql).split()).upper()
+            is_target_update = (
+                normalized_sql.startswith("UPDATE VENDOR_WORK_ENTRIES SET")
+                and "WHERE ID = ?" in normalized_sql
+                and "AND SHEET_ID = ?" in normalized_sql
+                and "AND VENDOR_NAME = ?" in normalized_sql
+                and len(parameters) >= 3
+                and int(parameters[-3]) == self._target_entry_id
+            )
+            if is_target_update:
+                return WriteConflictCursorProxy()
+            return self._connection.execute(sql, parameters)
+
+    original_db_factory = module.db
+
+    def write_conflict_request():
+        def intercepted_db_factory():
+            return WriteConflictConnectionProxy(original_db_factory(), second_entry["id"])
+
+        module.db = intercepted_db_factory
+        try:
+            return unique_client.post(
+                "/api/vendor-work-entry",
+                json=payload(id=second_entry["id"], work_content="Must not persist"),
+            )
+        finally:
+            module.db = original_db_factory
+
+    expect_rejected_request(
+        label="write_conflict",
+        request_call=write_conflict_request,
+        expected_status=409,
+        expected_code="write_conflict",
+        target_entry_id=second_entry["id"],
+    )
+    if module.db is not original_db_factory:
+        raise AssertionError("write-conflict interception must restore the original DB factory")
+
+    with closing(module.db()) as conn:
+        member_password_hash = module.generate_password_hash("member-pass")
+        conn.execute(
+            "INSERT INTO users (username, display_name, password_hash, role) "
+            "VALUES ('rejected_path_member', 'Rejected Path Member', ?, 'member')",
+            (member_password_hash,),
+        )
+        member_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.execute(
+            "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, 1, 'member')",
+            (member_id,),
+        )
+        conn.commit()
+
+    internal_client = module.app.test_client()
+
+    def set_internal_member_session(*, current_site_id=None):
+        with internal_client.session_transaction() as internal_session:
+            internal_session.clear()
+            internal_session["user_id"] = member_id
+            internal_session["username"] = "rejected_path_member"
+            internal_session["display_name"] = "Rejected Path Member"
+            internal_session["role"] = "member"
+            if current_site_id is not None:
+                internal_session["current_site_id"] = int(current_site_id)
+                internal_session["current_site_name"] = "Vendor Site 1"
+                internal_session["site_selection_required"] = False
+
+    set_internal_member_session()
+    expect_rejected_request(
+        label="internal_member_missing_current_site",
+        request_call=lambda: internal_client.post(
+            "/api/vendor-work-entry", json=payload(id=guard_entry_id)
+        ),
+        expected_status=403,
+        expected_code="site_context_invalid",
+        target_entry_id=guard_entry_id,
+    )
+
+    set_internal_member_session(current_site_id=1)
+    expect_rejected_request(
+        label="internal_member_cross_site",
+        request_call=lambda: internal_client.post(
+            "/api/vendor-work-entry",
+            json=payload(
+                id=internal_cross_site_entry,
+                sheet_id=sheet_2,
+                vendor_name="Vendor Ambiguous Cross",
+            ),
+        ),
+        expected_status=403,
+        expected_code="write_target_not_in_current_site",
+        target_entry_id=internal_cross_site_entry,
+    )
+
+    with closing(module.db()) as conn:
+        first_after = dict(conn.execute("SELECT * FROM vendor_work_entries WHERE id = ?", (first_entry["id"],)).fetchone())
+        if first_after != first_before:
+            raise AssertionError("updating the second planned entry must not change the first")
+        if conn.execute("SELECT COUNT(*) FROM formal_approvals").fetchone()[0] != workflow_before["formal_approvals"]:
+            raise AssertionError("vendor submit must not create formal approvals")
+        if conn.execute("SELECT COUNT(*) FROM scheduling_entries").fetchone()[0] != workflow_before["scheduling_entries"]:
+            raise AssertionError("vendor submit must not create scheduling rows")
+        if conn.execute("SELECT COUNT(*) FROM vendor_work_entries WHERE vendor_name = 'Vendor Unique'").fetchone()[0] != 4:
+            raise AssertionError("rejected paths must not create vendor work entries")
+
+    template_text = (ROOT_DIR / "templates" / "vendor_work_entry.html").read_text(encoding="utf-8")
+    for marker in (
+        'pre_entry_requirement: formData.get("pre_entry_requirement") || ""',
+        "response.status === 401",
+        "response.status === 403",
+        "response.status === 409",
+        "vendor_scope_ambiguous",
+        "JSON.parse(responseText)",
+        "error instanceof TypeError",
+        "finally",
+        'reloadUrl.searchParams.set("selected_entry_id", resultEntryId);',
+    ):
+        if marker not in template_text:
+            raise AssertionError(f"vendor frontend submit contract missing marker: {marker}")
+
+
+def assert_vendor_submit_navigation_guard(template_source: str) -> None:
+    template_text = template_source
+    for fragment in (
+        'reloadUrl.searchParams.set("selected_entry_id", resultEntryId);',
+        'reloadUrl.searchParams.delete("new_entry");',
+    ):
+        if fragment not in template_text:
+            raise AssertionError(f"vendor submit result flow completion smoke template missing fragment: {fragment}")
+
+    handler_start = template_text.index('form.addEventListener("submit", async (event) => {')
+    handler_end = template_text.index("\n    });\n  })();", handler_start)
+    submit_handler = template_text[handler_start:handler_end]
+
+    disable_index = submit_handler.index("submitButton.disabled = true;")
+    navigation_default_index = submit_handler.index("let navigationScheduled = false;")
+    fetch_index = submit_handler.index("const response = await fetch(")
+    success_contract_index = submit_handler.index("if (!data.entry || !data.entry.id)")
+    selected_entry_index = submit_handler.index(
+        'reloadUrl.searchParams.set("selected_entry_id", resultEntryId);'
+    )
+    navigation_scheduled_index = submit_handler.index("navigationScheduled = true;")
+    navigation_timeout_index = submit_handler.index(
+        "window.setTimeout(() => window.location.assign(reloadUrl.toString()), 300);"
+    )
+    catch_index = submit_handler.index("} catch (error) {")
+    finally_index = submit_handler.index("} finally {")
+    conditional_reenable_index = submit_handler.index("if (!navigationScheduled) {", finally_index)
+    reenable_index = submit_handler.index("submitButton.disabled = false;", conditional_reenable_index)
+
+    if not (
+        disable_index
+        < navigation_default_index
+        < fetch_index
+        < success_contract_index
+        < selected_entry_index
+        < navigation_scheduled_index
+        < navigation_timeout_index
+        < catch_index
+        < finally_index
+        < conditional_reenable_index
+        < reenable_index
+    ):
+        raise AssertionError("vendor submit navigation guard statements must preserve their required relative order")
+
+    success_navigation_window = submit_handler[success_contract_index:navigation_timeout_index]
+    if "submitButton.disabled = false;" in success_navigation_window:
+        raise AssertionError("vendor submit success navigation window must keep the submit button disabled")
+    finally_block = submit_handler[finally_index:]
+    if finally_block.count("submitButton.disabled = false;") != 1:
+        raise AssertionError("vendor submit finally block must have exactly one guarded re-enable")
+    if finally_block.index("if (!navigationScheduled) {") > finally_block.index("submitButton.disabled = false;"):
+        raise AssertionError("vendor submit finally re-enable must remain conditional on navigation state")
+
+    for safety_fragment in (
+        "const responseText = await response.text();",
+        "data = JSON.parse(responseText);",
+        "伺服器回傳非JSON內容，請稍後再試。",
+        "response.status === 401",
+        "response.status === 403",
+        "response.status === 409",
+        "error instanceof TypeError",
+        "errorMessage.textContent =",
+        'pre_entry_requirement: formData.get("pre_entry_requirement") || ""',
+    ):
+        if safety_fragment not in submit_handler:
+            raise AssertionError(f"vendor submit safety contract missing fragment: {safety_fragment}")
+    if "errorMessage.innerHTML" in submit_handler:
+        raise AssertionError("vendor submit must not insert server error content with innerHTML")
+
+
 def run_vendor_work_entry_submit_result_flow_completion_smoke(db_path: Path) -> None:
     import importlib.util
 
@@ -13553,12 +14387,7 @@ def run_vendor_work_entry_submit_result_flow_completion_smoke(db_path: Path) -> 
     spec.loader.exec_module(module)
 
     template_text = (ROOT_DIR / "templates" / "vendor_work_entry.html").read_text(encoding="utf-8")
-    for fragment in (
-        'reloadUrl.searchParams.set("selected_entry_id", resultEntryId);',
-        'reloadUrl.searchParams.delete("new_entry");',
-    ):
-        if fragment not in template_text:
-            raise AssertionError(f"vendor submit result flow completion smoke template missing fragment: {fragment}")
+    assert_vendor_submit_navigation_guard(template_text)
 
     with module.db() as conn:
         conn.row_factory = sqlite3.Row
@@ -15820,6 +16649,11 @@ def main() -> int:
         run_users_sqlite_sequence_apply_guard_smoke()
         run_sqlite_db_path_resolver_smoke()
         run_users_template_delete_ui_smoke()
+        vendor_work_entry_template_source = (ROOT_DIR / "templates" / "vendor_work_entry.html").read_text(
+            encoding="utf-8"
+        )
+        assert_vendor_submit_navigation_guard(vendor_work_entry_template_source)
+        print("vendor submit navigation guard PASS")
         run_sheet_endpoint_smoke(Path(tmpdir) / "app-smoke.db")
         run_mobile_sheet_frozen_region_guardrail_smoke()
         run_unit_handover_report_smoke(Path(tmpdir) / "unit-handover-report-smoke.db")
@@ -15841,6 +16675,9 @@ def main() -> int:
         run_unit_extra_write_isolation_smoke(db_path)
         run_vendor_contact_write_isolation_smoke(db_path)
         run_vendor_work_entry_write_isolation_smoke(db_path)
+        vendor_authenticated_submit_db = Path(tmpdir) / "vendor-authenticated-submit.db"
+        create_sample_sqlite(vendor_authenticated_submit_db)
+        run_vendor_authenticated_submit_path_smoke(vendor_authenticated_submit_db)
         run_vendor_work_entry_requirement_confirmation_smoke(db_path)
         run_vendor_work_entry_formal_approve_smoke(db_path)
         vendor_auth_db = Path(tmpdir) / "vendor-auth-foundation.db"
@@ -16034,4 +16871,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[1] == "--internal-vendor-authenticated-submit":
+        raise SystemExit(_run_vendor_authenticated_submit_child(Path(sys.argv[2]), Path(sys.argv[3])))
     raise SystemExit(main())

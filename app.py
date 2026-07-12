@@ -3768,12 +3768,18 @@ def admin_required(fn):
     return wrapper
 
 
+VENDOR_SESSION_MARKER_KEYS = ("vendor_account_id", "vendor_username", "vendor_name")
+
+
 def clear_vendor_session() -> None:
-    session.pop("vendor_account_id", None)
-    session.pop("vendor_username", None)
-    session.pop("vendor_name", None)
+    for key in VENDOR_SESSION_MARKER_KEYS:
+        session.pop(key, None)
     if session.get("identity_type") == "vendor":
         session.pop("identity_type", None)
+
+
+def has_vendor_session_markers() -> bool:
+    return session.get("identity_type") == "vendor" or any(key in session for key in VENDOR_SESSION_MARKER_KEYS)
 
 
 def is_vendor_session() -> bool:
@@ -3793,6 +3799,115 @@ def current_vendor_account() -> dict[str, object] | None:
         "username": str(session["vendor_username"]),
         "vendor_name": str(session["vendor_name"]),
     }
+
+
+def resolve_vendor_work_entry_actor(conn: sqlite3.Connection) -> dict[str, object]:
+    internal_present = session.get("user_id") is not None
+    vendor_markers_present = has_vendor_session_markers()
+
+    if internal_present and vendor_markers_present:
+        raise LookupError("ambiguous_actor_session")
+    if internal_present:
+        return {"actor_type": "internal"}
+    if not vendor_markers_present:
+        raise LookupError("auth_required")
+    if not is_vendor_session():
+        clear_vendor_session()
+        raise LookupError("vendor_session_inactive")
+
+    try:
+        vendor_account_id = int(session["vendor_account_id"])
+    except (TypeError, ValueError):
+        clear_vendor_session()
+        raise LookupError("vendor_session_inactive") from None
+
+    account = conn.execute(
+        """
+        SELECT id, username, vendor_name, is_active
+        FROM vendor_accounts
+        WHERE id = ?
+        """,
+        (vendor_account_id,),
+    ).fetchone()
+    if (
+        account is None
+        or int(account["id"]) != vendor_account_id
+        or str(account["username"]) != str(session["vendor_username"])
+        or str(account["vendor_name"]) != str(session["vendor_name"])
+        or int(account["is_active"] or 0) != 1
+    ):
+        clear_vendor_session()
+        raise LookupError("vendor_session_inactive")
+
+    return {
+        "actor_type": "vendor",
+        "vendor_account_id": int(account["id"]),
+        "vendor_username": str(account["username"]),
+        "vendor_name": str(account["vendor_name"]),
+    }
+
+
+def resolve_vendor_work_entry_trusted_target(
+    conn: sqlite3.Connection,
+    *,
+    vendor_name: str,
+) -> int:
+    candidates = conn.execute(
+        """
+        SELECT DISTINCT s.id
+        FROM sheets s
+        JOIN sites site ON site.id = s.site_id
+        JOIN tasks t ON t.sheet_id = s.id
+        WHERE site.is_active = 1
+          AND t.vendor = ?
+        ORDER BY s.id
+        """,
+        (vendor_name,),
+    ).fetchall()
+    if not candidates:
+        raise LookupError("vendor_scope_unavailable")
+    if len(candidates) > 1:
+        raise LookupError("vendor_scope_ambiguous")
+    return int(candidates[0]["id"])
+
+
+def _handle_vendor_work_entry_actor_lookup_error(exc: LookupError):
+    code = str(exc)
+    if code == "auth_required":
+        return crew_api_error("auth_required", "authentication is required.", status=401)
+    if code == "ambiguous_actor_session":
+        return crew_api_error(
+            "ambiguous_actor_session",
+            "internal and vendor identities cannot be used in the same session.",
+            status=409,
+        )
+    if code == "vendor_session_inactive":
+        return crew_api_error(
+            "vendor_session_inactive",
+            "vendor session is inactive or no longer valid.",
+            status=401,
+        )
+    raise exc
+
+
+def _handle_vendor_submit_lookup_error(exc: LookupError):
+    code = str(exc)
+    errors = {
+        "vendor_scope_unavailable": (403, "No active sheet is available for this vendor."),
+        "vendor_scope_ambiguous": (409, "Vendor is assigned to more than one active sheet."),
+        "vendor_target_sheet_mismatch": (403, "sheet_id does not match the trusted vendor target."),
+        "vendor_identity_mismatch": (403, "vendor_name does not match the authenticated vendor."),
+        "entry_not_found": (404, "vendor work entry id was not found."),
+        "vendor_entry_owner_mismatch": (403, "vendor work entry belongs to a different vendor."),
+        "vendor_entry_sheet_mismatch": (403, "vendor work entry belongs to a different sheet."),
+        "vendor_business_date_mismatch": (409, "business_date cannot differ from the canonical business date."),
+        "vendor_target_stale": (409, "trusted vendor target changed before the write completed."),
+        "write_conflict": (409, "vendor work entry changed before the write completed."),
+    }
+    if code in errors:
+        status, message = errors[code]
+        return crew_api_error(code, message, status=status)
+    raise exc
 
 
 def current_vendor_scope() -> dict[str, object] | None:
@@ -6677,8 +6792,13 @@ def api_vendor_contact():
 
 
 @app.route("/api/vendor-work-entry", methods=["POST"])
-@login_required
 def api_vendor_work_entry():
+    with db() as actor_conn:
+        try:
+            resolve_vendor_work_entry_actor(actor_conn)
+        except LookupError as exc:
+            return _handle_vendor_work_entry_actor_lookup_error(exc)
+
     data = request.get_json(silent=True) or {}
     try:
         payload = normalize_vendor_work_entry_submit_payload(data)
@@ -6706,6 +6826,125 @@ def api_vendor_work_entry():
         )
 
     with db() as conn:
+        try:
+            actor = resolve_vendor_work_entry_actor(conn)
+        except LookupError as exc:
+            return _handle_vendor_work_entry_actor_lookup_error(exc)
+
+        if actor["actor_type"] == "vendor":
+            trusted_vendor_name = str(actor["vendor_name"])
+            canonical_business_date = resolve_crew_business_date()
+            try:
+                trusted_sheet_id = resolve_vendor_work_entry_trusted_target(
+                    conn,
+                    vendor_name=trusted_vendor_name,
+                )
+                if sheet_id != trusted_sheet_id:
+                    raise LookupError("vendor_target_sheet_mismatch")
+                if vendor_name != trusted_vendor_name:
+                    raise LookupError("vendor_identity_mismatch")
+                if business_date != canonical_business_date:
+                    raise LookupError("vendor_business_date_mismatch")
+
+                existing_entry = None
+                if entry_id is not None:
+                    existing_entry = conn.execute(
+                        """
+                        SELECT id, sheet_id, vendor_name, business_date
+                        FROM vendor_work_entries
+                        WHERE id = ?
+                        """,
+                        (entry_id,),
+                    ).fetchone()
+                    if existing_entry is None:
+                        raise LookupError("entry_not_found")
+                    if str(existing_entry["vendor_name"]) != trusted_vendor_name:
+                        raise LookupError("vendor_entry_owner_mismatch")
+                    if int(existing_entry["sheet_id"]) != trusted_sheet_id:
+                        raise LookupError("vendor_entry_sheet_mismatch")
+                    if str(existing_entry["business_date"]) != canonical_business_date:
+                        raise LookupError("vendor_business_date_mismatch")
+            except LookupError as exc:
+                return _handle_vendor_submit_lookup_error(exc)
+
+            if entry_id is None:
+                cur = conn.execute(
+                    """
+                    INSERT INTO vendor_work_entries (
+                        sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                        actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        trusted_sheet_id,
+                        trusted_vendor_name,
+                        canonical_business_date,
+                        planned_at,
+                        planned_headcount,
+                        actual_headcount,
+                        work_content,
+                        pre_entry_requirement,
+                        work_headcount,
+                        entry_order,
+                    ),
+                )
+                target_id = int(cur.lastrowid)
+            else:
+                try:
+                    if resolve_vendor_work_entry_trusted_target(
+                        conn,
+                        vendor_name=trusted_vendor_name,
+                    ) != trusted_sheet_id:
+                        raise LookupError("vendor_target_stale")
+                except LookupError as exc:
+                    if str(exc) in {"vendor_scope_unavailable", "vendor_scope_ambiguous"}:
+                        exc = LookupError("vendor_target_stale")
+                    return _handle_vendor_submit_lookup_error(exc)
+                cur = conn.execute(
+                    """
+                    UPDATE vendor_work_entries
+                    SET planned_at = ?,
+                        planned_headcount = ?,
+                        actual_headcount = ?,
+                        work_content = ?,
+                        pre_entry_requirement = ?,
+                        work_headcount = ?,
+                        entry_order = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                      AND sheet_id = ?
+                      AND vendor_name = ?
+                    """,
+                    (
+                        planned_at,
+                        planned_headcount,
+                        actual_headcount,
+                        work_content,
+                        pre_entry_requirement,
+                        work_headcount,
+                        entry_order,
+                        entry_id,
+                        trusted_sheet_id,
+                        trusted_vendor_name,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    return _handle_vendor_submit_lookup_error(LookupError("write_conflict"))
+                target_id = entry_id
+
+            row = conn.execute(
+                """
+                SELECT id, sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                       actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order, created_at, updated_at
+                FROM vendor_work_entries
+                WHERE id = ? AND sheet_id = ? AND vendor_name = ?
+                """,
+                (target_id, trusted_sheet_id, trusted_vendor_name),
+            ).fetchone()
+            return jsonify({"ok": True, "entry": dict(row) if row else None})
+
         try:
             vendor_work_entry_context = authorize_vendor_work_entry_write(
                 conn,
