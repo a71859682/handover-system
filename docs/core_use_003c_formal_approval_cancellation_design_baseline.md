@@ -2,13 +2,15 @@
 
 ## Status and scope
 
-This document freezes the product and delivery boundaries for formal approval cancellation. CORE-USE-003C is documentation-only: it introduces no schema, API, UI, permission, workflow, runtime, or data change.
+This document freezes the product and delivery boundaries for **Formal Entry Approval Cancellation** (Type 1; 中文：**取消今日進場核准**). CORE-USE-003C is documentation-only: it introduces no schema, API, UI, permission, workflow, runtime, or data change.
 
 The cancellation workflow is domain-specific. It must not be generalized into a shared governance, audit, or workflow framework in this slice family.
 
+CORE-USE-003* is Type 1 only: it cancels the `formal_approvals` fact whose action is `crew_formal_approve_entry`. It does not cancel, reset, or otherwise alter pre-entry requirement confirmation. **Pre-entry Requirement Confirmation Cancellation** (Type 2; 中文：**取消進場前需求確認**) is a separate domain frozen in [CORE-USE-004A](core_use_004a_requirement_confirmation_cancellation_design_baseline.md). The two domains must not share an endpoint, action code, button, status, metadata, event table, read projection, or runtime-verification slice.
+
 ## Frozen product decisions
 
-1. Cancellation uses an independent **Cancel formal approval** action. The existing approval button must never act as a toggle.
+1. Cancellation uses an independent **Cancel formal entry approval** / **取消今日進場核准** action. The existing approval button must never act as a toggle.
 2. A cancellation never deletes the `formal_approvals` row.
 3. `formal_approvals` remains the canonical current-state record. A new append-only `formal_approval_events` table records lifecycle evidence for this domain.
 4. Cancellation metadata is `cancelled_by`, `cancelled_at`, and `cancellation_reason`.
@@ -122,7 +124,7 @@ The UI must ultimately render these distinct action states:
 | State | Approval action | Cancellation action | Read-only state |
 | --- | --- | --- | --- |
 | Pending and eligible | One approval button | None | Pending metadata |
-| Approved and cancellable | None | Independent cancellation button | Original approval metadata |
+| Approved and cancellable | None | Independent **取消今日進場核准** button | Original approval metadata |
 | Approved with any schedule row | None | No actionable cancellation | Approval and schedule-blocked cancellation state |
 | Cancelled | None | None | Original approval plus cancellation metadata and reason |
 
@@ -188,6 +190,8 @@ Until its dedicated slice is approved, this design does not authorize:
 - Production data mutation or authenticated Production runtime testing;
 - event backfill during deploy or startup; or
 - reapproval.
+
+This baseline does not authorize Type 2 requirement-confirmation cancellation. Until CORE-USE-004* is implemented, a confirmed requirement cannot be cancelled through the product.
 
 ## Acceptance baseline
 
