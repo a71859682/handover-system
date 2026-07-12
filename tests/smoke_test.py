@@ -11629,6 +11629,122 @@ postgres_calls = []
 original_get_primary_postgres_connection = module.get_primary_postgres_connection
 module.get_primary_postgres_connection = lambda: postgres_calls.append("called")
 
+target_query_tables = (
+    "vendor_work_entries",
+    "sheets",
+    "formal_approvals",
+    "formal_approval_events",
+    "scheduling_entries",
+)
+auth_order_original_db = module.db
+auth_order_original_resolver = module.resolve_formal_approval_cancellation_actor
+
+class ActorBoundaryTraceConnection:
+    def __init__(self, connection, counters, connection_type):
+        self.connection = connection
+        self.counters = counters
+        self.connection_type = connection_type
+
+    def __enter__(self):
+        self.counters[f"{self.connection_type}_context_entries"] += 1
+        self.connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return self.connection.__exit__(exc_type, exc, traceback)
+
+    def execute(self, sql, parameters=()):
+        normalized_sql = " ".join(str(sql).lower().split())
+        self.counters[f"{self.connection_type}_statements"].append(normalized_sql)
+        if normalized_sql == "begin immediate":
+            self.counters["begin_immediate"] += 1
+        if any(table_name in normalized_sql for table_name in target_query_tables):
+            self.counters["target_table_queries"] += 1
+        if " from users " in f" {normalized_sql} ":
+            self.counters["users_auth_queries"] += 1
+        if " from vendor_accounts " in f" {normalized_sql} ":
+            self.counters["vendor_auth_queries"] += 1
+        return self.connection.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+def post_cancel_with_actor_boundary_counts(payload):
+    counters = {
+        "actor_resolutions": 0,
+        "resolved_actor": None,
+        "phase": "target",
+        "auth_db_factory_calls": 0,
+        "auth_context_entries": 0,
+        "auth_statements": [],
+        "target_db_factory_calls": 0,
+        "target_context_entries": 0,
+        "target_statements": [],
+        "begin_immediate": 0,
+        "target_table_queries": 0,
+        "users_auth_queries": 0,
+        "vendor_auth_queries": 0,
+    }
+
+    def tracing_actor_resolver():
+        counters["actor_resolutions"] += 1
+        counters["phase"] = "auth"
+        try:
+            actor = auth_order_original_resolver()
+            counters["resolved_actor"] = actor
+            return actor
+        finally:
+            counters["phase"] = "target"
+
+    def tracing_db():
+        connection_type = "auth" if counters["phase"] == "auth" else "target"
+        counters[f"{connection_type}_db_factory_calls"] += 1
+        return ActorBoundaryTraceConnection(auth_order_original_db(), counters, connection_type)
+
+    module.db = tracing_db
+    module.resolve_formal_approval_cancellation_actor = tracing_actor_resolver
+    try:
+        response = client.post(cancel_path, json=payload)
+    finally:
+        module.db = auth_order_original_db
+        module.resolve_formal_approval_cancellation_actor = auth_order_original_resolver
+    counters.pop("phase")
+    return response, counters
+
+def assert_rejected_actor_boundary(counters, *, label):
+    expected_zero = {
+        "target_db_factory_calls": 0,
+        "target_context_entries": 0,
+        "begin_immediate": 0,
+        "target_table_queries": 0,
+    }
+    for key, expected in expected_zero.items():
+        if counters[key] != expected:
+            raise SystemExit(f"{label} expected {key}={expected}, got {counters[key]}: {counters}")
+    if counters["actor_resolutions"] != 1:
+        raise SystemExit(f"{label} must resolve the canonical actor exactly once: {counters}")
+
+def assert_internal_actor_boundary(counters, *, label):
+    expected = {
+        "actor_resolutions": 1,
+        "auth_db_factory_calls": 1,
+        "auth_context_entries": 1,
+        "users_auth_queries": 1,
+        "target_db_factory_calls": 1,
+        "target_context_entries": 1,
+        "begin_immediate": 1,
+    }
+    for key, value in expected.items():
+        if counters[key] != value:
+            raise SystemExit(f"{label} expected {key}={value}, got {counters[key]}: {counters}")
+    actor = counters["resolved_actor"]
+    if isinstance(actor, sqlite3.Row) or not isinstance(actor, dict):
+        raise SystemExit(f"{label} resolved actor must be a plain dict")
+    if set(actor) != {"id", "username", "role"}:
+        raise SystemExit(f"{label} resolved actor must have exact id/username/role keys: {set(actor)}")
+    if any(key in actor for key in ("password_hash", "display_name", "created_at", "session", "credential")):
+        raise SystemExit(f"{label} resolved actor exposed a forbidden field")
+
 for label, payload, expected_code in (
     ("non-string reason", {**cancel_payload, "reason": 123}, "invalid_cancellation_reason"),
     ("blank reason", {**cancel_payload, "reason": "   "}, "invalid_cancellation_reason"),
@@ -11641,21 +11757,214 @@ for label, payload, expected_code in (
     response = client.post(cancel_path, json=payload)
     assert_rejected_unchanged(response, status=400, code=expected_code, before=before, label=label)
 
-with client.session_transaction() as session:
-    session.clear()
-before = logical_manifest()
-response = client.post(cancel_path, json=cancel_payload)
-assert_rejected_unchanged(response, status=403, code="auth_required", before=before, label="unauthenticated cancel")
+rejected_actor_cases = (
+    ("unauthenticated existing entry cancel", cancel_payload, {}, "auth_required", 0, 0, 0),
+    (
+        "unauthenticated missing entry cancel",
+        {**cancel_payload, "entry_id": 999999},
+        {},
+        "auth_required",
+        0,
+        0,
+        0,
+    ),
+    (
+        "unauthenticated missing sheet cancel",
+        {**cancel_payload, "sheet_id": 999999},
+        {},
+        "auth_required",
+        0,
+        0,
+        0,
+    ),
+    (
+        "malformed internal session cancel",
+        cancel_payload,
+        {"user_id": "not-an-integer", "username": "malformed", "role": "member"},
+        "auth_required",
+        0,
+        0,
+        0,
+    ),
+    (
+        "stale internal session cancel",
+        cancel_payload,
+        {"user_id": 999999, "username": "deleted-user", "role": "member"},
+        "auth_required",
+        1,
+        1,
+        0,
+    ),
+    (
+        "partial vendor session cancel",
+        cancel_payload,
+        {"identity_type": "vendor", "vendor_username": "partial-vendor"},
+        "vendor_auth_forbidden",
+        1,
+        0,
+        0,
+    ),
+    (
+        "stale vendor session cancel",
+        cancel_payload,
+        {
+            "identity_type": "vendor",
+            "vendor_account_id": 999999,
+            "vendor_username": "stale-vendor",
+            "vendor_name": "Stale Vendor",
+        },
+        "vendor_auth_forbidden",
+        1,
+        0,
+        1,
+    ),
+    (
+        "vendor existing entry cancel",
+        cancel_payload,
+        {
+            "identity_type": "vendor",
+            "vendor_account_id": int(vendor_account_id),
+            "vendor_username": "vendor_formal_only",
+            "vendor_name": "Vendor Formal",
+        },
+        "vendor_auth_forbidden",
+        1,
+        0,
+        1,
+    ),
+    (
+        "vendor missing entry cancel",
+        {**cancel_payload, "entry_id": 999999},
+        {
+            "identity_type": "vendor",
+            "vendor_account_id": int(vendor_account_id),
+            "vendor_username": "vendor_formal_only",
+            "vendor_name": "Vendor Formal",
+        },
+        "vendor_auth_forbidden",
+        1,
+        0,
+        1,
+    ),
+    (
+        "ambiguous internal vendor session cancel",
+        cancel_payload,
+        {
+            "user_id": int(member_id),
+            "username": "formal_member",
+            "role": "member",
+            "identity_type": "vendor",
+            "vendor_account_id": int(vendor_account_id),
+            "vendor_username": "vendor_formal_only",
+            "vendor_name": "Vendor Formal",
+        },
+        "auth_required",
+        0,
+        0,
+        0,
+    ),
+    (
+        "malformed internal vendor session cancel",
+        cancel_payload,
+        {
+            "user_id": "malformed",
+            "username": "malformed",
+            "role": "member",
+            "identity_type": "vendor",
+            "vendor_account_id": int(vendor_account_id),
+            "vendor_username": "vendor_formal_only",
+            "vendor_name": "Vendor Formal",
+        },
+        "auth_required",
+        0,
+        0,
+        0,
+    ),
+)
+
+for label, payload, session_values, expected_code, auth_db_calls, users_queries, vendor_queries in rejected_actor_cases:
+    with client.session_transaction() as session:
+        session.clear()
+        session.update(session_values)
+    before = logical_manifest()
+    response, counters = post_cancel_with_actor_boundary_counts(payload)
+    assert_rejected_unchanged(response, status=403, code=expected_code, before=before, label=label)
+    assert_rejected_actor_boundary(counters, label=label)
+    if counters["auth_db_factory_calls"] != auth_db_calls:
+        raise SystemExit(f"{label} expected auth_db_factory_calls={auth_db_calls}: {counters}")
+    if counters["auth_context_entries"] != auth_db_calls:
+        raise SystemExit(f"{label} expected auth_context_entries={auth_db_calls}: {counters}")
+    if counters["users_auth_queries"] != users_queries:
+        raise SystemExit(f"{label} expected users_auth_queries={users_queries}: {counters}")
+    if counters["vendor_auth_queries"] != vendor_queries:
+        raise SystemExit(f"{label} expected vendor_auth_queries={vendor_queries}: {counters}")
+
+for label, payload, expected_code in (
+    (
+        "unauthenticated missing entry_id priority",
+        {key: value for key, value in cancel_payload.items() if key != "entry_id"},
+        "invalid_request",
+    ),
+    ("unauthenticated non-positive entry_id priority", {**cancel_payload, "entry_id": 0}, "invalid_request"),
+    ("unauthenticated wrong-type entry_id priority", {**cancel_payload, "entry_id": "invalid"}, "invalid_request"),
+    (
+        "unauthenticated missing sheet_id priority",
+        {key: value for key, value in cancel_payload.items() if key != "sheet_id"},
+        "invalid_request",
+    ),
+    ("unauthenticated non-positive sheet_id priority", {**cancel_payload, "sheet_id": 0}, "invalid_request"),
+    ("unauthenticated wrong-type sheet_id priority", {**cancel_payload, "sheet_id": "invalid"}, "invalid_request"),
+    (
+        "unauthenticated missing action priority",
+        {key: value for key, value in cancel_payload.items() if key != "action"},
+        "invalid_request",
+    ),
+    ("unauthenticated wrong action priority", {**cancel_payload, "action": "wrong_action"}, "invalid_request"),
+    ("unauthenticated wrong-type action priority", {**cancel_payload, "action": 123}, "invalid_request"),
+    ("unauthenticated unexpected field priority", {**cancel_payload, "site_id": default_site_id}, "invalid_request"),
+    ("unauthenticated cancelled_by field priority", {**cancel_payload, "cancelled_by": "forged"}, "invalid_request"),
+    (
+        "unauthenticated approval_status field priority",
+        {**cancel_payload, "approval_status": "cancelled"},
+        "invalid_request",
+    ),
+    ("unauthenticated blank reason priority", {**cancel_payload, "reason": "   "}, "invalid_cancellation_reason"),
+    ("unauthenticated 501-code-point reason priority", {**cancel_payload, "reason": "🧪" * 501}, "invalid_cancellation_reason"),
+):
+    with client.session_transaction() as session:
+        session.clear()
+    before = logical_manifest()
+    response, counters = post_cancel_with_actor_boundary_counts(payload)
+    assert_rejected_unchanged(response, status=400, code=expected_code, before=before, label=label)
+    if counters["actor_resolutions"] != 0:
+        raise SystemExit(f"{label} must reject before actor resolution: {counters}")
+    if any(
+        counters[key]
+        for key in (
+            "auth_db_factory_calls",
+            "auth_context_entries",
+            "target_db_factory_calls",
+            "target_context_entries",
+            "begin_immediate",
+            "target_table_queries",
+            "users_auth_queries",
+            "vendor_auth_queries",
+        )
+    ):
+        raise SystemExit(f"{label} must reject before any auth/target DB work: {counters}")
 
 with client.session_transaction() as session:
     session.clear()
-    session["identity_type"] = "vendor"
-    session["vendor_account_id"] = int(vendor_account_id)
-    session["vendor_username"] = "vendor_formal_only"
-    session["vendor_name"] = "Vendor Formal"
 before = logical_manifest()
-response = client.post(cancel_path, json=cancel_payload)
-assert_rejected_unchanged(response, status=403, code="vendor_auth_forbidden", before=before, label="vendor cancel")
+response, counters = post_cancel_with_actor_boundary_counts({**cancel_payload, "reason": "🧪" * 500})
+assert_rejected_unchanged(
+    response,
+    status=403,
+    code="auth_required",
+    before=before,
+    label="unauthenticated 500-code-point reason",
+)
+assert_rejected_actor_boundary(counters, label="unauthenticated 500-code-point reason")
 
 set_member_session(with_current_site=False)
 before = logical_manifest()
@@ -11698,13 +12007,15 @@ assert_rejected_unchanged(response, status=409, code="sheet_mismatch", before=be
 
 set_member_session()
 before = logical_manifest()
-response = client.post(cancel_path, json={**cancel_payload, "sheet_id": 999999})
+response, counters = post_cancel_with_actor_boundary_counts({**cancel_payload, "sheet_id": 999999})
 assert_rejected_unchanged(response, status=404, code="sheet_not_found", before=before, label="missing sheet cancel")
+assert_internal_actor_boundary(counters, label="missing sheet cancel")
 
 set_member_session()
 before = logical_manifest()
-response = client.post(cancel_path, json={**cancel_payload, "entry_id": 999999})
+response, counters = post_cancel_with_actor_boundary_counts({**cancel_payload, "entry_id": 999999})
 assert_rejected_unchanged(response, status=404, code="entry_not_found", before=before, label="missing entry cancel")
+assert_internal_actor_boundary(counters, label="missing entry cancel")
 
 set_member_session()
 before = logical_manifest()
@@ -11734,7 +12045,8 @@ with module.db() as conn:
 
 ready_entry_before_cancel = fetch_entry_snapshot(ready_entry_id)
 set_member_session()
-response = client.post(cancel_path, json=cancel_payload)
+response, counters = post_cancel_with_actor_boundary_counts(cancel_payload)
+assert_internal_actor_boundary(counters, label="authorized member cancellation")
 if response.status_code != 200:
     raise SystemExit(f"authorized member cancellation expected HTTP 200, got {response.status_code}")
 payload = response.get_json()
@@ -11750,6 +12062,7 @@ if set(approval_payload.keys()) != {
 if (
     approval_payload["approval_status"] != "cancelled"
     or approval_payload["cancelled_by"] != "formal_member"
+    or approval_payload["cancelled_by"] != counters["resolved_actor"]["username"]
     or approval_payload["cancellation_reason"] != "synthetic cancellation reason"
     or not approval_payload["cancelled_at"]
 ):
@@ -11824,10 +12137,14 @@ with client.session_transaction() as session:
     session["current_site_name"] = str(default_site_name)
     session["site_selection_required"] = False
 legacy_entry_before = fetch_entry_snapshot(legacy_entry_id)
-response = client.post(
-    cancel_path,
-    json={**cancel_payload, "entry_id": legacy_entry_id, "reason": "x" * 500},
+response, counters = post_cancel_with_actor_boundary_counts(
+    {
+        **cancel_payload,
+        "entry_id": legacy_entry_id,
+        "reason": "x" * 500,
+    }
 )
+assert_internal_actor_boundary(counters, label="global admin legacy cancellation")
 if response.status_code != 200 or response.get_json()["approval"]["cancelled_by"] != "admin":
     raise SystemExit("global admin should cancel another member approval with a 500-character reason")
 if fetch_entry_snapshot(legacy_entry_id) != legacy_entry_before:

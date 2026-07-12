@@ -2306,19 +2306,31 @@ def authorize_vendor_work_entry_formal_approve(
     *,
     sheet_id: int,
     entry_id: int,
+    internal_user=None,
 ) -> dict[str, object]:
     context = resolve_vendor_work_entry_formal_approve_context(
         conn,
         sheet_id=sheet_id,
         entry_id=entry_id,
     )
-    user = _current_internal_user()
+    user = internal_user if internal_user is not None else _current_internal_user()
     if user is None:
         if current_vendor_account() is not None:
             raise LookupError("vendor_auth_forbidden")
         raise LookupError("auth_required")
     if is_global_admin(user):
-        current_site_context = authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+        if internal_user is None:
+            current_site_context = authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+        else:
+            current_site_id = get_current_site_id()
+            if current_site_id is None:
+                raise LookupError("site_context_invalid")
+            site_row = _fetch_site_row_by_id(conn, int(current_site_id))
+            if site_row is None or int(site_row["is_active"]) != 1:
+                raise LookupError("site_context_invalid")
+            if int(context["site_id"]) != int(current_site_id):
+                raise LookupError("write_target_not_in_current_site")
+            current_site_context = {"current_site_id": int(current_site_id)}
         context["current_site_id"] = int(current_site_context["current_site_id"])
         return context
 
@@ -2384,6 +2396,40 @@ class FormalApprovalCancellationError(Exception):
         self.code = code
         self.message = message
         self.status = status
+
+
+def resolve_formal_approval_cancellation_actor():
+    try:
+        actor_type = resolve_vendor_work_entry_actor_session_type()
+    except LookupError as exc:
+        raise FormalApprovalCancellationError("auth_required", "authentication is required.", status=403) from exc
+    if actor_type == "internal":
+        try:
+            user_id = int(session.get("user_id"))
+        except (TypeError, ValueError):
+            raise FormalApprovalCancellationError("auth_required", "authentication is required.", status=403) from None
+        if user_id <= 0:
+            raise FormalApprovalCancellationError("auth_required", "authentication is required.", status=403)
+        user = _current_internal_user()
+        if user is None:
+            raise FormalApprovalCancellationError("auth_required", "authentication is required.", status=403)
+        return {
+            "id": int(user["id"]),
+            "username": str(user["username"] or ""),
+            "role": str(user["role"] or ""),
+        }
+    if actor_type == "vendor":
+        try:
+            with db() as auth_conn:
+                resolve_vendor_work_entry_actor(auth_conn)
+        except LookupError:
+            pass
+        raise FormalApprovalCancellationError(
+            "vendor_auth_forbidden",
+            "vendor authentication cannot cancel formal approvals.",
+            status=403,
+        )
+    raise RuntimeError("unsupported formal approval cancellation actor type")
 
 
 def _formal_approval_cancel_error_from_lookup(exc: LookupError) -> FormalApprovalCancellationError:
@@ -4099,16 +4145,23 @@ def current_vendor_account() -> dict[str, object] | None:
     }
 
 
-def resolve_vendor_work_entry_actor(conn: sqlite3.Connection) -> dict[str, object]:
+def resolve_vendor_work_entry_actor_session_type() -> str:
     internal_present = session.get("user_id") is not None
     vendor_markers_present = has_vendor_session_markers()
 
     if internal_present and vendor_markers_present:
         raise LookupError("ambiguous_actor_session")
     if internal_present:
-        return {"actor_type": "internal"}
+        return "internal"
     if not vendor_markers_present:
         raise LookupError("auth_required")
+    return "vendor"
+
+
+def resolve_vendor_work_entry_actor(conn: sqlite3.Connection) -> dict[str, object]:
+    actor_type = resolve_vendor_work_entry_actor_session_type()
+    if actor_type == "internal":
+        return {"actor_type": "internal"}
     if not is_vendor_session():
         clear_vendor_session()
         raise LookupError("vendor_session_inactive")
@@ -7525,6 +7578,7 @@ def api_crew_work_entry_formal_approve():
 def cancel_formal_approval(
     conn: sqlite3.Connection,
     *,
+    actor,
     entry_id: int,
     sheet_id: int,
     reason: str,
@@ -7538,14 +7592,12 @@ def cancel_formal_approval(
             conn,
             sheet_id=sheet_id,
             entry_id=entry_id,
+            internal_user=actor,
         )
     except LookupError as exc:
         raise _formal_approval_cancel_error_from_lookup(exc) from exc
 
-    user = _current_internal_user()
-    if user is None:
-        raise FormalApprovalCancellationError("auth_required", "authentication is required.", status=403)
-    actor_username = str(user["username"] or "")
+    actor_username = str(actor["username"] or "")
 
     approval = conn.execute(
         """
@@ -7595,7 +7647,7 @@ def cancel_formal_approval(
         )
 
     approved_by = str(approval["approved_by"] or "")
-    if not is_global_admin(user) and approved_by != actor_username:
+    if not is_global_admin(actor) and approved_by != actor_username:
         raise FormalApprovalCancellationError(
             "approval_cancel_forbidden",
             "Only the original approver may cancel this formal approval.",
@@ -7829,9 +7881,15 @@ def api_crew_work_entry_formal_approval_cancel():
         )
 
     try:
+        actor = resolve_formal_approval_cancellation_actor()
+    except FormalApprovalCancellationError as exc:
+        return crew_api_error(exc.code, exc.message, status=exc.status)
+
+    try:
         with db() as conn:
             approval = cancel_formal_approval(
                 conn,
+                actor=actor,
                 entry_id=entry_id,
                 sheet_id=sheet_id,
                 reason=reason,
