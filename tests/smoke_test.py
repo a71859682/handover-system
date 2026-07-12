@@ -1061,6 +1061,14 @@ with module.app.test_client() as client:
         "formal_approval_status",
         "formal_approved_by",
         "formal_approved_at",
+        "formal_cancelled_by",
+        "formal_cancelled_at",
+        "formal_cancellation_reason",
+        "formal_approval_integrity_warning",
+        "blocked",
+        "schedulable",
+        "scheduled",
+        "blocked_reason",
         "work_headcount",
         "entry_order",
         "created_at",
@@ -4043,6 +4051,7 @@ if set(payload.keys()) != {
     "summary",
     "blocked_items",
     "pending_approvals",
+    "cancelled_approvals",
     "pending_requirements",
     "today_entries",
     "scheduled_entries",
@@ -4057,6 +4066,7 @@ if set(summary.keys()) != {
     "pending_requirement_count",
     "today_entry_count",
     "approved_today_count",
+    "cancelled_approval_count",
     "scheduled_count",
     "today_schedule_count",
 }:
@@ -4199,6 +4209,7 @@ if set(work_hub["summary"].keys()) != {
     "blocked_count",
     "schedulable_count",
     "pending_approval_count",
+    "cancelled_approval_count",
     "pending_requirement_count",
     "today_entry_count",
     "scheduled_count",
@@ -12962,6 +12973,7 @@ expected_top_level_keys = {
     "summary",
     "blocked_items",
     "pending_approvals",
+    "cancelled_approvals",
     "pending_requirements",
     "today_entries",
     "scheduled_entries",
@@ -12977,6 +12989,7 @@ expected_summary_keys = {
     "pending_requirement_count",
     "today_entry_count",
     "approved_today_count",
+    "cancelled_approval_count",
     "scheduled_count",
     "today_schedule_count",
 }
@@ -17621,6 +17634,12 @@ def make_blocked_item(index, **overrides):
         "planned_at": f"{business_date} 09:00",
         "work_content": f"Blocked Work {index}",
         "formal_approval_state": "pending",
+        "formal_approval_status": "pending",
+        "formal_approval_integrity_warning": "",
+        "blocked": True,
+        "schedulable": False,
+        "scheduled": False,
+        "blocked_reason": "requirement_pending",
         "readiness_state": "not_ready",
         "readiness_reason": "requirement_pending",
         "scheduling_gate_state": "warning",
@@ -17683,6 +17702,7 @@ valid_blocked_lineages = (
         readiness_reason="no_requirement",
         scheduling_gate_state="allowed",
         scheduling_gate_reason="no_requirement",
+        blocked_reason="formal_approval_pending",
     ),
     make_blocked_item(
         2,
@@ -17690,8 +17710,9 @@ valid_blocked_lineages = (
         readiness_reason="requirement_confirmed",
         scheduling_gate_state="allowed",
         scheduling_gate_reason="requirement_confirmed",
+        blocked_reason="formal_approval_pending",
     ),
-    make_blocked_item(3, formal_approval_state="approved"),
+    make_blocked_item(3, formal_approval_state="approved", formal_approval_status="approved"),
 )
 valid_lineage_result = call_with_blocked_payload(make_blocked_payload(list(valid_blocked_lineages)))
 if len(valid_lineage_result["items"]) != 3:
@@ -18806,6 +18827,432 @@ def _run_dev_vendor_credential_rotation_child(temp_root: Path) -> int:
     return 0
 
 
+def run_formal_approval_cancelled_projection_smoke(workdir: Path) -> None:
+    workdir.mkdir(parents=True, exist_ok=True)
+    db_path = workdir / "cancelled-projection.db"
+    create_sample_sqlite(db_path)
+    script_path = workdir / "cancelled-projection-child.py"
+    script_path.write_text(
+        r'''
+import json
+import os
+import re
+import sqlite3
+import sys
+
+db_path, root = sys.argv[1:]
+os.environ["APP_DB_PATH"] = db_path
+os.environ["DATABASE_URL"] = ""
+sys.path.insert(0, root)
+import app as module
+
+def manifest():
+    with module.db() as conn:
+        result = {}
+        tables = [row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        )]
+        for table in tables:
+            columns = [row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')]
+            rows = [list(row) for row in conn.execute(
+                f'SELECT * FROM "{table}" ORDER BY ' + ", ".join(f'"{column}"' for column in columns)
+            )]
+            result[table] = {"columns": columns, "rows": rows}
+        result["sqlite_sequence"] = [list(row) for row in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name")]
+        return result
+
+with module.db() as conn:
+    sheet_id = int(conn.execute("SELECT id FROM sheets ORDER BY id LIMIT 1").fetchone()[0])
+    site_id = int(conn.execute("SELECT site_id FROM sheets WHERE id = ?", (sheet_id,)).fetchone()[0])
+    other_site_id = int(conn.execute(
+        "INSERT INTO sites (site_name, site_code, is_active) VALUES ('Projection Other Site', 'projection-other', 1) RETURNING id"
+    ).fetchone()[0])
+    other_sheet_id = int(conn.execute(
+        "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES ('Projection Other Sheet', 9999, ?, CURRENT_TIMESTAMP) RETURNING id",
+        (other_site_id,),
+    ).fetchone()[0])
+    next_col = int(conn.execute("SELECT COALESCE(MAX(col_index), 0) + 1 FROM tasks").fetchone()[0])
+    conn.execute(
+        "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, 'Projection Vendor', '', 'Projection Task')",
+        (sheet_id, next_col),
+    )
+    projection_task_id = int(conn.execute("SELECT id FROM tasks WHERE col_index = ?", (next_col,)).fetchone()[0])
+    projection_unit_id = int(conn.execute(
+        "SELECT u.id FROM units u JOIN floors f ON f.id = u.floor_id WHERE f.sheet_id = ? ORDER BY u.id LIMIT 1",
+        (sheet_id,),
+    ).fetchone()[0])
+    conn.execute(
+        "INSERT INTO progress (unit_id, task_id, value) VALUES (?, ?, ?)",
+        (projection_unit_id, projection_task_id, module.WORKING_VALUE),
+    )
+    conn.execute(
+        "INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active) VALUES ('projection_vendor', 'synthetic-hash', 'Projection Vendor', 1)"
+    )
+    vendor_account_id = int(conn.execute("SELECT id FROM vendor_accounts WHERE username = 'projection_vendor'").fetchone()[0])
+    business_date = "2026-07-12"
+    def add_entry(label):
+        return int(conn.execute(
+            """
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, requirement_status,
+                requirement_confirmed_by, requirement_confirmed_at, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, 'Projection Vendor', ?, '2026-07-12 09:00', 0, 0, ?, 'Confirmed requirement',
+                      'confirmed', 'member', '2026-07-12 08:00:00', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            """,
+            (sheet_id, business_date, label),
+        ).fetchone()[0])
+    ids = {label: add_entry(label) for label in (
+        "pending", "approved", "approved-scheduled", "cancelled", "cancelled-scheduled",
+        "approved-conflict", "cancelled-incomplete", "unknown"
+    )}
+    def add_approval(label, status, *, cancelled_by=None, cancelled_at=None, reason=None):
+        conn.execute(
+            """
+            INSERT INTO formal_approvals (
+                entry_id, sheet_id, action, approval_status, approved_by, approved_at,
+                cancelled_by, cancelled_at, cancellation_reason, created_at, updated_at
+            ) VALUES (?, ?, 'crew_formal_approve_entry', ?, 'member', '2026-07-12 08:30:00',
+                      ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (ids[label], sheet_id, status, cancelled_by, cancelled_at, reason),
+        )
+    add_approval("approved", "approved")
+    add_approval("approved-scheduled", "approved")
+    add_approval("cancelled", "cancelled", cancelled_by="member", cancelled_at="2026-07-12 10:00:00", reason=" cancelled reason ")
+    add_approval("cancelled-scheduled", "cancelled", cancelled_by="member", cancelled_at="2026-07-12 10:01:00", reason="cancelled with schedule")
+    add_approval("approved-conflict", "approved", cancelled_by="member", cancelled_at="2026-07-12 10:02:00", reason="conflict")
+    add_approval("cancelled-incomplete", "cancelled", cancelled_by="member")
+    add_approval("unknown", "unexpected")
+    for label in ("approved-scheduled", "cancelled-scheduled"):
+        conn.execute(
+            """
+            INSERT INTO scheduling_entries (
+                entry_id, sheet_id, action, schedule_status, scheduled_date, scheduled_time,
+                scheduled_by, scheduled_at, created_at, updated_at
+            ) VALUES (?, ?, 'schedule_entry', 'scheduled', ?, '11:00', 'member',
+                      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (ids[label], sheet_id, business_date),
+        )
+
+before = manifest()
+postgres_calls = []
+original_postgres = module.get_primary_postgres_connection
+module.get_primary_postgres_connection = lambda: postgres_calls.append("called")
+try:
+    with module.db() as conn:
+        trace = []
+        conn.set_trace_callback(trace.append)
+        entries_by_vendor = module.fetch_vendor_work_entries(conn, sheet_id=sheet_id, business_date=business_date)
+        conn.set_trace_callback(None)
+        projection_selects = [sql for sql in trace if "FROM vendor_work_entries vwe" in sql]
+        if len(projection_selects) != 1 or "EXISTS (SELECT 1 FROM scheduling_entries" not in projection_selects[0]:
+            raise SystemExit("canonical projection must use one SELECT with correlated scheduling EXISTS")
+        plan = conn.execute(
+            "EXPLAIN QUERY PLAN SELECT EXISTS (SELECT 1 FROM scheduling_entries se WHERE se.entry_id = vwe.id) "
+            "FROM vendor_work_entries vwe WHERE vwe.sheet_id = ? AND vwe.business_date = ?",
+            (sheet_id, business_date),
+        ).fetchall()
+        if not any("idx_scheduling_entries_entry_action_unique" in str(row[3]) for row in plan):
+            raise SystemExit(f"schedule EXISTS should use entry-leading unique index: {plan!r}")
+        dashboard = module.build_dashboard_payload(conn, sheet_id=sheet_id, business_date=business_date)
+        scheduling = module.build_scheduling_payload(conn, sheet_id=sheet_id, business_date=business_date)
+        management = module.build_management_read_model_payload(conn, sheet_id=sheet_id, business_date=business_date)
+        work_hub = module.build_work_hub_runtime_payload(conn, sheet_id=sheet_id, business_date=business_date)
+finally:
+    module.get_primary_postgres_connection = original_postgres
+
+entries = {entry["work_content"]: entry for group in entries_by_vendor.values() for entry in group}
+required = {
+    "formal_approval_state", "formal_approval_status", "formal_approved_by", "formal_approved_at",
+    "formal_cancelled_by", "formal_cancelled_at", "formal_cancellation_reason",
+    "formal_approval_integrity_warning", "blocked", "schedulable", "scheduled", "blocked_reason",
+}
+if any(not required.issubset(entry) for entry in entries.values()):
+    raise SystemExit("all internal entries must expose the fixed approval and decision shape")
+if any("_has_scheduling_entry" in entry or "_formal_approval_fact_count" in entry for entry in entries.values()):
+    raise SystemExit("raw canonical SQL aliases must not escape internal projection")
+if entries["pending"]["formal_approval_state"] != "pending" or entries["pending"]["blocked_reason"] != "formal_approval_pending":
+    raise SystemExit("pending projection regressed")
+if {key: entries["pending"][key] for key in (
+    "formal_cancelled_by", "formal_cancelled_at", "formal_cancellation_reason", "formal_approval_integrity_warning"
+)} != {key: "" for key in (
+    "formal_cancelled_by", "formal_cancelled_at", "formal_cancellation_reason", "formal_approval_integrity_warning"
+)} or entries["pending"]["blocked"] is not True or entries["pending"]["schedulable"] is not False or entries["pending"]["scheduled"] is not False:
+    raise SystemExit("pending fixed-shape values regressed")
+if entries["approved"]["formal_approval_state"] != "approved" or not entries["approved"]["schedulable"]:
+    raise SystemExit("approved unscheduled projection regressed")
+if any(entries["approved"][key] != "" for key in (
+    "formal_cancelled_by", "formal_cancelled_at", "formal_cancellation_reason", "formal_approval_integrity_warning", "blocked_reason"
+)) or entries["approved"]["blocked"] is not False or entries["approved"]["scheduled"] is not False:
+    raise SystemExit("approved fixed-shape values regressed")
+if entries["approved-scheduled"]["blocked"] or entries["approved-scheduled"]["schedulable"] or not entries["approved-scheduled"]["scheduled"]:
+    raise SystemExit("approved scheduled workflow projection regressed")
+cancelled = entries["cancelled"]
+if cancelled["formal_approval_state"] != "cancelled" or cancelled["formal_approved_by"] != "member" or cancelled["formal_cancellation_reason"] != "cancelled reason":
+    raise SystemExit("complete cancelled projection is incorrect")
+if not cancelled["blocked"] or cancelled["schedulable"] or cancelled["scheduled"] or cancelled["blocked_reason"] != "formal_approval_cancelled":
+    raise SystemExit("cancelled decision projection is incorrect")
+cancelled_scheduled = entries["cancelled-scheduled"]
+if cancelled_scheduled["formal_approval_state"] != "invalid" or cancelled_scheduled["formal_approval_integrity_warning"] != "formal_approval_cancelled_has_schedule" or not cancelled_scheduled["scheduled"]:
+    raise SystemExit("cancelled plus schedule must fail closed while preserving scheduled fact")
+for label, warning in (
+    ("approved-conflict", "formal_approval_metadata_conflict"),
+    ("cancelled-incomplete", "formal_approval_cancellation_metadata_incomplete"),
+    ("unknown", "formal_approval_unknown_status"),
+):
+    if entries[label]["formal_approval_state"] != "invalid" or entries[label]["formal_approval_integrity_warning"] != warning:
+        raise SystemExit(f"{label} should fail closed with {warning}")
+multiple = module.apply_vendor_work_entry_formal_approval_state({
+    "formal_approval_status": "approved", "formal_approved_by": "member",
+    "formal_approved_at": "2026-07-12 08:30:00", "_formal_approval_fact_count": 2,
+    "_has_scheduling_entry": False, "scheduling_gate_state": "allowed", "scheduling_gate_reason": "requirement_confirmed",
+})
+if multiple["formal_approval_state"] != "invalid" or multiple["formal_approval_integrity_warning"] != "formal_approval_multiple_facts":
+    raise SystemExit("multiple approval facts must fail closed")
+class MultipleFactsCursorProxy:
+    def __init__(self, cursor, target_id):
+        self.cursor = cursor
+        self.target_id = target_id
+    def fetchall(self):
+        rows = []
+        for row in self.cursor.fetchall():
+            projected_row = dict(row)
+            if int(projected_row["id"]) == self.target_id:
+                projected_row["_formal_approval_fact_count"] = 2
+            rows.append(projected_row)
+        return rows
+class MultipleFactsConnectionProxy:
+    def __init__(self, connection, target_id):
+        self.connection = connection
+        self.target_id = target_id
+    def execute(self, sql, parameters=()):
+        cursor = self.connection.execute(sql, parameters)
+        if "FROM vendor_work_entries vwe" in str(sql):
+            return MultipleFactsCursorProxy(cursor, self.target_id)
+        return cursor
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+with module.db() as conn:
+    proxied_entries = module.fetch_vendor_work_entries(
+        MultipleFactsConnectionProxy(conn, ids["approved"]), sheet_id=sheet_id, business_date=business_date
+    )
+proxied = {entry["id"]: entry for group in proxied_entries.values() for entry in group}[ids["approved"]]
+if proxied["formal_approval_state"] != "invalid" or proxied["formal_approval_integrity_warning"] != "formal_approval_multiple_facts":
+    raise SystemExit("query-boundary multiple approval facts proxy must fail closed")
+def projected(**values):
+    base = {
+        "formal_approval_status": "approved", "formal_approved_by": " member ",
+        "formal_approved_at": " 2026-07-12 08:30:00 ", "formal_cancelled_by": None,
+        "formal_cancelled_at": None, "formal_cancellation_reason": None,
+        "_formal_approval_fact_count": 1, "_has_scheduling_entry": False,
+        "scheduling_gate_state": "allowed", "scheduling_gate_reason": "requirement_confirmed",
+    }
+    base.update(values)
+    return module.apply_vendor_work_entry_formal_approval_state(base)
+for field, value in (
+    ("formal_cancellation_reason", ""), ("formal_cancellation_reason", "   "),
+    ("formal_cancelled_by", ""), ("formal_cancelled_by", "   "),
+    ("formal_cancelled_at", ""), ("formal_cancelled_at", "   "),
+):
+    edge = projected(**{field: value})
+    if edge["formal_approval_state"] != "invalid" or edge["formal_approval_integrity_warning"] != "formal_approval_metadata_conflict":
+        raise SystemExit(f"approved raw cancellation metadata must conflict: {field}={value!r}")
+for field in ("formal_approved_by", "formal_approved_at"):
+    if projected(**{field: "   "})["formal_approval_state"] != "invalid":
+        raise SystemExit(f"approved whitespace {field} must fail closed")
+for field in ("formal_cancelled_by", "formal_cancelled_at", "formal_cancellation_reason"):
+    cancelled_values = {
+        "formal_approval_status": "cancelled", "formal_cancelled_by": " member ",
+        "formal_cancelled_at": " 2026-07-12 10:00:00 ", "formal_cancellation_reason": " reason ",
+    }
+    cancelled_values[field] = "   "
+    edge = projected(**cancelled_values)
+    if edge["formal_approval_state"] != "invalid" or edge["formal_approval_integrity_warning"] != "formal_approval_cancellation_metadata_incomplete":
+        raise SystemExit(f"cancelled whitespace {field} must be incomplete")
+trimmed = projected(
+    formal_approval_status="cancelled", formal_cancelled_by=" member ",
+    formal_cancelled_at=" 2026-07-12 10:00:00 ", formal_cancellation_reason=" reason ",
+)
+if (trimmed["formal_approved_by"], trimmed["formal_approved_at"], trimmed["formal_cancelled_by"],
+    trimmed["formal_cancelled_at"], trimmed["formal_cancellation_reason"]) != (
+    "member", "2026-07-12 08:30:00", "member", "2026-07-12 10:00:00", "reason"
+):
+    raise SystemExit("valid metadata must use trimmed canonical output")
+if dashboard["summary"]["cancelled_approval_count"] != 1 or [item["id"] for item in dashboard["cancelled_approvals"]] != [ids["cancelled"]]:
+    raise SystemExit("dashboard cancelled count and collection must share one producer")
+if any(item["id"] == ids["cancelled"] for item in dashboard["pending_approvals"]):
+    raise SystemExit("cancelled entry must not be pending approval")
+if dashboard["summary"]["approved_today_count"] != 2:
+    raise SystemExit("cancelled and invalid entries must not count as approved")
+blocked_ids = {item["id"] for item in scheduling["blocked_entries"]}
+if ids["cancelled"] not in blocked_ids or ids["cancelled-scheduled"] not in blocked_ids:
+    raise SystemExit("scheduling must consume canonical blocked decisions")
+if {item["id"] for item in scheduling["schedulable_entries"]} != {ids["approved"]}:
+    raise SystemExit("scheduling schedulable membership must consume canonical decision")
+if {item["id"] for item in scheduling["scheduled_entries"]} != {ids["approved-scheduled"], ids["cancelled-scheduled"]}:
+    raise SystemExit("scheduling must preserve persisted schedule membership")
+overview = management["approval_overview"]
+if overview["cancelled_approval_count"] != 1 or overview["cancelled_approval_entry_ids"] != [ids["cancelled"]]:
+    raise SystemExit("management cancelled facts must derive from dashboard")
+if work_hub["work_hub"]["summary"]["cancelled_approval_count"] != dashboard["summary"]["cancelled_approval_count"]:
+    raise SystemExit("work hub cancelled count must equal dashboard source")
+if work_hub["work_hub"]["blocked_entries"] != work_hub["scheduling"]["blocked_entries"]:
+    raise SystemExit("work hub blocked entries must equal scheduling source")
+if any(key in work_hub["work_hub"] for key in ("cancelled_approval_entry_ids", "cancelled_approvals")):
+    raise SystemExit("work hub must not duplicate cancelled IDs or collection")
+def normalize_blocked(item):
+    return module._project_current_blocked_ai_read_item(item, sheet_id=sheet_id, business_date=business_date)
+normalize_blocked(cancelled)
+normalize_blocked(cancelled_scheduled)
+normalize_blocked(entries["pending"])
+def expect_shape_reject(item, label):
+    try:
+        normalize_blocked(item)
+    except module.AIReadOrchestrationError:
+        return
+    raise SystemExit(f"malformed blocked AI item should be rejected: {label}")
+for field, value in (("blocked", False), ("schedulable", True), ("scheduled", True), ("blocked_reason", "wrong")):
+    malformed = cancelled.copy(); malformed[field] = value; expect_shape_reject(malformed, f"cancelled {field}")
+for field, value in (
+    ("formal_approval_integrity_warning", ""),
+    ("formal_approval_integrity_warning", "unknown_warning"),
+    ("blocked_reason", "formal_approval_integrity_conflict"),
+    ("formal_approval_status", "cancelled"),
+):
+    malformed = cancelled_scheduled.copy(); malformed[field] = value; expect_shape_reject(malformed, f"invalid {field}")
+expect_shape_reject(entries["approved"], "approved allowed blocked source")
+client = module.app.test_client()
+def set_internal_site(current_site_id):
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = 1
+        session["username"] = "admin"
+        session["display_name"] = "admin"
+        session["role"] = "admin"
+        session["current_site_id"] = int(current_site_id)
+        session["current_site_name"] = "Projection Site"
+        session["site_selection_required"] = False
+set_internal_site(site_id)
+urls = {
+    "crew": f"/api/crew-forms?sheet_id={sheet_id}&business_date={business_date}",
+    "dashboard": f"/api/dashboard?sheet_id={sheet_id}&business_date={business_date}",
+    "scheduling": f"/api/scheduling?sheet_id={sheet_id}&business_date={business_date}",
+    "management": f"/api/management-read-model?sheet_id={sheet_id}&business_date={business_date}",
+    "work_hub": f"/api/work-hub-runtime?sheet_id={sheet_id}&business_date={business_date}",
+}
+responses = {name: client.get(url) for name, url in urls.items()}
+if any(response.status_code != 200 for response in responses.values()):
+    raise SystemExit(f"five internal projection APIs must return 200: {[(key, value.status_code) for key, value in responses.items()]}")
+crew_payload = responses["crew"].get_json()
+if set(crew_payload) != {"ok", "sheet_id", "business_date", "active_vendors", "inactive_contacts"}:
+    raise SystemExit("crew API top-level shape changed")
+crew_entries = [entry for vendor in crew_payload["active_vendors"] for entry in vendor["work_entries"]]
+crew_cancelled = next((entry for entry in crew_entries if entry["id"] == ids["cancelled"]), None)
+if crew_cancelled is None or crew_cancelled["formal_approval_state"] != "cancelled" or crew_cancelled["blocked_reason"] != "formal_approval_cancelled":
+    raise SystemExit("crew API must expose canonical cancelled entry")
+dashboard_http = responses["dashboard"].get_json()
+if dashboard_http["summary"]["cancelled_approval_count"] != 1 or [item["id"] for item in dashboard_http["cancelled_approvals"]] != [ids["cancelled"]]:
+    raise SystemExit("dashboard HTTP cancelled contract is incorrect")
+scheduling_http = responses["scheduling"].get_json()
+if ids["cancelled"] not in {item["id"] for item in scheduling_http["blocked_entries"]}:
+    raise SystemExit("scheduling HTTP must include cancelled entry in blocked membership")
+management_http = responses["management"].get_json()["approval_overview"]
+if management_http["cancelled_approval_count"] != 1 or management_http["cancelled_approval_entry_ids"] != [ids["cancelled"]]:
+    raise SystemExit("management HTTP cancelled lineage is incorrect")
+work_hub_http = responses["work_hub"].get_json()
+if work_hub_http["work_hub"]["summary"]["cancelled_approval_count"] != 1 or work_hub_http["work_hub"]["blocked_entries"] != work_hub_http["scheduling"]["blocked_entries"]:
+    raise SystemExit("work hub HTTP must reuse dashboard count and scheduling blocked source")
+
+set_internal_site(other_site_id)
+leak_markers = (str(ids["cancelled"]), "Projection Vendor", "member", "cancelled reason", "cancelled")
+for name, url in urls.items():
+    response = client.get(url)
+    if response.status_code != 403:
+        raise SystemExit(f"cross-site {name} should return 403")
+    payload = response.get_json()
+    if payload.get("ok") is not False or not isinstance(payload.get("error"), dict):
+        raise SystemExit(f"cross-site {name} must return structured error")
+    response_text = response.get_data(as_text=True)
+    if any(marker in response_text for marker in leak_markers):
+        raise SystemExit(f"cross-site {name} leaked cancelled entry facts")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["identity_type"] = "vendor"
+    session["vendor_account_id"] = vendor_account_id
+    session["vendor_username"] = "projection_vendor"
+    session["vendor_name"] = "Projection Vendor"
+vendor_response = client.get("/vendor/work-entry")
+if vendor_response.status_code != 200:
+    raise SystemExit(f"vendor work-entry baseline should return 200, got {vendor_response.status_code}")
+vendor_text = vendor_response.get_data(as_text=True)
+if 'data-testid="vendor-work-entry-page"' not in vendor_text or "Projection Vendor" not in vendor_text:
+    raise SystemExit("vendor work-entry response did not contain the authenticated vendor page baseline")
+
+def contains_object_key(source, field):
+    escaped_field = re.escape(field)
+    return re.search(
+        rf'(?<![A-Za-z0-9_])(?:{escaped_field}|"{escaped_field}"|\'{escaped_field}\')\s*:',
+        source,
+    ) is not None
+
+for source in (
+    "blocked: true",
+    '"blocked" : true',
+    "'blocked'\t: true",
+    "'formal_cancellation_reason': 'synthetic'",
+):
+    expected_field = "formal_cancellation_reason" if "formal_cancellation_reason" in source else "blocked"
+    if not contains_object_key(source, expected_field):
+        raise SystemExit(f"vendor key scanner missed synthetic object key: {source}")
+for source in (
+    "navigationScheduled",
+    "isScheduled",
+    "blockedReason",
+    '"the word blocked appears in text"',
+    "'scheduled value only'",
+):
+    for field in ("blocked", "scheduled"):
+        if contains_object_key(source, field):
+            raise SystemExit(f"vendor key scanner produced a false positive: {source}")
+
+for internal_field in (
+    "formal_approved_by", "formal_approved_at", "formal_cancelled_by", "formal_cancelled_at",
+    "formal_cancellation_reason", "formal_approval_integrity_warning", "blocked_reason",
+    "blocked", "schedulable", "scheduled",
+):
+    if contains_object_key(vendor_text, internal_field):
+        raise SystemExit(f"vendor response leaked internal field {internal_field}")
+if "cancelled reason" in vendor_text or "formal_approval_cancelled" in vendor_text:
+    raise SystemExit("vendor response leaked cancellation facts")
+if manifest() != before:
+    raise SystemExit("cancelled read projection must not modify any application row or sequence")
+if postgres_calls:
+    raise SystemExit("cancelled read projection must not connect to PostgreSQL")
+print("formal approval cancelled projection smoke PASS")
+''',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", str(script_path), str(db_path), str(ROOT_DIR)],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "APP_DB_PATH": str(db_path), "DATABASE_URL": "", "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    marker = "formal approval cancelled projection smoke PASS"
+    if result.stderr:
+        raise AssertionError(f"cancelled projection child stderr was not empty: {result.stderr}")
+    if marker not in result.stdout:
+        raise AssertionError("cancelled projection child did not report PASS")
+    print(marker)
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         run_dev_vendor_credential_rotation_smoke(Path(tmpdir) / "dev-vendor-credential-rotation")
@@ -18855,6 +19302,9 @@ def main() -> int:
         )
         run_extra_field_startup_noop_sequence_smoke(
             Path(tmpdir) / "extra-field-startup-noop"
+        )
+        run_formal_approval_cancelled_projection_smoke(
+            Path(tmpdir) / "formal-approval-cancelled-projection"
         )
         run_crew_schema_smoke_v2(Path(tmpdir) / "crew-schema-smoke.db")
         run_crew_schema_migration_smoke(Path(tmpdir) / "crew-schema-migration-smoke.db")

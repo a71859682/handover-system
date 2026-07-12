@@ -2118,17 +2118,90 @@ def apply_vendor_work_entry_gate_state(entry: dict[str, object]) -> dict[str, ob
 
 def apply_vendor_work_entry_formal_approval_state(entry: dict[str, object]) -> dict[str, object]:
     approval_status = str(entry.get("formal_approval_status") or "").strip()
-    if approval_status == "approved":
+    fact_count_value = entry.pop("_formal_approval_fact_count", None)
+    fact_count = int(fact_count_value) if fact_count_value is not None else (1 if approval_status else 0)
+    has_schedule = bool(entry.pop("_has_scheduling_entry", False))
+    raw_cancelled_by = entry.get("formal_cancelled_by")
+    raw_cancelled_at = entry.get("formal_cancelled_at")
+    raw_cancellation_reason = entry.get("formal_cancellation_reason")
+    approved_by = str(entry.get("formal_approved_by") or "").strip()
+    approved_at = str(entry.get("formal_approved_at") or "").strip()
+    cancelled_by = str(raw_cancelled_by or "").strip()
+    cancelled_at = str(raw_cancelled_at or "").strip()
+    cancellation_reason = str(raw_cancellation_reason or "").strip()
+
+    entry["formal_approved_by"] = approved_by
+    entry["formal_approved_at"] = approved_at
+    entry["formal_cancelled_by"] = cancelled_by
+    entry["formal_cancelled_at"] = cancelled_at
+    entry["formal_cancellation_reason"] = cancellation_reason
+    entry["formal_approval_integrity_warning"] = ""
+
+    if fact_count > 1:
+        entry["formal_approval_state"] = "invalid"
+        entry["formal_approval_status"] = "invalid"
+        entry["formal_approval_integrity_warning"] = "formal_approval_multiple_facts"
+    elif fact_count == 0 and not approval_status:
+        entry["formal_approval_state"] = "pending"
+        entry["formal_approval_status"] = "pending"
+        entry["formal_approved_by"] = ""
+        entry["formal_approved_at"] = ""
+        entry["formal_cancelled_by"] = ""
+        entry["formal_cancelled_at"] = ""
+        entry["formal_cancellation_reason"] = ""
+    elif approval_status == "approved" and approved_by and approved_at and all(
+        value is None for value in (raw_cancelled_by, raw_cancelled_at, raw_cancellation_reason)
+    ):
         entry["formal_approval_state"] = "approved"
         entry["formal_approval_status"] = "approved"
-        entry["formal_approved_by"] = str(entry.get("formal_approved_by") or "")
-        entry["formal_approved_at"] = str(entry.get("formal_approved_at") or "")
-        return entry
+    elif approval_status == "approved":
+        entry["formal_approval_state"] = "invalid"
+        entry["formal_approval_status"] = "invalid"
+        entry["formal_approval_integrity_warning"] = "formal_approval_metadata_conflict"
+    elif approval_status == "cancelled" and approved_by and approved_at and cancelled_by and cancelled_at and cancellation_reason:
+        if has_schedule:
+            entry["formal_approval_state"] = "invalid"
+            entry["formal_approval_status"] = "invalid"
+            entry["formal_approval_integrity_warning"] = "formal_approval_cancelled_has_schedule"
+        else:
+            entry["formal_approval_state"] = "cancelled"
+            entry["formal_approval_status"] = "cancelled"
+    elif approval_status == "cancelled":
+        entry["formal_approval_state"] = "invalid"
+        entry["formal_approval_status"] = "invalid"
+        entry["formal_approval_integrity_warning"] = "formal_approval_cancellation_metadata_incomplete"
+    else:
+        entry["formal_approval_state"] = "invalid"
+        entry["formal_approval_status"] = "invalid"
+        entry["formal_approval_integrity_warning"] = "formal_approval_unknown_status"
 
-    entry["formal_approval_state"] = "pending"
-    entry["formal_approval_status"] = "pending"
-    entry["formal_approved_by"] = ""
-    entry["formal_approved_at"] = ""
+    entry["scheduled"] = has_schedule
+    state = str(entry["formal_approval_state"])
+    gate_state = str(entry.get("scheduling_gate_state") or "")
+    if state == "invalid":
+        entry["blocked"] = True
+        entry["schedulable"] = False
+        entry["blocked_reason"] = (
+            "formal_approval_cancelled_has_schedule"
+            if entry["formal_approval_integrity_warning"] == "formal_approval_cancelled_has_schedule"
+            else "formal_approval_integrity_conflict"
+        )
+    elif state == "cancelled":
+        entry["blocked"] = True
+        entry["schedulable"] = False
+        entry["blocked_reason"] = "formal_approval_cancelled"
+    elif gate_state == "warning":
+        entry["blocked"] = True
+        entry["schedulable"] = False
+        entry["blocked_reason"] = str(entry.get("scheduling_gate_reason") or "requirement_pending")
+    elif state == "pending":
+        entry["blocked"] = True
+        entry["schedulable"] = False
+        entry["blocked_reason"] = "formal_approval_pending"
+    else:
+        entry["blocked"] = False
+        entry["schedulable"] = not has_schedule
+        entry["blocked_reason"] = ""
     return entry
 
 
@@ -2151,7 +2224,13 @@ def resolve_schedule_entry_context(
                vwe.requirement_status,
                fa.approval_status AS formal_approval_status,
                fa.approved_by AS formal_approved_by,
-               fa.approved_at AS formal_approved_at
+               fa.approved_at AS formal_approved_at,
+               fa.cancelled_by AS formal_cancelled_by,
+               fa.cancelled_at AS formal_cancelled_at,
+               fa.cancellation_reason AS formal_cancellation_reason,
+               (SELECT COUNT(*) FROM formal_approvals facts
+                WHERE facts.entry_id = vwe.id AND facts.action = 'crew_formal_approve_entry') AS _formal_approval_fact_count,
+               EXISTS (SELECT 1 FROM scheduling_entries se WHERE se.entry_id = vwe.id) AS _has_scheduling_entry
         FROM vendor_work_entries vwe
         LEFT JOIN formal_approvals fa
                ON fa.entry_id = vwe.id
@@ -2176,6 +2255,11 @@ def resolve_schedule_entry_context(
             "formal_approval_status": str(existing_entry["formal_approval_status"] or ""),
             "formal_approved_by": str(existing_entry["formal_approved_by"] or ""),
             "formal_approved_at": str(existing_entry["formal_approved_at"] or ""),
+            "formal_cancelled_by": existing_entry["formal_cancelled_by"],
+            "formal_cancelled_at": existing_entry["formal_cancelled_at"],
+            "formal_cancellation_reason": existing_entry["formal_cancellation_reason"],
+            "_formal_approval_fact_count": int(existing_entry["_formal_approval_fact_count"] or 0),
+            "_has_scheduling_entry": bool(existing_entry["_has_scheduling_entry"]),
         }
     )
     return apply_vendor_work_entry_formal_approval_state(context)
@@ -2708,7 +2792,13 @@ def fetch_vendor_work_entries(
                vwe.entry_order, vwe.created_at, vwe.updated_at,
                fa.approval_status AS formal_approval_status,
                fa.approved_by AS formal_approved_by,
-               fa.approved_at AS formal_approved_at
+               fa.approved_at AS formal_approved_at,
+               fa.cancelled_by AS formal_cancelled_by,
+               fa.cancelled_at AS formal_cancelled_at,
+               fa.cancellation_reason AS formal_cancellation_reason,
+               (SELECT COUNT(*) FROM formal_approvals facts
+                WHERE facts.entry_id = vwe.id AND facts.action = 'crew_formal_approve_entry') AS _formal_approval_fact_count,
+               EXISTS (SELECT 1 FROM scheduling_entries se WHERE se.entry_id = vwe.id) AS _has_scheduling_entry
         FROM vendor_work_entries vwe
         LEFT JOIN formal_approvals fa
                ON fa.entry_id = vwe.id
@@ -2945,7 +3035,13 @@ def fetch_dashboard_scheduled_entries(
                vwe.updated_at,
                fa.approval_status AS formal_approval_status,
                fa.approved_by AS formal_approved_by,
-               fa.approved_at AS formal_approved_at
+               fa.approved_at AS formal_approved_at,
+               fa.cancelled_by AS formal_cancelled_by,
+               fa.cancelled_at AS formal_cancelled_at,
+               fa.cancellation_reason AS formal_cancellation_reason,
+               (SELECT COUNT(*) FROM formal_approvals facts
+                WHERE facts.entry_id = vwe.id AND facts.action = 'crew_formal_approve_entry') AS _formal_approval_fact_count,
+               EXISTS (SELECT 1 FROM scheduling_entries schedule_fact WHERE schedule_fact.entry_id = vwe.id) AS _has_scheduling_entry
         FROM scheduling_entries se
         JOIN vendor_work_entries vwe
           ON vwe.id = se.entry_id
@@ -2979,6 +3075,11 @@ def fetch_dashboard_scheduled_entries(
             "formal_approval_status": str(row["formal_approval_status"] or ""),
             "formal_approved_by": str(row["formal_approved_by"] or ""),
             "formal_approved_at": str(row["formal_approved_at"] or ""),
+            "formal_cancelled_by": row["formal_cancelled_by"],
+            "formal_cancelled_at": row["formal_cancelled_at"],
+            "formal_cancellation_reason": row["formal_cancellation_reason"],
+            "_formal_approval_fact_count": int(row["_formal_approval_fact_count"] or 0),
+            "_has_scheduling_entry": bool(row["_has_scheduling_entry"]),
             "schedule_id": int(row["schedule_id"]),
             "schedule_action": str(row["schedule_action"] or ""),
             "schedule_status": str(row["schedule_status"] or ""),
@@ -3018,6 +3119,11 @@ def build_dashboard_payload(
         if str(entry.get("scheduling_gate_state")) == "allowed"
         and str(entry.get("formal_approval_state")) == "pending"
     ]
+    cancelled_approvals = [
+        entry.copy()
+        for entry in today_entries
+        if str(entry.get("formal_approval_state")) == "cancelled"
+    ]
     pending_requirements = [
         entry.copy()
         for entry in today_entries
@@ -3032,11 +3138,13 @@ def build_dashboard_payload(
             "pending_requirement_count": len(pending_requirements),
             "today_entry_count": len(today_entries),
             "approved_today_count": approved_today_count,
+            "cancelled_approval_count": len(cancelled_approvals),
             "scheduled_count": len(scheduled_entries),
             "today_schedule_count": len(today_schedule),
         },
         "blocked_items": blocked_items,
         "pending_approvals": pending_approvals,
+        "cancelled_approvals": cancelled_approvals,
         "pending_requirements": pending_requirements,
         "today_entries": today_entries,
         "scheduled_entries": [entry.copy() for entry in scheduled_entries],
@@ -3079,17 +3187,15 @@ def build_scheduling_payload(
     schedulable_entries = [
         entry.copy()
         for entry in today_entries
-        if str(entry.get("formal_approval_state")) == "approved"
-        and str(entry.get("scheduling_gate_state")) == "allowed"
+        if bool(entry.get("schedulable"))
     ]
     blocked_entries = [
         entry.copy()
         for entry in today_entries
-        if str(entry.get("formal_approval_state")) != "approved"
-        or str(entry.get("scheduling_gate_state")) == "warning"
+        if bool(entry.get("blocked"))
     ]
-    scheduled_entries: list[dict[str, object]] = []
-    unscheduled_entries = [entry.copy() for entry in today_entries]
+    scheduled_entries = [entry.copy() for entry in today_entries if bool(entry.get("scheduled"))]
+    unscheduled_entries = [entry.copy() for entry in today_entries if not bool(entry.get("scheduled"))]
 
     return {
         "summary": {
@@ -3133,6 +3239,7 @@ def build_work_hub_runtime_payload(
                 "blocked_count": int(scheduling_summary.get("blocked_count") or 0),
                 "schedulable_count": int(scheduling_summary.get("schedulable_count") or 0),
                 "pending_approval_count": int(dashboard_summary.get("pending_approval_count") or 0),
+                "cancelled_approval_count": int(dashboard_summary.get("cancelled_approval_count") or 0),
                 "pending_requirement_count": int(dashboard_summary.get("pending_requirement_count") or 0),
                 "today_entry_count": int(dashboard_summary.get("today_entry_count") or 0),
                 "scheduled_count": int(dashboard_summary.get("scheduled_count") or 0),
@@ -3190,6 +3297,7 @@ def build_management_read_model_payload(
     scheduled_entry_refs = _management_read_model_entries(dashboard_payload, "scheduled_entries")
     today_schedule_entry_refs = _management_read_model_entries(dashboard_payload, "today_schedule")
     pending_approval_refs = _management_read_model_entries(dashboard_payload, "pending_approvals")
+    cancelled_approval_refs = _management_read_model_entries(dashboard_payload, "cancelled_approvals")
     pending_requirement_refs = _management_read_model_entries(dashboard_payload, "pending_requirements")
 
     return {
@@ -3216,6 +3324,8 @@ def build_management_read_model_payload(
             "pending_approval_count": _management_read_model_count(dashboard_summary, "pending_approval_count"),
             "approved_today_count": _management_read_model_count(dashboard_summary, "approved_today_count"),
             "pending_approval_entry_ids": _management_read_model_entry_ids(pending_approval_refs),
+            "cancelled_approval_count": _management_read_model_count(dashboard_summary, "cancelled_approval_count"),
+            "cancelled_approval_entry_ids": _management_read_model_entry_ids(cancelled_approval_refs),
         },
         "requirement_overview": {
             "pending_requirement_count": _management_read_model_count(dashboard_summary, "pending_requirement_count"),
@@ -3613,7 +3723,46 @@ def _project_current_blocked_ai_read_item(
     if decision_lineage not in canonical_decision_lineages:
         raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
     formal_approval_state = item.get("formal_approval_state")
-    if formal_approval_state not in ("approved", "pending"):
+    if formal_approval_state not in ("approved", "pending", "cancelled", "invalid"):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if item.get("formal_approval_status") != formal_approval_state:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    for field in ("blocked", "schedulable", "scheduled"):
+        if not isinstance(item.get(field), bool):
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if item["blocked"] is not True or item["schedulable"] is not False:
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    blocked_reason = item.get("blocked_reason")
+    integrity_warning = item.get("formal_approval_integrity_warning")
+    if not isinstance(blocked_reason, str) or not isinstance(integrity_warning, str):
+        raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    if formal_approval_state == "cancelled":
+        if item["scheduled"] or blocked_reason != "formal_approval_cancelled" or integrity_warning:
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    elif formal_approval_state == "invalid":
+        allowed_warnings = {
+            "formal_approval_multiple_facts",
+            "formal_approval_unknown_status",
+            "formal_approval_metadata_conflict",
+            "formal_approval_cancellation_metadata_incomplete",
+            "formal_approval_cancelled_has_schedule",
+        }
+        if integrity_warning not in allowed_warnings:
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+        expected_reason = (
+            "formal_approval_cancelled_has_schedule"
+            if integrity_warning == "formal_approval_cancelled_has_schedule"
+            else "formal_approval_integrity_conflict"
+        )
+        if blocked_reason != expected_reason or (
+            integrity_warning == "formal_approval_cancelled_has_schedule" and not item["scheduled"]
+        ):
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    elif formal_approval_state == "pending":
+        expected_reason = "requirement_pending" if item["scheduling_gate_state"] == "warning" else "formal_approval_pending"
+        if blocked_reason != expected_reason or integrity_warning:
+            raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
+    elif integrity_warning or blocked_reason != "requirement_pending":
         raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
     if formal_approval_state == "approved" and item["scheduling_gate_state"] == "allowed":
         raise AIReadOrchestrationError("ai_read_source_shape_mismatch")
