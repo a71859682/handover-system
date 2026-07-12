@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import builtins
 import importlib.util
+import contextlib
+import io
 import os
 import inspect
 import re
@@ -16774,8 +16777,545 @@ def run_ai_read_supported_intent_registry_smoke(db_path: Path) -> None:
         raise AssertionError("Importing and reading the AI intent registry must not change the database.")
 
 
+def run_dev_vendor_credential_rotation_smoke(temp_root: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--internal-dev-vendor-credential-rotation",
+            str(temp_root),
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            "DEV vendor credential rotation focused smoke failed:\n"
+            f"{result.stdout}{result.stderr}"
+        )
+    if "DEV vendor credential rotation smoke PASS" not in result.stdout:
+        raise AssertionError("DEV vendor credential rotation focused smoke did not report PASS.")
+    print("DEV vendor credential rotation smoke PASS")
+
+
+def _run_dev_vendor_credential_rotation_child(temp_root: Path) -> int:
+    tool_path = TOOLS_DIR / "rotate_dev_vendor_test_password.py"
+    spec = importlib.util.spec_from_file_location("rotate_dev_vendor_test_password_smoke", tool_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("DEV vendor credential rotation tool must be importable.")
+    module = importlib.util.module_from_spec(spec)
+    postgres_sentinel_calls: list[str] = []
+    original_import = builtins.__import__
+
+    def fail_on_postgres_import(name, globals=None, locals=None, fromlist=(), level=0):
+        root_name = name.split(".", 1)[0]
+        if root_name in {"app", "database", "psycopg", "psycopg2", "sqlalchemy"}:
+            postgres_sentinel_calls.append(name)
+            raise AssertionError(f"Credential rotation attempted forbidden DB import: {root_name}")
+        return original_import(name, globals, locals, fromlist, level)
+
+    builtins.__import__ = fail_on_postgres_import
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        builtins.__import__ = original_import
+
+    temp_root.mkdir(parents=True, exist_ok=True)
+    db_path = temp_root / "rotation.db"
+    synthetic_password = "synthetic-rotation-secret-marker"
+    synthetic_hash = "synthetic-rotation-hash-marker"
+    synthetic_secret_marker = "synthetic-additional-secret-marker"
+    sensitive_sql_parameter_marker = "synthetic-sensitive-sql-parameter-marker"
+
+    def create_database(
+        path: Path,
+        *,
+        account_id: int = module.TARGET_ID,
+        username: str = module.TARGET_USERNAME,
+        vendor_name: str = module.TARGET_VENDOR_NAME,
+        active: int = 1,
+        sheet_ids: tuple[int, ...] = (module.EXPECTED_SHEET_ID,),
+    ) -> None:
+        if path.exists():
+            path.unlink()
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE vendor_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                vendor_name TEXT NOT NULL,
+                is_active INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE sites (id INTEGER PRIMARY KEY, is_active INTEGER NOT NULL);
+            CREATE TABLE sheets (id INTEGER PRIMARY KEY, site_id INTEGER NOT NULL);
+            CREATE TABLE tasks (id INTEGER PRIMARY KEY, sheet_id INTEGER NOT NULL, vendor TEXT NOT NULL);
+            CREATE TABLE audit_probe (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO audit_probe VALUES (1, 'unchanged');
+            INSERT INTO sites VALUES (1, 1);
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO vendor_accounts
+                (id, username, password_hash, vendor_name, is_active, created_at, updated_at)
+            VALUES (?, ?, 'old-hash', ?, ?, '2000-01-01 00:00:00', '2000-01-01 00:00:00')
+            """,
+            (account_id, username, vendor_name, active),
+        )
+        conn.execute(
+            """
+            INSERT INTO vendor_accounts
+                (id, username, password_hash, vendor_name, is_active, created_at, updated_at)
+            VALUES (99, 'devdata001_vendor_other', 'other-hash', '測試廠商-OTHER', 1,
+                    '2000-01-01 00:00:00', '2000-01-01 00:00:00')
+            """
+        )
+        for index, sheet_id in enumerate(sheet_ids, start=1):
+            conn.execute("INSERT INTO sheets (id, site_id) VALUES (?, 1)", (sheet_id,))
+            conn.execute(
+                "INSERT INTO tasks (id, sheet_id, vendor) VALUES (?, ?, ?)",
+                (index, sheet_id, module.TARGET_VENDOR_NAME),
+            )
+        conn.commit()
+        conn.close()
+
+    def manifest(path: Path) -> tuple[tuple[str, tuple[tuple[object, ...], ...]], ...]:
+        conn = sqlite3.connect(path)
+        try:
+            tables = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                )
+            ]
+            return tuple(
+                (table, tuple(conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()))
+                for table in tables
+            )
+        finally:
+            conn.close()
+
+    def sequence_snapshot(path: Path) -> tuple[tuple[object, ...], ...]:
+        conn = sqlite3.connect(path)
+        try:
+            return tuple(conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name").fetchall())
+        finally:
+            conn.close()
+
+    def resolver(raw: str | None):
+        return module.SqliteDbPathResolution(
+            path=Path(raw).resolve(strict=False) if raw else ROOT_DIR / "site.db",
+            source="env_APP_DB_PATH" if raw else "default_project_site_db",
+            raw_env_value=raw or "",
+        )
+
+    def valid_env(path: Path = db_path) -> dict[str, str]:
+        return {
+            "RENDER_SERVICE_NAME": module.EXPECTED_SERVICE,
+            "APP_DB_PATH": str(path),
+            "DATABASE_URL": "postgresql://sentinel-must-not-be-used",
+        }
+
+    def expect_rotation_error(action, code: str) -> None:
+        try:
+            action()
+        except module.RotationError as exc:
+            if str(exc) != code:
+                raise AssertionError(f"Expected {code}, got {exc}") from exc
+        else:
+            raise AssertionError(f"Expected rotation failure: {code}")
+
+    create_database(db_path)
+    before = manifest(db_path)
+    getpass_calls: list[str] = []
+    hash_calls: list[str] = []
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        exit_code = module.execute(
+            module.parse_args([]),
+            valid_env(),
+            expected_path=db_path,
+            path_resolver=resolver,
+            password_reader=lambda prompt: getpass_calls.append(prompt) or synthetic_password,
+            hash_factory=lambda password: hash_calls.append(password) or synthetic_hash,
+        )
+    if exit_code != 0 or "DB unchanged" not in output.getvalue() or manifest(db_path) != before:
+        raise AssertionError("Default dry-run must pass without changing the full database manifest.")
+    if getpass_calls or hash_calls:
+        raise AssertionError("Default dry-run must not read or hash a password.")
+
+    for service in ("", "unknown", "handover-system", "handover-system-staging"):
+        env = valid_env()
+        env["RENDER_SERVICE_NAME"] = service
+        expect_rotation_error(
+            lambda env=env: module.inspect_target(env, expected_path=db_path, path_resolver=resolver),
+            "service_guard_failed",
+        )
+    absent_env = {"RENDER_SERVICE_NAME": module.EXPECTED_SERVICE}
+    expect_rotation_error(
+        lambda: module.inspect_target(absent_env, expected_path=db_path, path_resolver=resolver),
+        "app_db_path_required",
+    )
+    other_path = temp_root / "other.db"
+    create_database(other_path)
+    expect_rotation_error(
+        lambda: module.inspect_target(valid_env(other_path), expected_path=db_path, path_resolver=resolver),
+        "app_db_path_target_rejected",
+    )
+
+    for kwargs in (
+        {"account_id": 2},
+        {"username": "devdata001_vendor_wrong"},
+        {"vendor_name": "測試廠商-WRONG"},
+    ):
+        create_database(db_path, **kwargs)
+        expect_rotation_error(
+            lambda: module.inspect_target(valid_env(), expected_path=db_path, path_resolver=resolver),
+            "target_account_count_invalid",
+        )
+    create_database(db_path, active=0)
+    expect_rotation_error(
+        lambda: module.inspect_target(valid_env(), expected_path=db_path, path_resolver=resolver),
+        "target_account_inactive",
+    )
+    duplicate = {
+        "id": module.TARGET_ID,
+        "username": module.TARGET_USERNAME,
+        "vendor_name": module.TARGET_VENDOR_NAME,
+        "is_active": 1,
+    }
+    expect_rotation_error(
+        lambda: module.validate_exact_account_rows([duplicate, duplicate]),
+        "target_account_count_invalid",
+    )
+
+    original_username = module.TARGET_USERNAME
+    original_vendor_name = module.TARGET_VENDOR_NAME
+    try:
+        module.TARGET_USERNAME = "unsafe_vendor"
+        expect_rotation_error(
+            lambda: module.validate_runtime(valid_env(), expected_path=db_path, path_resolver=resolver),
+            "target_username_prefix_rejected",
+        )
+        module.TARGET_USERNAME = original_username
+        module.TARGET_VENDOR_NAME = "Unsafe Vendor"
+        expect_rotation_error(
+            lambda: module.validate_runtime(valid_env(), expected_path=db_path, path_resolver=resolver),
+            "target_vendor_prefix_rejected",
+        )
+    finally:
+        module.TARGET_USERNAME = original_username
+        module.TARGET_VENDOR_NAME = original_vendor_name
+
+    for sheet_ids in ((), (3, 4), (4,)):
+        create_database(db_path, sheet_ids=sheet_ids)
+        expect_rotation_error(
+            lambda: module.inspect_target(valid_env(), expected_path=db_path, path_resolver=resolver),
+            "trusted_target_mismatch",
+        )
+
+    create_database(db_path)
+    apply_args = module.parse_args(["--apply", "--confirm-username", module.TARGET_USERNAME])
+    expect_rotation_error(
+        lambda: module.execute(
+            apply_args,
+            valid_env(),
+            expected_path=db_path,
+            path_resolver=resolver,
+            input_func=lambda prompt: "wrong-confirmation",
+            password_reader=lambda prompt: synthetic_password,
+        ),
+        "interactive_confirmation_failed",
+    )
+    write_opened = False
+
+    def forbidden_write_connect(path: Path):
+        nonlocal write_opened
+        write_opened = True
+        raise AssertionError("Password mismatch must not open a write connection.")
+
+    passwords = iter((synthetic_password, "different-synthetic-password"))
+    expect_rotation_error(
+        lambda: module.execute(
+            apply_args,
+            valid_env(),
+            expected_path=db_path,
+            path_resolver=resolver,
+            input_func=lambda prompt: module.TARGET_USERNAME,
+            password_reader=lambda prompt: next(passwords),
+            write_connect=forbidden_write_connect,
+        ),
+        "password_confirmation_mismatch",
+    )
+    if write_opened:
+        raise AssertionError("Password mismatch opened a write connection.")
+
+    class RowcountConnection:
+        def __init__(self, path: Path, rowcount: int):
+            self.inner = sqlite3.connect(path)
+            self.rowcount = rowcount
+            self.rollback_called = False
+
+        @property
+        def in_transaction(self):
+            return self.inner.in_transaction
+
+        @property
+        def row_factory(self):
+            return self.inner.row_factory
+
+        @row_factory.setter
+        def row_factory(self, value):
+            self.inner.row_factory = value
+
+        def execute(self, sql, parameters=()):
+            if sql.lstrip().upper().startswith("UPDATE VENDOR_ACCOUNTS"):
+                return type("CursorProxy", (), {"rowcount": self.rowcount})()
+            return self.inner.execute(sql, parameters)
+
+        def commit(self):
+            self.inner.commit()
+
+        def rollback(self):
+            self.rollback_called = True
+            self.inner.rollback()
+
+        def close(self):
+            self.inner.close()
+
+    for forced_rowcount in (0, 2):
+        create_database(db_path)
+        before = manifest(db_path)
+        proxy_holder: list[RowcountConnection] = []
+
+        def proxy_connect(path: Path, rowcount=forced_rowcount):
+            proxy = RowcountConnection(path, rowcount)
+            proxy_holder.append(proxy)
+            return proxy
+
+        expect_rotation_error(
+            lambda: module.rotate_password(
+                valid_env(),
+                synthetic_password,
+                expected_path=db_path,
+                path_resolver=resolver,
+                write_connect=proxy_connect,
+                hash_factory=lambda password: synthetic_hash,
+            ),
+            "target_update_count_invalid",
+        )
+        if manifest(db_path) != before or not proxy_holder[0].rollback_called:
+            raise AssertionError("Rowcount mismatch must rollback without changing the database.")
+
+    create_database(db_path)
+    before = manifest(db_path)
+    try:
+        module.rotate_password(
+            valid_env(),
+            synthetic_password,
+            expected_path=db_path,
+            path_resolver=resolver,
+            hash_factory=lambda password: (_ for _ in ()).throw(RuntimeError("hash failure")),
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("Hash generation failure should propagate after rollback.")
+    if manifest(db_path) != before:
+        raise AssertionError("Hash generation failure must rollback the transaction.")
+
+    create_database(db_path)
+    before_manifest = manifest(db_path)
+    before_sequences = sequence_snapshot(db_path)
+    before_conn = sqlite3.connect(db_path)
+    before_conn.row_factory = sqlite3.Row
+    before_target = dict(before_conn.execute("SELECT * FROM vendor_accounts WHERE id = 1").fetchone())
+    before_other = dict(before_conn.execute("SELECT * FROM vendor_accounts WHERE id = 99").fetchone())
+    before_conn.close()
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        exit_code = module.execute(
+            apply_args,
+            valid_env(),
+            expected_path=db_path,
+            path_resolver=resolver,
+            input_func=lambda prompt: module.TARGET_USERNAME,
+            password_reader=lambda prompt: synthetic_password,
+            hash_factory=lambda password: synthetic_hash,
+        )
+    if exit_code != 0:
+        raise AssertionError("Successful credential rotation should return zero.")
+    after_conn = sqlite3.connect(db_path)
+    after_conn.row_factory = sqlite3.Row
+    after_target = dict(after_conn.execute("SELECT * FROM vendor_accounts WHERE id = 1").fetchone())
+    after_other = dict(after_conn.execute("SELECT * FROM vendor_accounts WHERE id = 99").fetchone())
+    after_conn.close()
+    changed_target_fields = {
+        key for key in before_target if before_target[key] != after_target[key]
+    }
+    if changed_target_fields != {"password_hash", "updated_at"}:
+        raise AssertionError(f"Rotation changed unexpected target fields: {changed_target_fields}")
+    if after_target["password_hash"] != synthetic_hash:
+        raise AssertionError("Rotation did not store the generated synthetic hash.")
+    if before_other != after_other or sequence_snapshot(db_path) != before_sequences:
+        raise AssertionError("Rotation changed another vendor row or sqlite_sequence.")
+    before_without_accounts = tuple(item for item in before_manifest if item[0] != "vendor_accounts")
+    after_without_accounts = tuple(item for item in manifest(db_path) if item[0] != "vendor_accounts")
+    if before_without_accounts != after_without_accounts:
+        raise AssertionError("Rotation changed another application table.")
+    combined_output = output.getvalue()
+    for sensitive_marker in (synthetic_password, synthetic_hash, "sentinel-must-not-be-used"):
+        if sensitive_marker in combined_output:
+            raise AssertionError("Credential rotation output leaked a sensitive marker.")
+
+    captured_main_outputs: list[tuple[str, str, str]] = []
+    real_execute = module.execute
+
+    def capture_main(label: str, argv: list[str], execute_override) -> tuple[int, str, str]:
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+        module.execute = execute_override
+        builtins.__import__ = fail_on_postgres_import
+        try:
+            with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
+                exit_status = module.main(argv)
+        finally:
+            builtins.__import__ = original_import
+            module.execute = real_execute
+        stdout_value = stdout_buffer.getvalue()
+        stderr_value = stderr_buffer.getvalue()
+        captured_main_outputs.append((label, stdout_value, stderr_value))
+        return exit_status, stdout_value, stderr_value
+
+    create_database(db_path)
+    dry_run_before = manifest(db_path)
+    main_getpass_calls: list[str] = []
+    main_hash_calls: list[str] = []
+
+    def main_dry_run_execute(args, environ):
+        return real_execute(
+            args,
+            valid_env(),
+            expected_path=db_path,
+            path_resolver=resolver,
+            password_reader=lambda prompt: main_getpass_calls.append(prompt) or synthetic_password,
+            hash_factory=lambda password: main_hash_calls.append(password) or synthetic_hash,
+        )
+
+    status, stdout_value, stderr_value = capture_main("default_dry_run", [], main_dry_run_execute)
+    if status != 0 or "DB unchanged" not in stdout_value or stderr_value:
+        raise AssertionError("main() default dry-run output contract failed.")
+    if manifest(db_path) != dry_run_before or main_getpass_calls or main_hash_calls:
+        raise AssertionError("main() default dry-run must be read-only without credential handling.")
+
+    create_database(db_path)
+
+    def main_success_execute(args, environ):
+        return real_execute(
+            args,
+            valid_env(),
+            expected_path=db_path,
+            path_resolver=resolver,
+            input_func=lambda prompt: module.TARGET_USERNAME,
+            password_reader=lambda prompt: synthetic_password,
+            hash_factory=lambda password: synthetic_hash,
+        )
+
+    status, stdout_value, stderr_value = capture_main(
+        "successful_apply",
+        ["--apply", "--confirm-username", module.TARGET_USERNAME],
+        main_success_execute,
+    )
+    if status != 0 or "PASS DEV vendor test credential rotated" not in stdout_value or stderr_value:
+        raise AssertionError("main() successful apply output contract failed.")
+
+    create_database(db_path)
+    main_mismatch_write_calls: list[Path] = []
+    mismatch_passwords = iter((synthetic_password, synthetic_secret_marker))
+
+    def main_mismatch_execute(args, environ):
+        return real_execute(
+            args,
+            valid_env(),
+            expected_path=db_path,
+            path_resolver=resolver,
+            input_func=lambda prompt: module.TARGET_USERNAME,
+            password_reader=lambda prompt: next(mismatch_passwords),
+            write_connect=lambda path: main_mismatch_write_calls.append(path),
+        )
+
+    status, stdout_value, stderr_value = capture_main(
+        "password_mismatch",
+        ["--apply", "--confirm-username", module.TARGET_USERNAME],
+        main_mismatch_execute,
+    )
+    if status != 1 or "FAIL password_confirmation_mismatch" not in stderr_value:
+        raise AssertionError("main() password mismatch did not execute its RotationError output path.")
+    if main_mismatch_write_calls:
+        raise AssertionError("main() password mismatch opened a write connection.")
+
+    def main_rotation_error_execute(args, environ):
+        raise module.RotationError("synthetic_rotation_error_code")
+
+    status, stdout_value, stderr_value = capture_main("rotation_error", [], main_rotation_error_execute)
+    if status != 1 or "FAIL synthetic_rotation_error_code" not in stderr_value:
+        raise AssertionError("main() RotationError boundary did not report the expected safe code.")
+
+    def main_generic_error_execute(args, environ):
+        raise RuntimeError(f"{synthetic_secret_marker}:{sensitive_sql_parameter_marker}")
+
+    status, stdout_value, stderr_value = capture_main("generic_exception", [], main_generic_error_execute)
+    if status != 1 or "FAIL credential_rotation_failed" not in stderr_value:
+        raise AssertionError("main() generic exception boundary did not report its safe error code.")
+
+    all_captured_output = "".join(
+        stdout_value + stderr_value
+        for _, stdout_value, stderr_value in captured_main_outputs
+    )
+    sensitive_markers = (
+        synthetic_password,
+        synthetic_hash,
+        "postgresql://sentinel-must-not-be-used",
+        "sentinel-must-not-be-used",
+        synthetic_secret_marker,
+        sensitive_sql_parameter_marker,
+    )
+    for sensitive_marker in sensitive_markers:
+        if all_captured_output.count(sensitive_marker) != 0:
+            raise AssertionError(f"main() output leaked sensitive marker for captured path: {sensitive_marker!r}")
+    if postgres_sentinel_calls:
+        raise AssertionError(f"PostgreSQL connection/import sentinel was called: {postgres_sentinel_calls}")
+
+    source = tool_path.read_text(encoding="utf-8")
+    for forbidden in (
+        "from app import",
+        "import app",
+        "connect_postgres",
+        "--password",
+        "PASSWORD_ENV",
+        "INSERT INTO",
+        "DELETE FROM",
+        "UPSERT",
+    ):
+        if forbidden in source:
+            raise AssertionError(f"Credential rotation tool contains forbidden source: {forbidden}")
+    if source.count("UPDATE vendor_accounts") != 1:
+        raise AssertionError("Credential rotation tool must contain exactly one vendor account UPDATE.")
+
+    print("DEV vendor credential rotation smoke PASS")
+    return 0
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
+        run_dev_vendor_credential_rotation_smoke(Path(tmpdir) / "dev-vendor-credential-rotation")
         db_path = Path(tmpdir) / "sample.db"
         create_sample_sqlite(db_path)
 
@@ -17068,6 +17608,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--internal-dev-vendor-credential-rotation":
+        raise SystemExit(_run_dev_vendor_credential_rotation_child(Path(sys.argv[2])))
     if len(sys.argv) == 4 and sys.argv[1] == "--internal-vendor-authenticated-submit":
         raise SystemExit(_run_vendor_authenticated_submit_child(Path(sys.argv[2]), Path(sys.argv[3])))
     raise SystemExit(main())
