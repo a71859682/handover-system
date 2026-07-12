@@ -11328,6 +11328,55 @@ def fetch_formal_approval_row(entry_id):
         ).fetchone()
         return dict(row) if row is not None else None
 
+def fetch_formal_approval_events(entry_id):
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        return [
+            dict(row)
+            for row in conn.execute(
+                '''
+                SELECT fae.approval_id, fae.entry_id, fae.sheet_id, fae.event_sequence,
+                       fae.event_type, fae.actor_username, fae.reason, fae.occurred_at
+                FROM formal_approval_events fae
+                WHERE fae.entry_id = ?
+                ORDER BY fae.event_sequence, fae.id
+                ''',
+                (entry_id,),
+            ).fetchall()
+        ]
+
+def logical_manifest():
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        table_names = [
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        ]
+        manifest = {}
+        for table_name in table_names:
+            columns = [str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()]
+            order_by = ", ".join(f'"{column}"' for column in columns)
+            rows = conn.execute(f'SELECT * FROM "{table_name}" ORDER BY {order_by}').fetchall()
+            manifest[table_name] = (tuple(columns), tuple(tuple(row[column] for column in columns) for row in rows))
+        sequences = tuple(
+            tuple(row)
+            for row in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name").fetchall()
+        )
+        return manifest, sequences
+
+def assert_rejected_unchanged(response, *, status, code, before, label):
+    if response.status_code != status:
+        raise SystemExit(f"{label} expected HTTP {status}, got {response.status_code}")
+    payload = response.get_json()
+    if set(payload.keys()) != {"ok", "error"} or payload["ok"] is not False:
+        raise SystemExit(f"{label} must return structured ok=false JSON")
+    if set(payload["error"].keys()) != {"code", "message"} or payload["error"]["code"] != code:
+        raise SystemExit(f"{label} returned unexpected error contract: {payload}")
+    if logical_manifest() != before:
+        raise SystemExit(f"{label} must keep the full application manifest unchanged")
+
 client = module.app.test_client()
 
 def set_member_session(*, with_current_site=True):
@@ -11400,6 +11449,18 @@ if ready_approval["approved_by"] != "formal_member":
     raise SystemExit("formal approval row should persist approving username")
 if not str(ready_approval["approved_at"] or "").strip():
     raise SystemExit("formal approval row should persist approved_at timestamp")
+ready_events = fetch_formal_approval_events(ready_entry_id)
+if len(ready_events) != 1:
+    raise SystemExit("formal approval success should create exactly one approved event")
+ready_event = ready_events[0]
+if (
+    ready_event["event_sequence"] != 1
+    or ready_event["event_type"] != "approved"
+    or ready_event["actor_username"] != "formal_member"
+    or ready_event["reason"] is not None
+    or ready_event["occurred_at"] != ready_approval["approved_at"]
+):
+    raise SystemExit("formal approval approved event must match the canonical approval timestamp and actor")
 
 duplicate_before = fetch_entry_snapshot(ready_entry_id)
 duplicate_count_before = fetch_formal_approval_count()
@@ -11419,6 +11480,8 @@ if fetch_entry_snapshot(ready_entry_id) != duplicate_before:
     raise SystemExit("duplicate formal approve rejection must not modify stored entry")
 if fetch_formal_approval_count() != duplicate_count_before:
     raise SystemExit("duplicate formal approve should not create extra formal_approvals rows")
+if fetch_formal_approval_events(ready_entry_id) != ready_events:
+    raise SystemExit("duplicate formal approve should not create an event")
 
 pending_before = fetch_entry_snapshot(pending_entry_id)
 formal_approvals_before_blocked = fetch_formal_approval_count()
@@ -11544,13 +11607,494 @@ if entry_not_found_payload["error"]["code"] != "entry_not_found":
 if fetch_formal_approval_count() != entry_not_found_formal_count_before:
     raise SystemExit("missing entry formal approve must not create formal_approvals rows")
 
+cancel_path = "/api/crew-work-entry/formal-approval-cancel"
+cancel_payload = {
+    "entry_id": ready_entry_id,
+    "sheet_id": sheet_id,
+    "action": "crew_formal_cancel_approval",
+    "reason": "  synthetic cancellation reason  ",
+}
+postgres_calls = []
+original_get_primary_postgres_connection = module.get_primary_postgres_connection
+module.get_primary_postgres_connection = lambda: postgres_calls.append("called")
+
+for label, payload, expected_code in (
+    ("non-string reason", {**cancel_payload, "reason": 123}, "invalid_cancellation_reason"),
+    ("blank reason", {**cancel_payload, "reason": "   "}, "invalid_cancellation_reason"),
+    ("overlong reason", {**cancel_payload, "reason": "x" * 501}, "invalid_cancellation_reason"),
+    ("unexpected field", {**cancel_payload, "site_id": default_site_id}, "invalid_request"),
+    ("protected field", {**cancel_payload, "cancelled_by": "forged"}, "invalid_request"),
+):
+    set_member_session()
+    before = logical_manifest()
+    response = client.post(cancel_path, json=payload)
+    assert_rejected_unchanged(response, status=400, code=expected_code, before=before, label=label)
+
+with client.session_transaction() as session:
+    session.clear()
+before = logical_manifest()
+response = client.post(cancel_path, json=cancel_payload)
+assert_rejected_unchanged(response, status=403, code="auth_required", before=before, label="unauthenticated cancel")
+
+with client.session_transaction() as session:
+    session.clear()
+    session["identity_type"] = "vendor"
+    session["vendor_account_id"] = int(vendor_account_id)
+    session["vendor_username"] = "vendor_formal_only"
+    session["vendor_name"] = "Vendor Formal"
+before = logical_manifest()
+response = client.post(cancel_path, json=cancel_payload)
+assert_rejected_unchanged(response, status=403, code="vendor_auth_forbidden", before=before, label="vendor cancel")
+
+set_member_session(with_current_site=False)
+before = logical_manifest()
+response = client.post(cancel_path, json=cancel_payload)
+assert_rejected_unchanged(response, status=403, code="site_context_invalid", before=before, label="missing site cancel")
+
+with module.db() as conn:
+    conn.execute(
+        "DELETE FROM user_site_permissions WHERE user_id = ? AND site_id = ?",
+        (member_id, default_site_id),
+    )
+set_member_session()
+before = logical_manifest()
+response = client.post(cancel_path, json=cancel_payload)
+assert_rejected_unchanged(response, status=403, code="site_permission_missing", before=before, label="revoked permission cancel")
+with module.db() as conn:
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, default_site_id, "member"),
+    )
+
+set_member_session()
+before = logical_manifest()
+response = client.post(
+    cancel_path,
+    json={**cancel_payload, "entry_id": secondary_entry_id, "sheet_id": secondary_sheet_id},
+)
+assert_rejected_unchanged(
+    response,
+    status=403,
+    code="write_target_not_in_current_site",
+    before=before,
+    label="cross-site cancel",
+)
+
+set_member_session()
+before = logical_manifest()
+response = client.post(cancel_path, json={**cancel_payload, "sheet_id": secondary_sheet_id})
+assert_rejected_unchanged(response, status=409, code="sheet_mismatch", before=before, label="sheet mismatch cancel")
+
+set_member_session()
+before = logical_manifest()
+response = client.post(cancel_path, json={**cancel_payload, "sheet_id": 999999})
+assert_rejected_unchanged(response, status=404, code="sheet_not_found", before=before, label="missing sheet cancel")
+
+set_member_session()
+before = logical_manifest()
+response = client.post(cancel_path, json={**cancel_payload, "entry_id": 999999})
+assert_rejected_unchanged(response, status=404, code="entry_not_found", before=before, label="missing entry cancel")
+
+set_member_session()
+before = logical_manifest()
+response = client.post(
+    cancel_path,
+    json={**cancel_payload, "entry_id": pending_entry_id},
+)
+assert_rejected_unchanged(response, status=404, code="approval_not_found", before=before, label="missing approval cancel")
+
+with module.db() as conn:
+    conn.execute(
+        '''
+        INSERT INTO scheduling_entries (
+            entry_id, sheet_id, action, schedule_status, scheduled_date, scheduled_time,
+            scheduled_by, scheduled_at, created_at, updated_at
+        ) VALUES (?, ?, 'schedule_entry', 'scheduled', ?, '09:00', 'formal_member',
+                  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (ready_entry_id, sheet_id, business_date),
+    )
+set_member_session()
+before = logical_manifest()
+response = client.post(cancel_path, json=cancel_payload)
+assert_rejected_unchanged(response, status=409, code="approval_has_schedule", before=before, label="scheduled cancel")
+with module.db() as conn:
+    conn.execute("DELETE FROM scheduling_entries WHERE entry_id = ?", (ready_entry_id,))
+
+ready_entry_before_cancel = fetch_entry_snapshot(ready_entry_id)
+set_member_session()
+response = client.post(cancel_path, json=cancel_payload)
+if response.status_code != 200:
+    raise SystemExit(f"authorized member cancellation expected HTTP 200, got {response.status_code}")
+payload = response.get_json()
+if set(payload.keys()) != {"ok", "action", "approval"} or payload["ok"] is not True:
+    raise SystemExit("cancellation success should return exact top-level contract")
+if payload["action"] != "crew_formal_cancel_approval":
+    raise SystemExit("cancellation success should return the cancellation action")
+approval_payload = payload["approval"]
+if set(approval_payload.keys()) != {
+    "id", "entry_id", "sheet_id", "approval_status", "cancelled_by", "cancelled_at", "cancellation_reason"
+}:
+    raise SystemExit("cancellation success should return only canonical cancellation facts")
+if (
+    approval_payload["approval_status"] != "cancelled"
+    or approval_payload["cancelled_by"] != "formal_member"
+    or approval_payload["cancellation_reason"] != "synthetic cancellation reason"
+    or not approval_payload["cancelled_at"]
+):
+    raise SystemExit("cancellation success returned incorrect canonical facts")
+if fetch_entry_snapshot(ready_entry_id) != ready_entry_before_cancel:
+    raise SystemExit("formal approval cancellation must not modify vendor_work_entries")
+cancelled_events = fetch_formal_approval_events(ready_entry_id)
+if len(cancelled_events) != 2 or [event["event_type"] for event in cancelled_events] != ["approved", "cancelled"]:
+    raise SystemExit("existing approved event cancellation should append exactly one cancelled event")
+if cancelled_events[1]["event_sequence"] != 2 or cancelled_events[1]["occurred_at"] != approval_payload["cancelled_at"]:
+    raise SystemExit("cancelled event sequence and timestamp must match the current-state cancellation")
+
+set_member_session()
+before = logical_manifest()
+response = client.post(cancel_path, json=cancel_payload)
+assert_rejected_unchanged(
+    response,
+    status=409,
+    code="approval_already_cancelled",
+    before=before,
+    label="duplicate cancellation",
+)
+
+with module.db() as conn:
+    legacy_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, 'Vendor Formal', ?, '2000-01-01 12:00', 0, 0, 'Legacy cancellation', '', 0, 0,
+                      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, business_date),
+        ).fetchone()["id"]
+    )
+    legacy_approval = conn.execute(
+        '''
+        INSERT INTO formal_approvals (
+            entry_id, sheet_id, action, approval_status, approved_by, approved_at, created_at, updated_at
+        ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', 'other_member',
+                  '2026-07-12 01:02:03', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING id
+        ''',
+        (legacy_entry_id, sheet_id),
+    ).fetchone()
+    legacy_approval_id = int(legacy_approval["id"])
+
+set_member_session()
+before = logical_manifest()
+response = client.post(
+    cancel_path,
+    json={**cancel_payload, "entry_id": legacy_entry_id, "reason": "member forbidden"},
+)
+assert_rejected_unchanged(
+    response,
+    status=403,
+    code="approval_cancel_forbidden",
+    before=before,
+    label="member cancels other approver",
+)
+
+with client.session_transaction() as session:
+    session.clear()
+    session["user_id"] = 1
+    session["username"] = "admin"
+    session["display_name"] = "管理員"
+    session["role"] = "admin"
+    session["current_site_id"] = int(default_site_id)
+    session["current_site_name"] = str(default_site_name)
+    session["site_selection_required"] = False
+legacy_entry_before = fetch_entry_snapshot(legacy_entry_id)
+response = client.post(
+    cancel_path,
+    json={**cancel_payload, "entry_id": legacy_entry_id, "reason": "x" * 500},
+)
+if response.status_code != 200 or response.get_json()["approval"]["cancelled_by"] != "admin":
+    raise SystemExit("global admin should cancel another member approval with a 500-character reason")
+if fetch_entry_snapshot(legacy_entry_id) != legacy_entry_before:
+    raise SystemExit("legacy cancellation must not modify vendor_work_entries")
+legacy_events = fetch_formal_approval_events(legacy_entry_id)
+if len(legacy_events) != 2:
+    raise SystemExit("legacy cancellation should complete approved and cancelled events atomically")
+if (
+    legacy_events[0]["approval_id"] != legacy_approval_id
+    or legacy_events[0]["event_sequence"] != 1
+    or legacy_events[0]["event_type"] != "approved"
+    or legacy_events[0]["actor_username"] != "other_member"
+    or legacy_events[0]["occurred_at"] != "2026-07-12 01:02:03"
+    or legacy_events[0]["reason"] is not None
+    or legacy_events[1]["event_sequence"] != 2
+    or legacy_events[1]["event_type"] != "cancelled"
+    or legacy_events[1]["actor_username"] != "admin"
+):
+    raise SystemExit("legacy on-demand lifecycle completion persisted incorrect events")
+
+with module.db() as conn:
+    failure_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, 'Vendor Formal', ?, '2000-01-01 13:00', 0, 0,
+                      'Failure rollback', '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, business_date),
+        ).fetchone()["id"]
+    )
+
+class ExecuteFailureProxy:
+    def __init__(self, connection, marker):
+        self.connection = connection
+        self.marker = marker
+
+    @property
+    def in_transaction(self):
+        return self.connection.in_transaction
+
+    def execute(self, sql, parameters=()):
+        if self.marker in str(sql):
+            raise RuntimeError("synthetic formal approval event failure")
+        return self.connection.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+class EmptyFetchCursor:
+    rowcount = -1
+
+    def fetchone(self):
+        return None
+
+with module.db() as conn:
+    conn.execute("BEGIN IMMEDIATE")
+    proxy = ExecuteFailureProxy(conn, "INSERT INTO formal_approval_events")
+    try:
+        module.create_formal_approval_with_event(
+            proxy,
+            entry_id=failure_entry_id,
+            sheet_id=sheet_id,
+            approved_by="formal_member",
+        )
+    except RuntimeError as exc:
+        if "synthetic formal approval event failure" not in str(exc):
+            raise
+    else:
+        raise SystemExit("approved event failure proxy did not execute")
+    if not conn.in_transaction:
+        raise SystemExit("approved event failure must preserve caller transaction ownership")
+    if conn.execute("SELECT COUNT(*) FROM formal_approvals WHERE entry_id = ?", (failure_entry_id,)).fetchone()[0]:
+        raise SystemExit("approved event failure must rollback the approval row")
+    conn.rollback()
+
+with module.db() as conn:
+    conn.execute("BEGIN IMMEDIATE")
+    verification_proxy = ExecuteFailureProxy(conn, "__never__")
+    real_verification_execute = verification_proxy.execute
+    verification_proxy.execute = lambda sql, parameters=(): (
+        EmptyFetchCursor()
+        if "FROM formal_approvals fa" in str(sql)
+        else real_verification_execute(sql, parameters)
+    )
+    try:
+        module.create_formal_approval_with_event(
+            verification_proxy,
+            entry_id=failure_entry_id,
+            sheet_id=sheet_id,
+            approved_by="formal_member",
+        )
+    except RuntimeError as exc:
+        if "verification failed" not in str(exc):
+            raise
+    else:
+        raise SystemExit("post-write verification failure proxy did not execute")
+    if conn.execute("SELECT COUNT(*) FROM formal_approvals WHERE entry_id = ?", (failure_entry_id,)).fetchone()[0]:
+        raise SystemExit("post-write verification failure must rollback approval and approved event")
+    conn.rollback()
+
+with module.db() as conn:
+    rollback_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, 'Vendor Formal', ?, '2000-01-01 14:00', 0, 0,
+                      'Cancellation rollback', '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, business_date),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        '''
+        INSERT INTO formal_approvals (
+            entry_id, sheet_id, action, approval_status, approved_by, approved_at, created_at, updated_at
+        ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', 'formal_member',
+                  '2026-07-12 02:03:04', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ''',
+        (rollback_entry_id, sheet_id),
+    )
+
+original_db = module.db
+
+class ContextFailureProxy(ExecuteFailureProxy):
+    def __enter__(self):
+        self.connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return self.connection.__exit__(exc_type, exc, traceback)
+
+def failing_db():
+    return ContextFailureProxy(original_db(), "VALUES (?, ?, ?, 2, 'cancelled'")
+
+set_member_session()
+rollback_before = logical_manifest()
+module.db = failing_db
+try:
+    try:
+        client.post(
+            cancel_path,
+            json={**cancel_payload, "entry_id": rollback_entry_id, "reason": "rollback proof"},
+        )
+    except RuntimeError as exc:
+        if "synthetic formal approval event failure" not in str(exc):
+            raise
+    else:
+        raise SystemExit("cancelled event failure proxy did not execute")
+finally:
+    module.db = original_db
+if logical_manifest() != rollback_before:
+    raise SystemExit("cancelled event failure must rollback state, on-demand event, and sequence changes")
+
+with module.db() as conn:
+    conflict_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, 'Vendor Formal', ?, '2000-01-01 15:00', 0, 0,
+                      'Conflict proxy', '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, business_date),
+        ).fetchone()["id"]
+    )
+    conflict_approval_id = module.create_formal_approval_with_event(
+        conn,
+        entry_id=conflict_entry_id,
+        sheet_id=sheet_id,
+        approved_by="formal_member",
+    )
+
+class ZeroRowcountCursor:
+    rowcount = 0
+
+class RowcountConflictProxy(ContextFailureProxy):
+    def execute(self, sql, parameters=()):
+        if "UPDATE formal_approvals" in str(sql):
+            return ZeroRowcountCursor()
+        return self.connection.execute(sql, parameters)
+
+def rowcount_conflict_db():
+    return RowcountConflictProxy(original_db(), "__never__")
+
+set_member_session()
+conflict_before = logical_manifest()
+module.db = rowcount_conflict_db
+try:
+    response = client.post(
+        cancel_path,
+        json={**cancel_payload, "entry_id": conflict_entry_id, "reason": "conflict proxy"},
+    )
+finally:
+    module.db = original_db
+assert_rejected_unchanged(
+    response,
+    status=409,
+    code="cancellation_conflict",
+    before=conflict_before,
+    label="conditional rowcount conflict",
+)
+
+with module.db() as conn:
+    inconsistent_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, 'Vendor Formal', ?, '2000-01-01 16:00', 0, 0,
+                      'Inconsistent lifecycle', '', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, business_date),
+        ).fetchone()["id"]
+    )
+    inconsistent_approval_id = int(
+        conn.execute(
+            '''
+            INSERT INTO formal_approvals (
+                entry_id, sheet_id, action, approval_status, approved_by, approved_at, created_at, updated_at
+            ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', 'formal_member',
+                      '2026-07-12 03:04:05', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (inconsistent_entry_id, sheet_id),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        '''
+        INSERT INTO formal_approval_events (
+            approval_id, entry_id, sheet_id, event_sequence, event_type,
+            actor_username, reason, occurred_at
+        ) VALUES (?, ?, ?, 1, 'cancelled', 'formal_member', 'bad lifecycle', '2026-07-12 03:04:05')
+        ''',
+        (inconsistent_approval_id, inconsistent_entry_id, sheet_id),
+    )
+set_member_session()
+inconsistent_before = logical_manifest()
+response = client.post(
+    cancel_path,
+    json={**cancel_payload, "entry_id": inconsistent_entry_id, "reason": "must fail closed"},
+)
+assert_rejected_unchanged(
+    response,
+    status=409,
+    code="cancellation_conflict",
+    before=inconsistent_before,
+    label="inconsistent lifecycle",
+)
+
+module.get_primary_postgres_connection = original_get_primary_postgres_connection
+if postgres_calls:
+    raise SystemExit(f"formal approval write paths must not connect to PostgreSQL: {postgres_calls}")
+
+print("formal approval cancellation write smoke PASS")
 print("vendor-work-entry formal approve smoke PASS")
 """
+    child_script_path = db_path.parent / "formal-approval-write-child.py"
+    child_script_path.write_text(script, encoding="utf-8")
     result = subprocess.run(
         [
             sys.executable,
-            "-c",
-            script,
+            "-B",
+            str(child_script_path),
             str(db_path),
             str(ROOT_DIR),
         ],
@@ -11561,6 +12105,9 @@ print("vendor-work-entry formal approve smoke PASS")
     )
     if "vendor-work-entry formal approve smoke PASS" not in result.stdout:
         raise AssertionError("vendor-work-entry formal approve smoke subprocess did not report PASS.")
+    if "formal approval cancellation write smoke PASS" not in result.stdout:
+        raise AssertionError("formal approval cancellation write smoke subprocess did not report PASS.")
+    print("formal approval cancellation write smoke PASS")
 
 
 def run_scheduler_persistence_smoke(db_path: Path) -> None:

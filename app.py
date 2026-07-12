@@ -2294,6 +2294,157 @@ def _handle_vendor_work_entry_formal_approve_lookup_error(exc: LookupError):
     raise exc
 
 
+class FormalApprovalCancellationError(Exception):
+    def __init__(self, code: str, message: str, *, status: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status = status
+
+
+def _formal_approval_cancel_error_from_lookup(exc: LookupError) -> FormalApprovalCancellationError:
+    code = str(exc)
+    contracts = {
+        "sheet_not_found": ("sheet_id was not found.", 404),
+        "entry_not_found": ("vendor work entry id was not found.", 404),
+        "sheet_mismatch": ("vendor work entry belongs to a different sheet_id.", 409),
+        "site_context_invalid": ("current_site_id is missing or invalid.", 403),
+        "site_permission_missing": ("current user no longer has permission for the current site.", 403),
+        "write_target_not_in_current_site": ("write target does not belong to the current site.", 403),
+        "vendor_auth_forbidden": ("vendor authentication cannot cancel formal approvals.", 403),
+        "auth_required": ("authentication is required.", 403),
+    }
+    if code not in contracts:
+        raise exc
+    message, status = contracts[code]
+    return FormalApprovalCancellationError(code, message, status=status)
+
+
+def _rollback_formal_approval_savepoint(
+    conn: sqlite3.Connection,
+    savepoint_name: str,
+    original_exception: BaseException,
+) -> None:
+    cleanup_failures = []
+    for statement in (
+        f"ROLLBACK TO SAVEPOINT {savepoint_name}",
+        f"RELEASE SAVEPOINT {savepoint_name}",
+    ):
+        try:
+            conn.execute(statement)
+        except BaseException as cleanup_exception:
+            cleanup_failures.append(cleanup_exception)
+    for cleanup_exception in cleanup_failures:
+        original_exception.add_note(
+            "formal approval write savepoint cleanup failed: "
+            f"{type(cleanup_exception).__name__}: {cleanup_exception}"
+        )
+
+
+def create_formal_approval_with_event(
+    conn: sqlite3.Connection,
+    *,
+    entry_id: int,
+    sheet_id: int,
+    approved_by: str,
+) -> int:
+    timestamp_row = conn.execute("SELECT CURRENT_TIMESTAMP AS occurred_at").fetchone()
+    timestamp = str(timestamp_row["occurred_at"] if timestamp_row is not None else "")
+    if not timestamp:
+        raise RuntimeError("formal approval timestamp could not be resolved")
+
+    savepoint_name = "formal_approval_create_with_event"
+    conn.execute(f"SAVEPOINT {savepoint_name}")
+    stage = "approval_insert"
+    try:
+        approval_row = conn.execute(
+            """
+            INSERT INTO formal_approvals (
+                entry_id,
+                sheet_id,
+                action,
+                approval_status,
+                approved_by,
+                approved_at,
+                updated_at
+            ) VALUES (?, ?, 'crew_formal_approve_entry', 'approved', ?, ?, ?)
+            RETURNING id
+            """,
+            (entry_id, sheet_id, approved_by, timestamp, timestamp),
+        ).fetchone()
+        if approval_row is None:
+            raise RuntimeError("formal approval insert did not return an id")
+        approval_id = int(approval_row["id"])
+
+        stage = "approved_event_insert"
+        conn.execute(
+            """
+            INSERT INTO formal_approval_events (
+                approval_id,
+                entry_id,
+                sheet_id,
+                event_sequence,
+                event_type,
+                actor_username,
+                reason,
+                occurred_at
+            ) VALUES (?, ?, ?, 1, 'approved', ?, NULL, ?)
+            """,
+            (approval_id, entry_id, sheet_id, approved_by, timestamp),
+        )
+
+        stage = "post_write_verification"
+        verification_row = conn.execute(
+            """
+            SELECT fa.id,
+                   fa.entry_id,
+                   fa.sheet_id,
+                   fa.action,
+                   fa.approval_status,
+                   fa.approved_by,
+                   fa.approved_at,
+                   fa.updated_at,
+                   fae.event_sequence,
+                   fae.event_type,
+                   fae.actor_username,
+                   fae.reason,
+                   fae.occurred_at
+            FROM formal_approvals fa
+            JOIN formal_approval_events fae
+              ON fae.approval_id = fa.id
+            WHERE fa.id = ?
+            """,
+            (approval_id,),
+        ).fetchone()
+        if verification_row is None or (
+            int(verification_row["entry_id"]) != entry_id
+            or int(verification_row["sheet_id"]) != sheet_id
+            or str(verification_row["action"]) != "crew_formal_approve_entry"
+            or str(verification_row["approval_status"]) != "approved"
+            or str(verification_row["approved_by"] or "") != approved_by
+            or str(verification_row["approved_at"] or "") != timestamp
+            or str(verification_row["updated_at"] or "") != timestamp
+            or int(verification_row["event_sequence"]) != 1
+            or str(verification_row["event_type"]) != "approved"
+            or str(verification_row["actor_username"] or "") != approved_by
+            or verification_row["reason"] is not None
+            or str(verification_row["occurred_at"] or "") != timestamp
+        ):
+            raise RuntimeError("formal approval and approved event verification failed")
+    except BaseException as original_exception:
+        _rollback_formal_approval_savepoint(conn, savepoint_name, original_exception)
+        if stage == "approval_insert" and isinstance(original_exception, sqlite3.IntegrityError):
+            raise FormalApprovalCancellationError(
+                "duplicate_approval",
+                "Formal approval already exists for this entry.",
+                status=409,
+            ) from original_exception
+        raise
+    else:
+        conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+    return approval_id
+
+
 def _handle_schedule_entry_lookup_error(exc: LookupError):
     code = str(exc)
     if code == "sheet_not_found":
@@ -7167,62 +7318,48 @@ def api_crew_work_entry_formal_approve():
     except ValueError as exc:
         return crew_api_error("invalid_request", str(exc))
 
-    with db() as conn:
-        try:
-            approval_context = authorize_vendor_work_entry_formal_approve(
-                conn,
-                sheet_id=sheet_id,
-                entry_id=entry_id,
-            )
-        except LookupError as exc:
-            return _handle_vendor_work_entry_formal_approve_lookup_error(exc)
+    try:
+        with db() as conn:
+            try:
+                approval_context = authorize_vendor_work_entry_formal_approve(
+                    conn,
+                    sheet_id=sheet_id,
+                    entry_id=entry_id,
+                )
+            except LookupError as exc:
+                return _handle_vendor_work_entry_formal_approve_lookup_error(exc)
 
-        if str(approval_context["scheduling_gate_state"]) != "allowed":
-            return crew_api_error("entry_not_ready", "Entry is not ready for this action.", status=409)
+            if str(approval_context["scheduling_gate_state"]) != "allowed":
+                return crew_api_error("entry_not_ready", "Entry is not ready for this action.", status=409)
 
-        existing_approval = conn.execute(
-            """
-            SELECT id
-            FROM formal_approvals
-            WHERE entry_id = ? AND action = ?
-            """,
-            (int(approval_context["entry_id"]), action),
-        ).fetchone()
-        if existing_approval is not None:
-            return crew_api_error(
-                "duplicate_approval",
-                "Formal approval already exists for this entry.",
-                status=409,
-            )
-
-        user = _current_internal_user()
-        approved_by = str(user["username"] if user is not None else "")
-        try:
-            conn.execute(
+            existing_approval = conn.execute(
                 """
-                INSERT INTO formal_approvals (
-                    entry_id,
-                    sheet_id,
-                    action,
-                    approval_status,
-                    approved_by,
-                    approved_at,
-                    updated_at
-                ) VALUES (?, ?, ?, 'approved', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                SELECT id
+                FROM formal_approvals
+                WHERE entry_id = ? AND action = ?
                 """,
-                (
-                    int(approval_context["entry_id"]),
-                    int(approval_context["sheet_id"]),
-                    action,
-                    approved_by,
-                ),
+                (int(approval_context["entry_id"]), action),
+            ).fetchone()
+            if existing_approval is not None:
+                return crew_api_error(
+                    "duplicate_approval",
+                    "Formal approval already exists for this entry.",
+                    status=409,
+                )
+
+            user = _current_internal_user()
+            approved_by = str(user["username"] if user is not None else "")
+            if conn.in_transaction:
+                raise RuntimeError("formal approval creation requires a fresh connection transaction")
+            conn.execute("BEGIN IMMEDIATE")
+            create_formal_approval_with_event(
+                conn,
+                entry_id=int(approval_context["entry_id"]),
+                sheet_id=int(approval_context["sheet_id"]),
+                approved_by=approved_by,
             )
-        except sqlite3.IntegrityError:
-            return crew_api_error(
-                "duplicate_approval",
-                "Formal approval already exists for this entry.",
-                status=409,
-            )
+    except FormalApprovalCancellationError as exc:
+        return crew_api_error(exc.code, exc.message, status=exc.status)
 
     return jsonify(
         {
@@ -7232,6 +7369,332 @@ def api_crew_work_entry_formal_approve():
                 "id": int(approval_context["entry_id"]),
                 "sheet_id": int(approval_context["sheet_id"]),
             },
+        }
+    )
+
+
+def cancel_formal_approval(
+    conn: sqlite3.Connection,
+    *,
+    entry_id: int,
+    sheet_id: int,
+    reason: str,
+) -> dict[str, object]:
+    if conn.in_transaction:
+        raise RuntimeError("formal approval cancellation requires a fresh connection transaction")
+    conn.execute("BEGIN IMMEDIATE")
+
+    try:
+        context = authorize_vendor_work_entry_formal_approve(
+            conn,
+            sheet_id=sheet_id,
+            entry_id=entry_id,
+        )
+    except LookupError as exc:
+        raise _formal_approval_cancel_error_from_lookup(exc) from exc
+
+    user = _current_internal_user()
+    if user is None:
+        raise FormalApprovalCancellationError("auth_required", "authentication is required.", status=403)
+    actor_username = str(user["username"] or "")
+
+    approval = conn.execute(
+        """
+        SELECT id,
+               entry_id,
+               sheet_id,
+               action,
+               approval_status,
+               approved_by,
+               approved_at,
+               cancelled_by,
+               cancelled_at,
+               cancellation_reason
+        FROM formal_approvals
+        WHERE entry_id = ? AND action = 'crew_formal_approve_entry'
+        """,
+        (int(context["entry_id"]),),
+    ).fetchone()
+    if approval is None:
+        raise FormalApprovalCancellationError(
+            "approval_not_found",
+            "Formal approval was not found for this entry.",
+            status=404,
+        )
+    if int(approval["sheet_id"] or 0) != int(context["sheet_id"]):
+        raise FormalApprovalCancellationError(
+            "sheet_mismatch",
+            "Formal approval belongs to a different sheet_id.",
+            status=409,
+        )
+
+    approval_status = str(approval["approval_status"] or "")
+    if approval_status == "cancelled":
+        raise FormalApprovalCancellationError(
+            "approval_already_cancelled",
+            "Formal approval is already cancelled.",
+            status=409,
+        )
+    if approval_status != "approved" or any(
+        approval[column] is not None
+        for column in ("cancelled_by", "cancelled_at", "cancellation_reason")
+    ):
+        raise FormalApprovalCancellationError(
+            "cancellation_conflict",
+            "Formal approval state conflicts with cancellation.",
+            status=409,
+        )
+
+    approved_by = str(approval["approved_by"] or "")
+    if not is_global_admin(user) and approved_by != actor_username:
+        raise FormalApprovalCancellationError(
+            "approval_cancel_forbidden",
+            "Only the original approver may cancel this formal approval.",
+            status=403,
+        )
+
+    schedule = conn.execute(
+        "SELECT id FROM scheduling_entries WHERE entry_id = ? LIMIT 1",
+        (int(context["entry_id"]),),
+    ).fetchone()
+    if schedule is not None:
+        raise FormalApprovalCancellationError(
+            "approval_has_schedule",
+            "Formal approval cannot be cancelled while a scheduling row exists.",
+            status=409,
+        )
+
+    events = conn.execute(
+        """
+        SELECT approval_id,
+               entry_id,
+               sheet_id,
+               event_sequence,
+               event_type,
+               actor_username,
+               reason,
+               occurred_at
+        FROM formal_approval_events
+        WHERE approval_id = ?
+        ORDER BY event_sequence, id
+        """,
+        (int(approval["id"]),),
+    ).fetchall()
+    approved_at = str(approval["approved_at"] or "")
+    if not approved_at:
+        raise FormalApprovalCancellationError(
+            "cancellation_conflict",
+            "Formal approval lifecycle is incomplete.",
+            status=409,
+        )
+    if events:
+        if len(events) != 1:
+            raise FormalApprovalCancellationError(
+                "cancellation_conflict",
+                "Formal approval lifecycle conflicts with cancellation.",
+                status=409,
+            )
+        approved_event = events[0]
+        expected_actor = approval["approved_by"]
+        if (
+            int(approved_event["approval_id"]) != int(approval["id"])
+            or int(approved_event["entry_id"]) != int(context["entry_id"])
+            or int(approved_event["sheet_id"]) != int(context["sheet_id"])
+            or int(approved_event["event_sequence"]) != 1
+            or str(approved_event["event_type"]) != "approved"
+            or approved_event["actor_username"] != expected_actor
+            or approved_event["reason"] is not None
+            or str(approved_event["occurred_at"] or "") != approved_at
+        ):
+            raise FormalApprovalCancellationError(
+                "cancellation_conflict",
+                "Formal approval lifecycle conflicts with cancellation.",
+                status=409,
+            )
+
+    timestamp_row = conn.execute("SELECT CURRENT_TIMESTAMP AS occurred_at").fetchone()
+    cancellation_timestamp = str(timestamp_row["occurred_at"] if timestamp_row is not None else "")
+    if not cancellation_timestamp:
+        raise RuntimeError("formal approval cancellation timestamp could not be resolved")
+
+    savepoint_name = "formal_approval_cancel_with_events"
+    conn.execute(f"SAVEPOINT {savepoint_name}")
+    try:
+        if not events:
+            conn.execute(
+                """
+                INSERT INTO formal_approval_events (
+                    approval_id,
+                    entry_id,
+                    sheet_id,
+                    event_sequence,
+                    event_type,
+                    actor_username,
+                    reason,
+                    occurred_at
+                ) VALUES (?, ?, ?, 1, 'approved', ?, NULL, ?)
+                """,
+                (
+                    int(approval["id"]),
+                    int(context["entry_id"]),
+                    int(context["sheet_id"]),
+                    approval["approved_by"],
+                    approved_at,
+                ),
+            )
+
+        update_cursor = conn.execute(
+            """
+            UPDATE formal_approvals
+            SET approval_status = 'cancelled',
+                cancelled_by = ?,
+                cancelled_at = ?,
+                cancellation_reason = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND entry_id = ?
+              AND sheet_id = ?
+              AND action = 'crew_formal_approve_entry'
+              AND approval_status = 'approved'
+              AND cancelled_at IS NULL
+            """,
+            (
+                actor_username,
+                cancellation_timestamp,
+                reason,
+                cancellation_timestamp,
+                int(approval["id"]),
+                int(context["entry_id"]),
+                int(context["sheet_id"]),
+            ),
+        )
+        if update_cursor.rowcount != 1:
+            raise FormalApprovalCancellationError(
+                "cancellation_conflict",
+                "Formal approval changed before cancellation completed.",
+                status=409,
+            )
+
+        conn.execute(
+            """
+            INSERT INTO formal_approval_events (
+                approval_id,
+                entry_id,
+                sheet_id,
+                event_sequence,
+                event_type,
+                actor_username,
+                reason,
+                occurred_at
+            ) VALUES (?, ?, ?, 2, 'cancelled', ?, ?, ?)
+            """,
+            (
+                int(approval["id"]),
+                int(context["entry_id"]),
+                int(context["sheet_id"]),
+                actor_username,
+                reason,
+                cancellation_timestamp,
+            ),
+        )
+
+        cancelled_approval = conn.execute(
+            """
+            SELECT id,
+                   entry_id,
+                   sheet_id,
+                   approval_status,
+                   cancelled_by,
+                   cancelled_at,
+                   cancellation_reason
+            FROM formal_approvals
+            WHERE id = ?
+            """,
+            (int(approval["id"]),),
+        ).fetchone()
+        cancelled_event = conn.execute(
+            """
+            SELECT event_sequence, event_type, actor_username, reason, occurred_at
+            FROM formal_approval_events
+            WHERE approval_id = ? AND event_sequence = 2
+            """,
+            (int(approval["id"]),),
+        ).fetchone()
+        if cancelled_approval is None or cancelled_event is None or (
+            str(cancelled_approval["approval_status"]) != "cancelled"
+            or str(cancelled_approval["cancelled_by"] or "") != actor_username
+            or str(cancelled_approval["cancelled_at"] or "") != cancellation_timestamp
+            or str(cancelled_approval["cancellation_reason"] or "") != reason
+            or int(cancelled_event["event_sequence"]) != 2
+            or str(cancelled_event["event_type"]) != "cancelled"
+            or str(cancelled_event["actor_username"] or "") != actor_username
+            or str(cancelled_event["reason"] or "") != reason
+            or str(cancelled_event["occurred_at"] or "") != cancellation_timestamp
+        ):
+            raise RuntimeError("formal approval cancellation verification failed")
+    except BaseException as original_exception:
+        _rollback_formal_approval_savepoint(conn, savepoint_name, original_exception)
+        if isinstance(original_exception, sqlite3.IntegrityError):
+            raise FormalApprovalCancellationError(
+                "cancellation_conflict",
+                "Formal approval lifecycle changed before cancellation completed.",
+                status=409,
+            ) from original_exception
+        raise
+    else:
+        conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+
+    return dict(cancelled_approval)
+
+
+@app.route("/api/crew-work-entry/formal-approval-cancel", methods=["POST"])
+def api_crew_work_entry_formal_approval_cancel():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return crew_api_error("invalid_request", "A JSON object is required.")
+    expected_fields = {"entry_id", "sheet_id", "action", "reason"}
+    if set(data) != expected_fields:
+        return crew_api_error("invalid_request", "Request fields must be entry_id, sheet_id, action, and reason.")
+
+    try:
+        entry_id = parse_non_negative_int(data.get("entry_id"), field_name="entry_id")
+        sheet_id = parse_non_negative_int(data.get("sheet_id"), field_name="sheet_id")
+        action = str(data.get("action") or "").strip()
+        if entry_id <= 0:
+            raise ValueError("entry_id must be a positive integer.")
+        if sheet_id <= 0:
+            raise ValueError("sheet_id must be a positive integer.")
+        if action != "crew_formal_cancel_approval":
+            raise ValueError("action must be crew_formal_cancel_approval.")
+    except ValueError as exc:
+        return crew_api_error("invalid_request", str(exc))
+
+    raw_reason = data.get("reason")
+    if not isinstance(raw_reason, str):
+        return crew_api_error("invalid_cancellation_reason", "reason must be a string.")
+    reason = raw_reason.strip()
+    if not reason or len(reason) > 500:
+        return crew_api_error(
+            "invalid_cancellation_reason",
+            "reason must contain 1 to 500 characters after trimming.",
+        )
+
+    try:
+        with db() as conn:
+            approval = cancel_formal_approval(
+                conn,
+                entry_id=entry_id,
+                sheet_id=sheet_id,
+                reason=reason,
+            )
+    except FormalApprovalCancellationError as exc:
+        return crew_api_error(exc.code, exc.message, status=exc.status)
+
+    return jsonify(
+        {
+            "ok": True,
+            "action": "crew_formal_cancel_approval",
+            "approval": approval,
         }
     )
 
