@@ -2029,6 +2029,7 @@ def resolve_vendor_work_entry_requirement_confirmation_context(
 def authorize_vendor_work_entry_requirement_confirmation(
     conn: sqlite3.Connection,
     *,
+    actor: dict[str, object],
     sheet_id: int,
     entry_id: int,
 ) -> dict[str, object]:
@@ -2037,17 +2038,19 @@ def authorize_vendor_work_entry_requirement_confirmation(
         sheet_id=sheet_id,
         entry_id=entry_id,
     )
-    user = _current_internal_user()
-    if user is None:
-        if current_vendor_account() is not None:
-            raise LookupError("vendor_auth_forbidden")
-        raise LookupError("auth_required")
-    if is_global_admin(user):
-        current_site_context = authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
-        context["current_site_id"] = int(current_site_context["current_site_id"])
+    if is_global_admin(actor):
+        current_site_id = get_current_site_id()
+        if current_site_id is None:
+            raise LookupError("site_context_invalid")
+        current_site = _fetch_site_row_by_id(conn, int(current_site_id))
+        if current_site is None or int(current_site["is_active"]) != 1:
+            raise LookupError("site_context_invalid")
+        if int(context["site_id"]) != int(current_site_id):
+            raise LookupError("write_target_not_in_current_site")
+        context["current_site_id"] = int(current_site_id)
         return context
 
-    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    current_site_id = _resolve_non_admin_read_site_id(conn, actor)
     if int(context["site_id"]) != int(current_site_id):
         raise LookupError("write_target_not_in_current_site")
     context["current_site_id"] = int(current_site_id)
@@ -2398,21 +2401,21 @@ class FormalApprovalCancellationError(Exception):
         self.status = status
 
 
-def resolve_formal_approval_cancellation_actor():
+def resolve_canonical_internal_mutation_actor() -> dict[str, object]:
     try:
         actor_type = resolve_vendor_work_entry_actor_session_type()
     except LookupError as exc:
-        raise FormalApprovalCancellationError("auth_required", "authentication is required.", status=403) from exc
+        raise LookupError("auth_required") from exc
     if actor_type == "internal":
         try:
             user_id = int(session.get("user_id"))
         except (TypeError, ValueError):
-            raise FormalApprovalCancellationError("auth_required", "authentication is required.", status=403) from None
+            raise LookupError("auth_required") from None
         if user_id <= 0:
-            raise FormalApprovalCancellationError("auth_required", "authentication is required.", status=403)
+            raise LookupError("auth_required")
         user = _current_internal_user()
         if user is None:
-            raise FormalApprovalCancellationError("auth_required", "authentication is required.", status=403)
+            raise LookupError("auth_required")
         return {
             "id": int(user["id"]),
             "username": str(user["username"] or ""),
@@ -2424,12 +2427,21 @@ def resolve_formal_approval_cancellation_actor():
                 resolve_vendor_work_entry_actor(auth_conn)
         except LookupError:
             pass
-        raise FormalApprovalCancellationError(
-            "vendor_auth_forbidden",
-            "vendor authentication cannot cancel formal approvals.",
-            status=403,
-        )
-    raise RuntimeError("unsupported formal approval cancellation actor type")
+        raise LookupError("vendor_auth_forbidden")
+    raise RuntimeError("unsupported internal mutation actor type")
+
+
+def resolve_formal_approval_cancellation_actor() -> dict[str, object]:
+    try:
+        return resolve_canonical_internal_mutation_actor()
+    except LookupError as exc:
+        if str(exc) == "vendor_auth_forbidden":
+            raise FormalApprovalCancellationError(
+                "vendor_auth_forbidden",
+                "vendor authentication cannot cancel formal approvals.",
+                status=403,
+            ) from exc
+        raise FormalApprovalCancellationError("auth_required", "authentication is required.", status=403) from exc
 
 
 def _formal_approval_cancel_error_from_lookup(exc: LookupError) -> FormalApprovalCancellationError:
@@ -7445,6 +7457,10 @@ def api_vendor_work_entry():
 @app.route("/api/crew-work-entry-requirement-confirm", methods=["POST"])
 def api_crew_work_entry_requirement_confirm():
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return crew_api_error("invalid_request", "request JSON must be an object.")
+    if set(data) != {"entry_id", "sheet_id"}:
+        return crew_api_error("invalid_request", "Request fields must be entry_id and sheet_id.")
     try:
         entry_id = parse_non_negative_int(data.get("entry_id"), field_name="entry_id")
         sheet_id = parse_non_negative_int(data.get("sheet_id"), field_name="sheet_id")
@@ -7455,25 +7471,21 @@ def api_crew_work_entry_requirement_confirm():
     except ValueError as exc:
         return crew_api_error("invalid_request", str(exc))
 
+    try:
+        actor = resolve_canonical_internal_mutation_actor()
+    except LookupError as exc:
+        return _handle_vendor_work_entry_requirement_confirmation_lookup_error(exc)
+
     with db() as conn:
         try:
             confirmation_context = authorize_vendor_work_entry_requirement_confirmation(
                 conn,
+                actor=actor,
                 sheet_id=sheet_id,
                 entry_id=entry_id,
             )
         except LookupError as exc:
             return _handle_vendor_work_entry_requirement_confirmation_lookup_error(exc)
-
-        row = conn.execute(
-            """
-            SELECT username
-            FROM users
-            WHERE id = ?
-            """,
-            (int(_current_internal_user()["id"]),),
-        ).fetchone()
-        confirmed_by = str(row["username"] if row is not None else "")
 
         if confirmation_context["requirement_status"] != "confirmed":
             conn.execute(
@@ -7486,7 +7498,7 @@ def api_crew_work_entry_requirement_confirm():
                 WHERE id = ? AND sheet_id = ?
                 """,
                 (
-                    confirmed_by,
+                    str(actor["username"]),
                     int(confirmation_context["entry_id"]),
                     int(confirmation_context["sheet_id"]),
                 ),

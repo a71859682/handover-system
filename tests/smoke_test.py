@@ -10975,6 +10975,8 @@ module = importlib.util.module_from_spec(spec)
 os.environ["APP_DB_PATH"] = db_path
 spec.loader.exec_module(module)
 module.app.testing = True
+postgres_calls = []
+module.get_primary_postgres_connection = lambda: postgres_calls.append("called")
 
 business_date = module.resolve_crew_business_date()
 
@@ -11036,6 +11038,32 @@ with module.db() as conn:
             (sheet_id, "Vendor Confirm", business_date, "2000-01-01 09:00", 3, 0, "Confirm Work", "Need power off", 0, 0),
         ).fetchone()["id"]
     )
+    phase_member_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Confirm", business_date, "2000-01-01 09:15", 2, 0, "Member Phase Work", "Member phase requirement", 0, 1),
+        ).fetchone()["id"]
+    )
+    phase_admin_entry_id = int(
+        conn.execute(
+            '''
+            INSERT INTO vendor_work_entries (
+                sheet_id, vendor_name, business_date, planned_at, planned_headcount,
+                actual_headcount, work_content, pre_entry_requirement, work_headcount, entry_order,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            ''',
+            (sheet_id, "Vendor Confirm", business_date, "2000-01-01 09:30", 2, 0, "Admin Phase Work", "Admin phase requirement", 0, 2),
+        ).fetchone()["id"]
+    )
     secondary_entry_id = int(
         conn.execute(
             '''
@@ -11077,6 +11105,426 @@ def set_member_session(*, with_current_site=True):
             session["current_site_id"] = int(default_site_id)
             session["current_site_name"] = str(default_site_name)
             session["site_selection_required"] = False
+
+def set_admin_session():
+    with module.db() as conn:
+        admin = conn.execute("SELECT id, username, role FROM users WHERE username = 'admin'").fetchone()
+    if admin is None:
+        raise SystemExit("expected canonical admin user for requirement auth-order smoke")
+    with client.session_transaction() as session:
+        session.clear()
+        session["user_id"] = int(admin["id"])
+        session["username"] = str(admin["username"])
+        session["role"] = str(admin["role"])
+        session["current_site_id"] = int(default_site_id)
+        session["current_site_name"] = str(default_site_name)
+        session["site_selection_required"] = False
+
+def full_database_manifest():
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        tables = [
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        ]
+        rows = {}
+        for table_name in tables:
+            columns = [str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()]
+            order_clause = " ORDER BY rowid" if columns else ""
+            rows[table_name] = [
+                tuple(row[column] for column in columns)
+                for row in conn.execute(f'SELECT * FROM "{table_name}"{order_clause}').fetchall()
+            ]
+        sequences = [
+            tuple(row)
+            for row in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name").fetchall()
+        ]
+    return rows, sequences
+
+requirement_path = "/api/crew-work-entry-requirement-confirm"
+requirement_payload = {"entry_id": int(target_entry_id), "sheet_id": int(sheet_id)}
+requirement_target_tables = ("sheets", "vendor_work_entries")
+original_db = module.db
+original_requirement_actor_resolver = module.resolve_canonical_internal_mutation_actor
+
+def sql_references_table(normalized_sql, table_name):
+    tokens = normalized_sql.replace("(", " ").replace(")", " ").replace(",", " ").split()
+    for index, token in enumerate(tokens):
+        if index == 0 or tokens[index - 1] not in {"from", "join", "update", "into"}:
+            continue
+        if token.strip('"`[]') == table_name:
+            return True
+    return False
+
+class RequirementAuthOrderTraceConnection:
+    def __init__(self, connection, counters, phase):
+        self.connection = connection
+        self.counters = counters
+        self.phase = phase
+
+    def __enter__(self):
+        self.counters[f"{self.phase}_context_entries"] += 1
+        self.connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return self.connection.__exit__(exc_type, exc, traceback)
+
+    def execute(self, sql, parameters=()):
+        normalized = " ".join(str(sql).lower().split())
+        self.counters[f"{self.phase}_statements"].append(normalized)
+        if self.phase == "auth":
+            if sql_references_table(normalized, "users"):
+                self.counters["users_auth_queries"] += 1
+            if sql_references_table(normalized, "vendor_accounts"):
+                self.counters["vendor_auth_queries"] += 1
+            if any(table_name in normalized for table_name in requirement_target_tables):
+                self.counters["auth_target_queries"] += 1
+        else:
+            if sql_references_table(normalized, "users"):
+                self.counters["target_users_queries"] += 1
+            if sql_references_table(normalized, "vendor_accounts"):
+                self.counters["target_vendor_account_queries"] += 1
+            if any(table_name in normalized for table_name in requirement_target_tables):
+                self.counters["target_queries"] += 1
+            if normalized.startswith(("insert ", "update ", "delete ", "replace ")):
+                self.counters["target_writes"] += 1
+        return self.connection.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+def post_requirement_with_phase_counts(payload=None, *, raw_data=None, content_type=None):
+    counters = {
+        "phase": "target",
+        "actor_resolutions": 0,
+        "resolved_actor": None,
+        "auth_db_factory_calls": 0,
+        "auth_context_entries": 0,
+        "auth_statements": [],
+        "users_auth_queries": 0,
+        "vendor_auth_queries": 0,
+        "auth_target_queries": 0,
+        "target_db_factory_calls": 0,
+        "target_context_entries": 0,
+        "target_statements": [],
+        "target_queries": 0,
+        "target_writes": 0,
+        "target_users_queries": 0,
+        "target_vendor_account_queries": 0,
+    }
+
+    def tracing_actor_resolver():
+        counters["actor_resolutions"] += 1
+        counters["phase"] = "auth"
+        try:
+            actor = original_requirement_actor_resolver()
+            counters["resolved_actor"] = actor
+            return actor
+        finally:
+            counters["phase"] = "target"
+
+    def tracing_db():
+        phase = str(counters["phase"])
+        counters[f"{phase}_db_factory_calls"] += 1
+        return RequirementAuthOrderTraceConnection(original_db(), counters, phase)
+
+    module.db = tracing_db
+    module.resolve_canonical_internal_mutation_actor = tracing_actor_resolver
+    try:
+        if raw_data is not None:
+            response = client.post(requirement_path, data=raw_data, content_type=content_type)
+        else:
+            response = client.post(requirement_path, json=payload)
+    finally:
+        module.db = original_db
+        module.resolve_canonical_internal_mutation_actor = original_requirement_actor_resolver
+    counters.pop("phase")
+    return response, counters
+
+def assert_error_response(response, *, status, code, label):
+    if response.status_code != status:
+        raise SystemExit(f"{label} expected HTTP {status}, got {response.status_code}")
+    payload = response.get_json()
+    if set(payload) != {"ok", "error"} or payload.get("ok") is not False:
+        raise SystemExit(f"{label} must preserve structured error response")
+    if set(payload["error"]) != {"code", "message"} or payload["error"]["code"] != code:
+        raise SystemExit(f"{label} expected error code {code}, got {payload}")
+
+def assert_rejected_actor_phase(counters, *, label):
+    if counters["actor_resolutions"] != 1:
+        raise SystemExit(f"{label} must resolve actor exactly once: {counters}")
+    for key in ("target_db_factory_calls", "target_context_entries", "target_queries", "target_writes"):
+        if counters[key] != 0:
+            raise SystemExit(f"{label} expected {key}=0: {counters}")
+    if counters["auth_target_queries"] != 0:
+        raise SystemExit(f"{label} auth lookup queried requirement target tables: {counters}")
+
+validation_cases = (
+    ("missing entry_id", {"sheet_id": sheet_id}),
+    ("zero entry_id", {**requirement_payload, "entry_id": 0}),
+    ("wrong-type entry_id", {**requirement_payload, "entry_id": "invalid"}),
+    ("missing sheet_id", {"entry_id": target_entry_id}),
+    ("zero sheet_id", {**requirement_payload, "sheet_id": 0}),
+    ("wrong-type sheet_id", {**requirement_payload, "sheet_id": "invalid"}),
+    ("unexpected field", {**requirement_payload, "unexpected": "value"}),
+    ("protected requirement field", {**requirement_payload, "requirement_confirmed_by": "forged"}),
+)
+for label, payload in validation_cases:
+    with client.session_transaction() as session:
+        session.clear()
+    before = full_database_manifest()
+    response, counters = post_requirement_with_phase_counts(payload)
+    assert_error_response(response, status=400, code="invalid_request", label=label)
+    if full_database_manifest() != before:
+        raise SystemExit(f"{label} changed application manifest or sequence")
+    if any(counters[key] for key in counters if key not in {"auth_statements", "target_statements", "resolved_actor"}):
+        raise SystemExit(f"{label} must stop before actor/auth/target DB phases: {counters}")
+
+for label, raw_data, content_type in (
+    ("wrong JSON shape", "[]", "application/json"),
+    ("wrong content type", "not-json", "text/plain"),
+):
+    with client.session_transaction() as session:
+        session.clear()
+    before = full_database_manifest()
+    response, counters = post_requirement_with_phase_counts(raw_data=raw_data, content_type=content_type)
+    assert_error_response(response, status=400, code="invalid_request", label=label)
+    if full_database_manifest() != before:
+        raise SystemExit(f"{label} changed application manifest or sequence")
+    if counters["actor_resolutions"] or counters["auth_db_factory_calls"] or counters["target_db_factory_calls"]:
+        raise SystemExit(f"{label} must stop before actor/auth/target DB phases: {counters}")
+
+rejected_actor_cases = (
+    ("unauth existing", requirement_payload, {}, "auth_required", 0, 0, 0),
+    ("unauth missing sheet", {**requirement_payload, "sheet_id": 999999}, {}, "auth_required", 0, 0, 0),
+    ("unauth missing entry", {**requirement_payload, "entry_id": 999999}, {}, "auth_required", 0, 0, 0),
+    (
+        "valid vendor existing",
+        requirement_payload,
+        {"identity_type": "vendor", "vendor_account_id": vendor_account_id, "vendor_username": "vendor_confirm_only", "vendor_name": "Vendor Confirm"},
+        "vendor_auth_forbidden",
+        1,
+        0,
+        1,
+    ),
+    (
+        "valid vendor missing",
+        {**requirement_payload, "entry_id": 999999},
+        {"identity_type": "vendor", "vendor_account_id": vendor_account_id, "vendor_username": "vendor_confirm_only", "vendor_name": "Vendor Confirm"},
+        "vendor_auth_forbidden",
+        1,
+        0,
+        1,
+    ),
+    ("malformed internal", requirement_payload, {"user_id": "invalid", "username": "bad", "role": "member"}, "auth_required", 0, 0, 0),
+    ("malformed internal missing", {**requirement_payload, "entry_id": 999999}, {"user_id": "invalid", "username": "bad", "role": "member"}, "auth_required", 0, 0, 0),
+    ("stale internal", requirement_payload, {"user_id": 999999, "username": "stale", "role": "member"}, "auth_required", 1, 1, 0),
+    ("stale internal missing", {**requirement_payload, "entry_id": 999999}, {"user_id": 999999, "username": "stale", "role": "member"}, "auth_required", 1, 1, 0),
+    ("partial vendor", requirement_payload, {"identity_type": "vendor", "vendor_username": "partial"}, "vendor_auth_forbidden", 1, 0, 0),
+    ("partial vendor missing", {**requirement_payload, "entry_id": 999999}, {"identity_type": "vendor", "vendor_username": "partial"}, "vendor_auth_forbidden", 1, 0, 0),
+    (
+        "stale vendor",
+        requirement_payload,
+        {"identity_type": "vendor", "vendor_account_id": 999999, "vendor_username": "stale", "vendor_name": "Stale Vendor"},
+        "vendor_auth_forbidden",
+        1,
+        0,
+        1,
+    ),
+    (
+        "stale vendor missing",
+        {**requirement_payload, "entry_id": 999999},
+        {"identity_type": "vendor", "vendor_account_id": 999999, "vendor_username": "stale", "vendor_name": "Stale Vendor"},
+        "vendor_auth_forbidden",
+        1,
+        0,
+        1,
+    ),
+    (
+        "mixed internal vendor",
+        requirement_payload,
+        {"user_id": member_id, "username": "confirm_member", "role": "member", "identity_type": "vendor", "vendor_account_id": vendor_account_id, "vendor_username": "vendor_confirm_only", "vendor_name": "Vendor Confirm"},
+        "auth_required",
+        0,
+        0,
+        0,
+    ),
+    (
+        "mixed internal vendor missing",
+        {**requirement_payload, "entry_id": 999999},
+        {"user_id": member_id, "username": "confirm_member", "role": "member", "identity_type": "vendor", "vendor_account_id": vendor_account_id, "vendor_username": "vendor_confirm_only", "vendor_name": "Vendor Confirm"},
+        "auth_required",
+        0,
+        0,
+        0,
+    ),
+    (
+        "malformed internal vendor",
+        requirement_payload,
+        {"user_id": "invalid", "username": "bad", "role": "member", "identity_type": "vendor", "vendor_account_id": vendor_account_id, "vendor_username": "vendor_confirm_only", "vendor_name": "Vendor Confirm"},
+        "auth_required",
+        0,
+        0,
+        0,
+    ),
+    (
+        "malformed internal vendor missing",
+        {**requirement_payload, "entry_id": 999999},
+        {"user_id": "invalid", "username": "bad", "role": "member", "identity_type": "vendor", "vendor_account_id": vendor_account_id, "vendor_username": "vendor_confirm_only", "vendor_name": "Vendor Confirm"},
+        "auth_required",
+        0,
+        0,
+        0,
+    ),
+)
+actor_pair_results = {}
+for label, payload, session_values, expected_code, auth_db_calls, users_queries, vendor_queries in rejected_actor_cases:
+    with client.session_transaction() as session:
+        session.clear()
+        session.update(session_values)
+    before = full_database_manifest()
+    response, counters = post_requirement_with_phase_counts(payload)
+    assert_error_response(response, status=403, code=expected_code, label=label)
+    assert_rejected_actor_phase(counters, label=label)
+    if full_database_manifest() != before:
+        raise SystemExit(f"{label} changed application manifest or sequence")
+    if counters["auth_db_factory_calls"] != auth_db_calls or counters["auth_context_entries"] != auth_db_calls:
+        raise SystemExit(f"{label} auth connection count mismatch: {counters}")
+    if counters["users_auth_queries"] != users_queries or counters["vendor_auth_queries"] != vendor_queries:
+        raise SystemExit(f"{label} auth table query count mismatch: {counters}")
+    actor_pair_results[label] = {
+        "status": response.status_code,
+        "payload": response.get_json(),
+        "target_db_factory_calls": counters["target_db_factory_calls"],
+        "target_context_entries": counters["target_context_entries"],
+        "target_queries": counters["target_queries"],
+        "target_writes": counters["target_writes"],
+    }
+
+for existing_label, missing_label in (
+    ("malformed internal", "malformed internal missing"),
+    ("stale internal", "stale internal missing"),
+    ("partial vendor", "partial vendor missing"),
+    ("stale vendor", "stale vendor missing"),
+    ("mixed internal vendor", "mixed internal vendor missing"),
+    ("malformed internal vendor", "malformed internal vendor missing"),
+):
+    existing_result = actor_pair_results[existing_label]
+    missing_result = actor_pair_results[missing_label]
+    if existing_result != missing_result:
+        raise SystemExit(
+            f"{existing_label} existing/missing target responses or phase counts differ: "
+            f"existing={existing_result}, missing={missing_result}"
+        )
+
+def assert_internal_phase(counters, *, label, expected_writes):
+    expected = {
+        "actor_resolutions": 1,
+        "auth_db_factory_calls": 1,
+        "auth_context_entries": 1,
+        "users_auth_queries": 1,
+        "target_db_factory_calls": 1,
+        "target_context_entries": 1,
+        "target_writes": expected_writes,
+        "target_users_queries": 0,
+        "target_vendor_account_queries": 0,
+    }
+    for key, value in expected.items():
+        if counters[key] != value:
+            raise SystemExit(f"{label} expected {key}={value}: {counters}")
+    actor = counters["resolved_actor"]
+    if isinstance(actor, sqlite3.Row) or not isinstance(actor, dict) or set(actor) != {"id", "username", "role"}:
+        raise SystemExit(f"{label} must receive minimal plain actor snapshot: {actor!r}")
+    if any(key in actor for key in ("password_hash", "display_name", "created_at", "session", "credential")):
+        raise SystemExit(f"{label} actor snapshot exposed sensitive fields")
+    if counters["auth_target_queries"] != 0:
+        raise SystemExit(f"{label} auth phase queried target tables: {counters}")
+
+set_member_session()
+with module.db() as conn:
+    member_before = dict(conn.execute("SELECT * FROM vendor_work_entries WHERE id = ?", (phase_member_entry_id,)).fetchone())
+member_manifest_before = full_database_manifest()
+response, counters = post_requirement_with_phase_counts({"entry_id": phase_member_entry_id, "sheet_id": sheet_id})
+if response.status_code != 200 or response.get_json().get("ok") is not True:
+    raise SystemExit("member phase-count requirement confirmation should succeed")
+assert_internal_phase(counters, label="member success", expected_writes=1)
+if counters["resolved_actor"]["username"] != "confirm_member":
+    raise SystemExit("member actor snapshot must use canonical DB username")
+with module.db() as conn:
+    member_after = dict(conn.execute("SELECT * FROM vendor_work_entries WHERE id = ?", (phase_member_entry_id,)).fetchone())
+member_manifest_after = full_database_manifest()
+before_rows, before_sequences = member_manifest_before
+after_rows, after_sequences = member_manifest_after
+if before_sequences != after_sequences:
+    raise SystemExit("member requirement confirmation must not change sqlite_sequence")
+for table_name in before_rows:
+    if table_name != "vendor_work_entries" and before_rows[table_name] != after_rows[table_name]:
+        raise SystemExit(f"member requirement confirmation changed unexpected table {table_name}")
+if len(before_rows["vendor_work_entries"]) != len(after_rows["vendor_work_entries"]):
+    raise SystemExit("member requirement confirmation must not change entry row count")
+changed_keys = {key for key in member_before if member_before[key] != member_after[key]}
+allowed_changed_keys = {"requirement_status", "requirement_confirmed_by", "requirement_confirmed_at", "updated_at"}
+if not {"requirement_status", "requirement_confirmed_by", "requirement_confirmed_at"}.issubset(changed_keys):
+    raise SystemExit(f"member confirmation did not change required confirmation fields: {changed_keys}")
+if not changed_keys.issubset(allowed_changed_keys):
+    raise SystemExit(f"member confirmation changed unexpected entry fields: {changed_keys}")
+if member_after["requirement_confirmed_by"] != counters["resolved_actor"]["username"]:
+    raise SystemExit("requirement_confirmed_by must come from resolved actor snapshot")
+
+set_admin_session()
+response, counters = post_requirement_with_phase_counts({"entry_id": phase_admin_entry_id, "sheet_id": sheet_id})
+if response.status_code != 200 or response.get_json().get("ok") is not True:
+    raise SystemExit("admin requirement confirmation should remain allowed")
+assert_internal_phase(counters, label="admin success", expected_writes=1)
+if response.get_json()["entry"]["requirement_confirmed_by"] != counters["resolved_actor"]["username"]:
+    raise SystemExit("admin requirement_confirmed_by must come from resolved actor snapshot")
+
+set_member_session()
+response, counters = post_requirement_with_phase_counts({"entry_id": 999999, "sheet_id": sheet_id})
+assert_error_response(response, status=404, code="entry_not_found", label="internal missing entry")
+assert_internal_phase(counters, label="internal missing entry", expected_writes=0)
+
+set_member_session()
+response, counters = post_requirement_with_phase_counts({"entry_id": target_entry_id, "sheet_id": 999999})
+assert_error_response(response, status=404, code="sheet_not_found", label="internal missing sheet")
+assert_internal_phase(counters, label="internal missing sheet", expected_writes=0)
+
+set_member_session(with_current_site=False)
+before = full_database_manifest()
+response = client.post(requirement_path, json=requirement_payload)
+assert_error_response(response, status=403, code="site_context_invalid", label="missing current site")
+if full_database_manifest() != before:
+    raise SystemExit("missing current site rejection changed manifest or sequences")
+
+set_member_session()
+with client.session_transaction() as session:
+    session["current_site_id"] = 999999
+    session["current_site_name"] = "stale site"
+before = full_database_manifest()
+response = client.post(requirement_path, json=requirement_payload)
+assert_error_response(response, status=403, code="site_context_invalid", label="stale current site")
+if full_database_manifest() != before:
+    raise SystemExit("stale current site rejection changed manifest or sequences")
+
+with module.db() as conn:
+    conn.execute(
+        "DELETE FROM user_site_permissions WHERE user_id = ? AND site_id = ?",
+        (member_id, default_site_id),
+    )
+set_member_session()
+before = full_database_manifest()
+response = client.post(requirement_path, json=requirement_payload)
+assert_error_response(response, status=403, code="site_permission_missing", label="revoked site permission")
+if full_database_manifest() != before:
+    raise SystemExit("revoked permission rejection changed manifest or sequences")
+with module.db() as conn:
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, default_site_id, "member"),
+    )
 
 set_member_session()
 before_confirm = fetch_confirmation_snapshot(target_entry_id)
@@ -11182,23 +11630,32 @@ after_sheet_mismatch = fetch_confirmation_snapshot(target_entry_id)
 if after_sheet_mismatch != before_sheet_mismatch:
     raise SystemExit("sheet mismatch requirement confirmation must not modify stored row")
 
+if postgres_calls:
+    raise SystemExit("requirement confirmation auth-order smoke must not connect to PostgreSQL")
+
 print("vendor-work-entry requirement confirmation smoke PASS")
+print("requirement confirmation auth order focused smoke PASS")
 """
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            script,
-            str(db_path),
-            str(ROOT_DIR),
-        ],
-        cwd=ROOT_DIR,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    with tempfile.TemporaryDirectory(prefix="requirement-auth-order-") as script_tmpdir:
+        script_path = Path(script_tmpdir) / "requirement_auth_order_smoke.py"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(script_path),
+                str(db_path),
+                str(ROOT_DIR),
+            ],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
     if "vendor-work-entry requirement confirmation smoke PASS" not in result.stdout:
         raise AssertionError("vendor-work-entry requirement confirmation smoke subprocess did not report PASS.")
+    if "requirement confirmation auth order focused smoke PASS" not in result.stdout:
+        raise AssertionError("requirement confirmation auth-order subprocess did not report PASS.")
+    print("requirement confirmation auth order focused smoke PASS")
 
 
 def run_vendor_work_entry_formal_approve_smoke(db_path: Path) -> None:
