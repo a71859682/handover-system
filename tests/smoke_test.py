@@ -16833,6 +16833,9 @@ def run_vendor_authenticated_submit_path_smoke(db_path: Path) -> None:
         )
     if "vendor authenticated submit child smoke PASS" not in result.stdout:
         raise AssertionError("vendor authenticated submit child did not report PASS")
+    if "vendor work entry authentication order focused smoke PASS" not in result.stdout:
+        raise AssertionError("vendor work entry authentication order child did not report PASS")
+    print("vendor work entry authentication order focused smoke PASS")
 
 
 def _redact_vendor_smoke_child_output(value: str) -> str:
@@ -17294,7 +17297,7 @@ def _run_vendor_authenticated_submit_path_smoke(db_path: Path, module) -> None:
     )
     if update_second.status_code != 200 or update_second.get_json()["entry"]["work_content"] != "Second planned entry updated":
         raise AssertionError("vendor should update the specified owned entry")
-    expect_rejected_request(
+    missing_entry_response = expect_rejected_request(
         label="missing_entry",
         request_call=lambda: unique_client.post(
             "/api/vendor-work-entry", json=payload(id=999999)
@@ -17302,15 +17305,17 @@ def _run_vendor_authenticated_submit_path_smoke(db_path: Path, module) -> None:
         expected_status=404,
         expected_code="entry_not_found",
     )
-    expect_rejected_request(
+    cross_vendor_response = expect_rejected_request(
         label="cross_vendor_update",
         request_call=lambda: unique_client.post(
             "/api/vendor-work-entry", json=payload(id=other_entry)
         ),
-        expected_status=403,
-        expected_code="vendor_entry_owner_mismatch",
+        expected_status=404,
+        expected_code="entry_not_found",
         target_entry_id=other_entry,
     )
+    if cross_vendor_response.get_json() != missing_entry_response.get_json():
+        raise AssertionError("vendor missing and foreign-owned update responses must be completely identical")
     expect_rejected_request(
         label="cross_sheet_update",
         request_call=lambda: unique_client.post(
@@ -17454,6 +17459,373 @@ def _run_vendor_authenticated_submit_path_smoke(db_path: Path, module) -> None:
         if conn.execute("SELECT COUNT(*) FROM vendor_work_entries WHERE vendor_name = 'Vendor Unique'").fetchone()[0] != 4:
             raise AssertionError("rejected paths must not create vendor work entries")
 
+    with closing(module.db()) as conn:
+        admin_id = int(conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()[0])
+        unique_vendor_account = conn.execute(
+            "SELECT id, username, vendor_name FROM vendor_accounts WHERE username = 'vendor_unique_submit'"
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active) VALUES (?, ?, ?, 0)",
+            ("vendor_inactive_auth_order", module.generate_password_hash("vendor-pass"), "Vendor Inactive Actor"),
+        )
+        inactive_vendor_account_id = int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        conn.commit()
+
+    auth_order_original_db = module.db
+    auth_order_original_resolver = module.resolve_vendor_work_entry_mutation_actor
+    auth_order_original_postgres = module.get_primary_postgres_connection
+    auth_order_postgres_calls = []
+    auth_order_target_tables = (
+        "sites",
+        "sheets",
+        "tasks",
+        "vendor_work_entries",
+        "formal_approvals",
+        "formal_approval_events",
+        "scheduling_entries",
+    )
+
+    def sql_references_table(normalized_sql, table_name):
+        tokens = normalized_sql.replace("(", " ").replace(")", " ").replace(",", " ").split()
+        return any(
+            index > 0
+            and tokens[index - 1] in {"from", "join", "update", "into"}
+            and token.strip('"`[]') == table_name
+            for index, token in enumerate(tokens)
+        )
+
+    class VendorWorkEntryAuthOrderTraceConnection:
+        def __init__(self, connection, counters, phase):
+            self.connection = connection
+            self.counters = counters
+            self.phase = phase
+
+        def __enter__(self):
+            self.counters[f"{self.phase}_context_entries"] += 1
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return self.connection.__exit__(exc_type, exc, traceback)
+
+        def execute(self, sql, parameters=()):
+            normalized = " ".join(str(sql).lower().split())
+            self.counters[f"{self.phase}_statements"].append(normalized)
+            is_write = normalized.startswith(("insert ", "update ", "delete ", "replace "))
+            if self.phase == "auth":
+                if sql_references_table(normalized, "users"):
+                    self.counters["users_auth_queries"] += 1
+                if sql_references_table(normalized, "vendor_accounts"):
+                    self.counters["vendor_auth_queries"] += 1
+                if any(sql_references_table(normalized, table) for table in auth_order_target_tables):
+                    self.counters["auth_target_queries"] += 1
+            else:
+                if sql_references_table(normalized, "users"):
+                    self.counters["target_users_queries"] += 1
+                if sql_references_table(normalized, "vendor_accounts"):
+                    self.counters["target_vendor_account_queries"] += 1
+                if any(sql_references_table(normalized, table) for table in auth_order_target_tables):
+                    self.counters["target_queries"] += 1
+                if is_write:
+                    self.counters["target_writes"] += 1
+                    if not self.connection.in_transaction:
+                        self.counters["transaction_starts"] += 1
+            return self.connection.execute(sql, parameters)
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    def post_vendor_work_entry_with_phase_counts(test_client, request_payload):
+        counters = {
+            "phase": "target",
+            "actor_resolutions": 0,
+            "resolved_actor": None,
+            "auth_db_factory_calls": 0,
+            "auth_context_entries": 0,
+            "auth_statements": [],
+            "users_auth_queries": 0,
+            "vendor_auth_queries": 0,
+            "auth_target_queries": 0,
+            "target_db_factory_calls": 0,
+            "target_context_entries": 0,
+            "target_statements": [],
+            "target_queries": 0,
+            "target_writes": 0,
+            "target_users_queries": 0,
+            "target_vendor_account_queries": 0,
+            "transaction_starts": 0,
+        }
+
+        def tracing_resolver():
+            counters["actor_resolutions"] += 1
+            counters["phase"] = "auth"
+            try:
+                actor = auth_order_original_resolver()
+                counters["resolved_actor"] = actor
+                return actor
+            finally:
+                counters["phase"] = "target"
+
+        def tracing_db():
+            phase = str(counters["phase"])
+            counters[f"{phase}_db_factory_calls"] += 1
+            return VendorWorkEntryAuthOrderTraceConnection(auth_order_original_db(), counters, phase)
+
+        module.db = tracing_db
+        module.resolve_vendor_work_entry_mutation_actor = tracing_resolver
+        module.get_primary_postgres_connection = lambda: auth_order_postgres_calls.append("unexpected")
+        try:
+            response = test_client.post("/api/vendor-work-entry", json=request_payload, follow_redirects=False)
+        finally:
+            module.db = auth_order_original_db
+            module.resolve_vendor_work_entry_mutation_actor = auth_order_original_resolver
+            module.get_primary_postgres_connection = auth_order_original_postgres
+        counters.pop("phase")
+        return response, counters
+
+    def set_session(test_client, values):
+        with test_client.session_transaction() as auth_session:
+            auth_session.clear()
+            auth_session.update(values)
+
+    def full_manifest():
+        with closing(auth_order_original_db()) as conn:
+            conn.row_factory = sqlite3.Row
+            tables = tuple(
+                str(row["name"])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                ).fetchall()
+            )
+            rows = {}
+            for table_name in tables:
+                columns = tuple(
+                    str(row["name"]) for row in conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()
+                )
+                order_by = ", ".join(f'"{column}"' for column in columns)
+                rows[table_name] = tuple(
+                    tuple(row[column] for column in columns)
+                    for row in conn.execute(f'SELECT * FROM "{table_name}" ORDER BY {order_by}').fetchall()
+                )
+            sequences = tuple(
+                tuple(row) for row in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name").fetchall()
+            )
+            schema = tuple(
+                tuple(row)
+                for row in conn.execute(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                    "WHERE type IN ('table', 'index') ORDER BY type, name"
+                ).fetchall()
+            )
+            return rows, sequences, schema
+
+    def assert_structured_error(response, *, status, code, label):
+        body = response.get_json(silent=True)
+        if response.status_code != status or set(body or {}) != {"ok", "error"} or body.get("ok") is not False:
+            raise AssertionError(f"{label} must return structured {status}/{code}: {response.status_code}/{body}")
+        if set(body["error"]) != {"code", "message"} or body["error"].get("code") != code:
+            raise AssertionError(f"{label} must return structured {status}/{code}: {body}")
+
+    def assert_rejected_actor_phase(counters, *, label):
+        if counters["actor_resolutions"] != 1:
+            raise AssertionError(f"{label} must resolve actor exactly once: {counters}")
+        for key in (
+            "target_db_factory_calls",
+            "target_context_entries",
+            "target_queries",
+            "target_writes",
+            "target_users_queries",
+            "target_vendor_account_queries",
+            "transaction_starts",
+        ):
+            if counters[key] != 0:
+                raise AssertionError(f"{label} expected {key}=0: {counters}")
+        if counters["auth_target_queries"] != 0:
+            raise AssertionError(f"{label} auth phase queried target tables: {counters}")
+
+    actor_cases = (
+        ("no session", {}, 401, "auth_required", 0, 0, 0),
+        ("malformed internal", {"user_id": "invalid", "username": "forged", "role": "admin"}, 401, "auth_required", 0, 0, 0),
+        ("stale internal", {"user_id": 999999, "username": "stale", "role": "admin"}, 401, "auth_required", 1, 1, 0),
+        ("partial vendor", {"identity_type": "vendor", "vendor_username": "partial"}, 401, "vendor_session_inactive", 1, 0, 0),
+        (
+            "stale vendor",
+            {"identity_type": "vendor", "vendor_account_id": 999999, "vendor_username": "stale", "vendor_name": "Stale Vendor"},
+            401,
+            "vendor_session_inactive",
+            1,
+            0,
+            1,
+        ),
+        (
+            "inactive vendor",
+            {"identity_type": "vendor", "vendor_account_id": inactive_vendor_account_id, "vendor_username": "vendor_inactive_auth_order", "vendor_name": "Vendor Inactive Actor"},
+            401,
+            "vendor_session_inactive",
+            1,
+            0,
+            1,
+        ),
+        (
+            "forged vendor",
+            {"identity_type": "vendor", "vendor_account_id": int(unique_vendor_account["id"]), "vendor_username": "forged", "vendor_name": str(unique_vendor_account["vendor_name"])},
+            401,
+            "vendor_session_inactive",
+            1,
+            0,
+            1,
+        ),
+        (
+            "mixed session",
+            {"user_id": member_id, "username": "forged", "role": "admin", "identity_type": "vendor", "vendor_account_id": int(unique_vendor_account["id"]), "vendor_username": str(unique_vendor_account["username"]), "vendor_name": str(unique_vendor_account["vendor_name"])},
+            409,
+            "ambiguous_actor_session",
+            0,
+            0,
+            0,
+        ),
+    )
+    mode_pairs = (
+        ("create", payload(), payload(sheet_id=999999)),
+        ("update", payload(id=guard_entry_id), payload(id=999999)),
+    )
+    for actor_label, session_values, expected_status, expected_code, auth_db_calls, users_queries, vendor_queries in actor_cases:
+        for mode_label, existing_payload, missing_payload in mode_pairs:
+            pair_results = []
+            for target_label, request_payload in (("existing", existing_payload), ("missing", missing_payload)):
+                case_client = module.app.test_client()
+                set_session(case_client, session_values)
+                before = full_manifest()
+                response, counters = post_vendor_work_entry_with_phase_counts(case_client, request_payload)
+                label = f"{actor_label} {mode_label} {target_label}"
+                assert_structured_error(response, status=expected_status, code=expected_code, label=label)
+                assert_rejected_actor_phase(counters, label=label)
+                if full_manifest() != before:
+                    raise AssertionError(f"{label} changed rows, schema, or sequences")
+                if counters["auth_db_factory_calls"] != auth_db_calls or counters["auth_context_entries"] != auth_db_calls:
+                    raise AssertionError(f"{label} auth connection counts differ: {counters}")
+                if counters["users_auth_queries"] != users_queries or counters["vendor_auth_queries"] != vendor_queries:
+                    raise AssertionError(f"{label} auth query counts differ: {counters}")
+                pair_results.append((response.status_code, response.get_json()))
+            if pair_results[0] != pair_results[1]:
+                raise AssertionError(f"{actor_label} {mode_label} existing/missing responses differ: {pair_results}")
+
+    unauth_invalid_client = module.app.test_client()
+    set_session(unauth_invalid_client, {})
+    response, counters = post_vendor_work_entry_with_phase_counts(unauth_invalid_client, {})
+    assert_structured_error(response, status=401, code="auth_required", label="actor rejection before validation")
+    assert_rejected_actor_phase(counters, label="actor rejection before validation")
+
+    valid_vendor_session = {
+        "identity_type": "vendor",
+        "vendor_account_id": int(unique_vendor_account["id"]),
+        "vendor_username": str(unique_vendor_account["username"]),
+        "vendor_name": str(unique_vendor_account["vendor_name"]),
+    }
+    validation_client = module.app.test_client()
+    set_session(validation_client, valid_vendor_session)
+    validation_before = full_manifest()
+    response, counters = post_vendor_work_entry_with_phase_counts(
+        validation_client,
+        payload(pre_entry_requirement="x" * 501),
+    )
+    assert_structured_error(response, status=400, code="invalid_pre_entry_requirement", label="valid actor validation")
+    if counters["actor_resolutions"] != 1 or counters["target_db_factory_calls"] != 0:
+        raise AssertionError(f"valid actor validation must stop before target phase: {counters}")
+    if full_manifest() != validation_before:
+        raise AssertionError("valid actor validation changed rows, schema, or sequences")
+
+    def assert_success_phase(response, counters, *, actor_type, label):
+        if response.status_code != 200 or response.get_json().get("ok") is not True:
+            raise AssertionError(f"{label} should preserve success response: {response.status_code}/{response.get_json()}")
+        if counters["actor_resolutions"] != 1 or counters["target_db_factory_calls"] != 1:
+            raise AssertionError(f"{label} must resolve actor once and open one target connection: {counters}")
+        if counters["target_context_entries"] != 1 or counters["target_writes"] != 1 or counters["transaction_starts"] != 1:
+            raise AssertionError(f"{label} must preserve one target write transaction: {counters}")
+        if counters["target_users_queries"] or counters["target_vendor_account_queries"]:
+            raise AssertionError(f"{label} target phase must not reconstruct actor: {counters}")
+        actor = counters["resolved_actor"]
+        if not isinstance(actor, dict) or set(actor) != {"actor_type", "snapshot"} or actor["actor_type"] != actor_type:
+            raise AssertionError(f"{label} must use canonical actor envelope: {actor!r}")
+        snapshot = actor["snapshot"]
+        if isinstance(snapshot, sqlite3.Row) or not isinstance(snapshot, dict) or set(snapshot) != {"id", "username", "role" if actor_type == "internal" else "vendor_name"}:
+            raise AssertionError(f"{label} must use minimal canonical snapshot: {snapshot!r}")
+
+    member_phase_client = module.app.test_client()
+    set_session(
+        member_phase_client,
+        {"user_id": member_id, "username": "forged-session-name", "role": "admin", "current_site_id": 1},
+    )
+    response, counters = post_vendor_work_entry_with_phase_counts(
+        member_phase_client,
+        payload(entry_order=50, work_content="Member canonical create"),
+    )
+    assert_success_phase(response, counters, actor_type="internal", label="member create")
+    if counters["resolved_actor"]["snapshot"]["username"] != "rejected_path_member" or counters["resolved_actor"]["snapshot"]["role"] != "member":
+        raise AssertionError("member create must use canonical DB identity instead of session identity")
+    member_created_id = int(response.get_json()["entry"]["id"])
+    response, counters = post_vendor_work_entry_with_phase_counts(
+        member_phase_client,
+        payload(id=member_created_id, entry_order=50, work_content="Member canonical update"),
+    )
+    assert_success_phase(response, counters, actor_type="internal", label="member update")
+
+    admin_phase_client = module.app.test_client()
+    set_session(admin_phase_client, {"user_id": admin_id, "username": "forged-admin", "role": "member"})
+    response, counters = post_vendor_work_entry_with_phase_counts(
+        admin_phase_client,
+        payload(entry_order=51, work_content="Admin canonical create"),
+    )
+    assert_success_phase(response, counters, actor_type="internal", label="admin create")
+    if counters["resolved_actor"]["snapshot"]["username"] != "admin" or counters["resolved_actor"]["snapshot"]["role"] != "admin":
+        raise AssertionError("admin create must use canonical DB identity instead of session identity")
+
+    vendor_phase_client = module.app.test_client()
+    set_session(vendor_phase_client, valid_vendor_session)
+    response, counters = post_vendor_work_entry_with_phase_counts(
+        vendor_phase_client,
+        payload(entry_order=52, work_content="Vendor canonical create"),
+    )
+    assert_success_phase(response, counters, actor_type="vendor", label="vendor create")
+    vendor_created_entry = response.get_json()["entry"]
+    if vendor_created_entry["vendor_name"] != "Vendor Unique" or counters["resolved_actor"]["snapshot"]["vendor_name"] != "Vendor Unique":
+        raise AssertionError("vendor create must persist canonical vendor identity")
+    response, counters = post_vendor_work_entry_with_phase_counts(
+        vendor_phase_client,
+        payload(id=int(vendor_created_entry["id"]), entry_order=52, work_content="Vendor canonical update"),
+    )
+    assert_success_phase(response, counters, actor_type="vendor", label="vendor owned update")
+
+    nondisclosure_client = module.app.test_client()
+    set_session(nondisclosure_client, valid_vendor_session)
+    nondisclosure_before = full_manifest()
+    missing_response, missing_counters = post_vendor_work_entry_with_phase_counts(
+        nondisclosure_client,
+        payload(id=999999),
+    )
+    set_session(nondisclosure_client, valid_vendor_session)
+    foreign_response, foreign_counters = post_vendor_work_entry_with_phase_counts(
+        nondisclosure_client,
+        payload(id=other_entry),
+    )
+    for label, response, counters in (
+        ("vendor missing update", missing_response, missing_counters),
+        ("vendor foreign update", foreign_response, foreign_counters),
+    ):
+        assert_structured_error(response, status=404, code="entry_not_found", label=label)
+        if counters["actor_resolutions"] != 1 or counters["target_writes"] or counters["transaction_starts"]:
+            raise AssertionError(f"{label} must resolve once without writing: {counters}")
+    if missing_response.get_json() != foreign_response.get_json():
+        raise AssertionError("vendor missing and foreign update responses must match exactly")
+    if full_manifest() != nondisclosure_before:
+        raise AssertionError("vendor missing/foreign non-disclosure checks changed rows, schema, or sequences")
+    if auth_order_postgres_calls:
+        raise AssertionError(f"vendor work entry route unexpectedly used PostgreSQL: {auth_order_postgres_calls}")
+    if module.db is not auth_order_original_db or module.resolve_vendor_work_entry_mutation_actor is not auth_order_original_resolver:
+        raise AssertionError("vendor work entry auth-order monkeypatches were not restored")
+    if module.get_primary_postgres_connection is not auth_order_original_postgres:
+        raise AssertionError("vendor work entry PostgreSQL sentinel was not restored")
+
     template_text = (ROOT_DIR / "templates" / "vendor_work_entry.html").read_text(encoding="utf-8")
     for marker in (
         'pre_entry_requirement: formData.get("pre_entry_requirement") || ""',
@@ -17468,6 +17840,8 @@ def _run_vendor_authenticated_submit_path_smoke(db_path: Path, module) -> None:
     ):
         if marker not in template_text:
             raise AssertionError(f"vendor frontend submit contract missing marker: {marker}")
+
+    print("vendor work entry authentication order focused smoke PASS")
 
 
 def assert_vendor_submit_navigation_guard(template_source: str) -> None:

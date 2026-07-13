@@ -1949,6 +1949,7 @@ def authorize_vendor_work_entry_write(
     *,
     sheet_id: int,
     vendor_name: str,
+    internal_user: dict[str, object],
     entry_id: int | None = None,
 ) -> dict[str, object]:
     context = resolve_vendor_work_entry_write_context(
@@ -1957,13 +1958,10 @@ def authorize_vendor_work_entry_write(
         vendor_name=vendor_name,
         entry_id=entry_id,
     )
-    user = _current_internal_user()
-    if user is None:
-        raise LookupError("auth_required")
-    if is_global_admin(user):
+    if is_global_admin(internal_user):
         return context
 
-    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    current_site_id = _resolve_non_admin_read_site_id(conn, internal_user)
     if int(context["site_id"]) != int(current_site_id):
         raise LookupError("write_target_not_in_current_site")
     return context
@@ -2413,26 +2411,30 @@ class FormalApprovalCancellationError(Exception):
         self.status = status
 
 
+def _resolve_canonical_internal_actor_snapshot() -> dict[str, object]:
+    try:
+        user_id = int(session.get("user_id"))
+    except (TypeError, ValueError):
+        raise LookupError("auth_required") from None
+    if user_id <= 0:
+        raise LookupError("auth_required")
+    user = _current_internal_user()
+    if user is None:
+        raise LookupError("auth_required")
+    return {
+        "id": int(user["id"]),
+        "username": str(user["username"] or ""),
+        "role": str(user["role"] or ""),
+    }
+
+
 def resolve_canonical_internal_mutation_actor() -> dict[str, object]:
     try:
         actor_type = resolve_vendor_work_entry_actor_session_type()
     except LookupError as exc:
         raise LookupError("auth_required") from exc
     if actor_type == "internal":
-        try:
-            user_id = int(session.get("user_id"))
-        except (TypeError, ValueError):
-            raise LookupError("auth_required") from None
-        if user_id <= 0:
-            raise LookupError("auth_required")
-        user = _current_internal_user()
-        if user is None:
-            raise LookupError("auth_required")
-        return {
-            "id": int(user["id"]),
-            "username": str(user["username"] or ""),
-            "role": str(user["role"] or ""),
-        }
+        return _resolve_canonical_internal_actor_snapshot()
     if actor_type == "vendor":
         try:
             with db() as auth_conn:
@@ -4182,10 +4184,7 @@ def resolve_vendor_work_entry_actor_session_type() -> str:
     return "vendor"
 
 
-def resolve_vendor_work_entry_actor(conn: sqlite3.Connection) -> dict[str, object]:
-    actor_type = resolve_vendor_work_entry_actor_session_type()
-    if actor_type == "internal":
-        return {"actor_type": "internal"}
+def _resolve_canonical_vendor_work_entry_actor_snapshot(conn: sqlite3.Connection) -> dict[str, object]:
     if not is_vendor_session():
         clear_vendor_session()
         raise LookupError("vendor_session_inactive")
@@ -4215,10 +4214,37 @@ def resolve_vendor_work_entry_actor(conn: sqlite3.Connection) -> dict[str, objec
         raise LookupError("vendor_session_inactive")
 
     return {
-        "actor_type": "vendor",
-        "vendor_account_id": int(account["id"]),
-        "vendor_username": str(account["username"]),
+        "id": int(account["id"]),
+        "username": str(account["username"]),
         "vendor_name": str(account["vendor_name"]),
+    }
+
+
+def resolve_vendor_work_entry_actor(conn: sqlite3.Connection) -> dict[str, object]:
+    actor_type = resolve_vendor_work_entry_actor_session_type()
+    if actor_type == "internal":
+        return {"actor_type": "internal"}
+    vendor_actor = _resolve_canonical_vendor_work_entry_actor_snapshot(conn)
+    return {
+        "actor_type": "vendor",
+        "vendor_account_id": int(vendor_actor["id"]),
+        "vendor_username": str(vendor_actor["username"]),
+        "vendor_name": str(vendor_actor["vendor_name"]),
+    }
+
+
+def resolve_vendor_work_entry_mutation_actor() -> dict[str, object]:
+    actor_type = resolve_vendor_work_entry_actor_session_type()
+    if actor_type == "internal":
+        return {
+            "actor_type": "internal",
+            "snapshot": _resolve_canonical_internal_actor_snapshot(),
+        }
+    with db() as auth_conn:
+        vendor_actor = _resolve_canonical_vendor_work_entry_actor_snapshot(auth_conn)
+    return {
+        "actor_type": "vendor",
+        "snapshot": vendor_actor,
     }
 
 
@@ -4273,7 +4299,6 @@ def _handle_vendor_submit_lookup_error(exc: LookupError):
         "vendor_target_sheet_mismatch": (403, "sheet_id does not match the trusted vendor target."),
         "vendor_identity_mismatch": (403, "vendor_name does not match the authenticated vendor."),
         "entry_not_found": (404, "vendor work entry id was not found."),
-        "vendor_entry_owner_mismatch": (403, "vendor work entry belongs to a different vendor."),
         "vendor_entry_sheet_mismatch": (403, "vendor work entry belongs to a different sheet."),
         "vendor_business_date_mismatch": (409, "business_date cannot differ from the canonical business date."),
         "vendor_target_stale": (409, "trusted vendor target changed before the write completed."),
@@ -7235,11 +7260,10 @@ def api_vendor_contact():
 
 @app.route("/api/vendor-work-entry", methods=["POST"])
 def api_vendor_work_entry():
-    with db() as actor_conn:
-        try:
-            resolve_vendor_work_entry_actor(actor_conn)
-        except LookupError as exc:
-            return _handle_vendor_work_entry_actor_lookup_error(exc)
+    try:
+        actor = resolve_vendor_work_entry_mutation_actor()
+    except LookupError as exc:
+        return _handle_vendor_work_entry_actor_lookup_error(exc)
 
     data = request.get_json(silent=True) or {}
     try:
@@ -7268,13 +7292,9 @@ def api_vendor_work_entry():
         )
 
     with db() as conn:
-        try:
-            actor = resolve_vendor_work_entry_actor(conn)
-        except LookupError as exc:
-            return _handle_vendor_work_entry_actor_lookup_error(exc)
-
         if actor["actor_type"] == "vendor":
-            trusted_vendor_name = str(actor["vendor_name"])
+            vendor_actor = actor["snapshot"]
+            trusted_vendor_name = str(vendor_actor["vendor_name"])
             canonical_business_date = resolve_crew_business_date()
             try:
                 trusted_sheet_id = resolve_vendor_work_entry_trusted_target(
@@ -7294,14 +7314,12 @@ def api_vendor_work_entry():
                         """
                         SELECT id, sheet_id, vendor_name, business_date
                         FROM vendor_work_entries
-                        WHERE id = ?
+                        WHERE id = ? AND vendor_name = ?
                         """,
-                        (entry_id,),
+                        (entry_id, trusted_vendor_name),
                     ).fetchone()
                     if existing_entry is None:
                         raise LookupError("entry_not_found")
-                    if str(existing_entry["vendor_name"]) != trusted_vendor_name:
-                        raise LookupError("vendor_entry_owner_mismatch")
                     if int(existing_entry["sheet_id"]) != trusted_sheet_id:
                         raise LookupError("vendor_entry_sheet_mismatch")
                     if str(existing_entry["business_date"]) != canonical_business_date:
@@ -7388,10 +7406,12 @@ def api_vendor_work_entry():
             return jsonify({"ok": True, "entry": dict(row) if row else None})
 
         try:
+            internal_actor = actor["snapshot"]
             vendor_work_entry_context = authorize_vendor_work_entry_write(
                 conn,
                 sheet_id=sheet_id,
                 vendor_name=vendor_name,
+                internal_user=internal_actor,
                 entry_id=entry_id,
             )
         except LookupError as exc:
