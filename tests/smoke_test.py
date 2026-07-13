@@ -13338,6 +13338,13 @@ with module.db() as conn:
         (member_id, default_site_id, "member"),
     )
     conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("schedule_no_permission", "schedule_no_permission", member_password_hash, "member"),
+    )
+    unauthorized_member_id = int(
+        conn.execute("SELECT id FROM users WHERE username = ?", ("schedule_no_permission",)).fetchone()["id"]
+    )
+    conn.execute(
         '''
         INSERT INTO vendor_accounts (username, password_hash, vendor_name, is_active)
         VALUES (?, ?, ?, ?)
@@ -13421,6 +13428,37 @@ def fetch_db_snapshot():
             "vendor_work_entries": int(conn.execute("SELECT COUNT(*) FROM vendor_work_entries").fetchone()[0]),
         }
 
+def logical_manifest():
+    with module.db() as conn:
+        conn.row_factory = sqlite3.Row
+        tables = [
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        ]
+        rows_by_table = {}
+        for table_name in tables:
+            columns = [str(row["name"]) for row in conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()]
+            order_by = ", ".join(f'"{column}"' for column in columns)
+            rows = conn.execute(f'SELECT * FROM "{table_name}" ORDER BY {order_by}').fetchall()
+            rows_by_table[table_name] = (
+                tuple(columns),
+                tuple(tuple(row[column] for column in columns) for row in rows),
+            )
+        sequences = tuple(
+            tuple(row)
+            for row in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name").fetchall()
+        )
+        schema = tuple(
+            tuple(row)
+            for row in conn.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                "WHERE type IN ('table', 'index') ORDER BY type, name"
+            ).fetchall()
+        )
+        return rows_by_table, sequences, schema
+
 client = module.app.test_client()
 
 def set_member_session(*, with_current_site=True):
@@ -13435,6 +13473,231 @@ def set_member_session(*, with_current_site=True):
             session["current_site_name"] = str(default_site_name)
             session["site_selection_required"] = False
 
+schedule_path = "/api/schedule-entry"
+schedule_payload = {
+    "entry_id": int(ready_entry_id),
+    "sheet_id": int(sheet_id),
+    "action": "schedule_entry",
+    "scheduled_date": "2026-07-08",
+    "scheduled_time": "09:30",
+}
+schedule_target_tables = (
+    "sheets",
+    "vendor_work_entries",
+    "formal_approvals",
+    "formal_approval_events",
+    "scheduling_entries",
+)
+schedule_original_db = module.db
+schedule_original_actor_resolver = module.resolve_canonical_internal_mutation_actor
+schedule_original_postgres = module.get_primary_postgres_connection
+postgres_calls = []
+
+def schedule_sql_references_table(normalized_sql, table_name):
+    tokens = normalized_sql.replace("(", " ").replace(")", " ").replace(",", " ").split()
+    return any(
+        index > 0
+        and tokens[index - 1] in {"from", "join", "update", "into"}
+        and token.strip('"`[]') == table_name
+        for index, token in enumerate(tokens)
+    )
+
+class ScheduleAuthOrderTraceConnection:
+    def __init__(self, connection, counters, phase):
+        self.connection = connection
+        self.counters = counters
+        self.phase = phase
+
+    def __enter__(self):
+        self.counters[f"{self.phase}_context_entries"] += 1
+        self.connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return self.connection.__exit__(exc_type, exc, traceback)
+
+    def execute(self, sql, parameters=()):
+        normalized = " ".join(str(sql).lower().split())
+        self.counters[f"{self.phase}_statements"].append(normalized)
+        if self.phase == "auth":
+            if schedule_sql_references_table(normalized, "users"):
+                self.counters["users_auth_queries"] += 1
+            if schedule_sql_references_table(normalized, "vendor_accounts"):
+                self.counters["vendor_auth_queries"] += 1
+            if any(schedule_sql_references_table(normalized, table) for table in schedule_target_tables):
+                self.counters["auth_target_queries"] += 1
+        else:
+            if schedule_sql_references_table(normalized, "users"):
+                self.counters["target_users_queries"] += 1
+            if schedule_sql_references_table(normalized, "vendor_accounts"):
+                self.counters["target_vendor_account_queries"] += 1
+            if any(schedule_sql_references_table(normalized, table) for table in schedule_target_tables):
+                self.counters["target_queries"] += 1
+            if normalized == "begin immediate":
+                self.counters["begin_immediate"] += 1
+            if normalized.startswith(("insert ", "update ", "delete ", "replace ")):
+                self.counters["target_writes"] += 1
+        return self.connection.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+def post_schedule_with_phase_counts(payload):
+    counters = {
+        "phase": "target",
+        "actor_resolutions": 0,
+        "resolved_actor": None,
+        "auth_db_factory_calls": 0,
+        "auth_context_entries": 0,
+        "auth_statements": [],
+        "users_auth_queries": 0,
+        "vendor_auth_queries": 0,
+        "auth_target_queries": 0,
+        "target_db_factory_calls": 0,
+        "target_context_entries": 0,
+        "target_statements": [],
+        "target_queries": 0,
+        "target_writes": 0,
+        "target_users_queries": 0,
+        "target_vendor_account_queries": 0,
+        "begin_immediate": 0,
+    }
+
+    def tracing_actor_resolver():
+        counters["actor_resolutions"] += 1
+        counters["phase"] = "auth"
+        try:
+            actor = schedule_original_actor_resolver()
+            counters["resolved_actor"] = actor
+            return actor
+        finally:
+            counters["phase"] = "target"
+
+    def tracing_db():
+        phase = str(counters["phase"])
+        counters[f"{phase}_db_factory_calls"] += 1
+        return ScheduleAuthOrderTraceConnection(schedule_original_db(), counters, phase)
+
+    module.db = tracing_db
+    module.resolve_canonical_internal_mutation_actor = tracing_actor_resolver
+    module.get_primary_postgres_connection = lambda: postgres_calls.append("unexpected")
+    try:
+        response = client.post(schedule_path, json=payload)
+    finally:
+        module.db = schedule_original_db
+        module.resolve_canonical_internal_mutation_actor = schedule_original_actor_resolver
+        module.get_primary_postgres_connection = schedule_original_postgres
+    counters.pop("phase")
+    return response, counters
+
+def assert_schedule_error(response, *, status, code, label):
+    if response.status_code != status:
+        raise SystemExit(f"{label} expected HTTP {status}, got {response.status_code}")
+    payload = response.get_json()
+    if set(payload) != {"ok", "error"} or payload.get("ok") is not False:
+        raise SystemExit(f"{label} must preserve structured error JSON: {payload}")
+    if set(payload["error"]) != {"code", "message"} or payload["error"]["code"] != code:
+        raise SystemExit(f"{label} expected {code}, got {payload}")
+
+def assert_rejected_actor_phase(counters, *, label):
+    if counters["actor_resolutions"] != 1:
+        raise SystemExit(f"{label} must resolve actor exactly once: {counters}")
+    for key in (
+        "target_db_factory_calls",
+        "target_context_entries",
+        "target_queries",
+        "target_writes",
+        "target_users_queries",
+        "target_vendor_account_queries",
+        "begin_immediate",
+    ):
+        if counters[key] != 0:
+            raise SystemExit(f"{label} expected {key}=0: {counters}")
+    if counters["auth_target_queries"] != 0:
+        raise SystemExit(f"{label} auth phase queried scheduling target tables: {counters}")
+
+def assert_internal_phase(counters, *, label, expected_writes):
+    expected = {
+        "actor_resolutions": 1,
+        "auth_db_factory_calls": 1,
+        "auth_context_entries": 1,
+        "users_auth_queries": 1,
+        "target_db_factory_calls": 1,
+        "target_context_entries": 1,
+        "target_users_queries": 0,
+        "target_vendor_account_queries": 0,
+        "target_writes": expected_writes,
+    }
+    for key, value in expected.items():
+        if counters[key] != value:
+            raise SystemExit(f"{label} expected {key}={value}: {counters}")
+    actor = counters["resolved_actor"]
+    if isinstance(actor, sqlite3.Row) or not isinstance(actor, dict) or set(actor) != {"id", "username", "role"}:
+        raise SystemExit(f"{label} must use minimal canonical actor snapshot: {actor!r}")
+    if counters["auth_target_queries"] != 0:
+        raise SystemExit(f"{label} auth phase queried scheduling target tables: {counters}")
+
+for label, invalid_payload in (
+    ("missing entry_id", {key: value for key, value in schedule_payload.items() if key != "entry_id"}),
+    ("invalid entry_id", {**schedule_payload, "entry_id": "invalid"}),
+    ("missing sheet_id", {key: value for key, value in schedule_payload.items() if key != "sheet_id"}),
+    ("invalid sheet_id", {**schedule_payload, "sheet_id": 0}),
+    ("missing action", {key: value for key, value in schedule_payload.items() if key != "action"}),
+    ("wrong action", {**schedule_payload, "action": "wrong_action"}),
+    ("invalid date", {**schedule_payload, "scheduled_date": "not-a-date"}),
+    ("invalid time", {**schedule_payload, "scheduled_time": "not-a-time"}),
+):
+    with client.session_transaction() as session:
+        session.clear()
+    before = logical_manifest()
+    response, counters = post_schedule_with_phase_counts(invalid_payload)
+    assert_schedule_error(response, status=400, code="invalid_request", label=label)
+    if logical_manifest() != before:
+        raise SystemExit(f"{label} changed application manifest, schema, or sequence")
+    if counters["actor_resolutions"] or counters["auth_db_factory_calls"] or counters["target_db_factory_calls"]:
+        raise SystemExit(f"{label} must stop before actor and target resolution: {counters}")
+
+rejected_actor_cases = (
+    ("unauth existing", schedule_payload, {}, "auth_required"),
+    ("unauth missing", {**schedule_payload, "entry_id": 999999}, {}, "auth_required"),
+    ("malformed internal existing", schedule_payload, {"user_id": "invalid", "username": "bad", "role": "member"}, "auth_required"),
+    ("malformed internal missing", {**schedule_payload, "entry_id": 999999}, {"user_id": "invalid", "username": "bad", "role": "member"}, "auth_required"),
+    ("stale internal existing", schedule_payload, {"user_id": 999999, "username": "stale", "role": "member"}, "auth_required"),
+    ("stale internal missing", {**schedule_payload, "entry_id": 999999}, {"user_id": 999999, "username": "stale", "role": "member"}, "auth_required"),
+    ("valid vendor existing", schedule_payload, {"identity_type": "vendor", "vendor_account_id": vendor_account_id, "vendor_username": "vendor_schedule_only", "vendor_name": "Vendor Schedule"}, "vendor_auth_forbidden"),
+    ("valid vendor missing", {**schedule_payload, "entry_id": 999999}, {"identity_type": "vendor", "vendor_account_id": vendor_account_id, "vendor_username": "vendor_schedule_only", "vendor_name": "Vendor Schedule"}, "vendor_auth_forbidden"),
+    ("partial vendor existing", schedule_payload, {"identity_type": "vendor", "vendor_username": "partial"}, "vendor_auth_forbidden"),
+    ("partial vendor missing", {**schedule_payload, "entry_id": 999999}, {"identity_type": "vendor", "vendor_username": "partial"}, "vendor_auth_forbidden"),
+    ("stale vendor existing", schedule_payload, {"identity_type": "vendor", "vendor_account_id": 999999, "vendor_username": "stale", "vendor_name": "Stale Vendor"}, "vendor_auth_forbidden"),
+    ("stale vendor missing", {**schedule_payload, "entry_id": 999999}, {"identity_type": "vendor", "vendor_account_id": 999999, "vendor_username": "stale", "vendor_name": "Stale Vendor"}, "vendor_auth_forbidden"),
+    ("mixed existing", schedule_payload, {"user_id": member_id, "username": "schedule_member", "role": "member", "identity_type": "vendor", "vendor_account_id": vendor_account_id, "vendor_username": "vendor_schedule_only"}, "auth_required"),
+    ("mixed missing", {**schedule_payload, "entry_id": 999999}, {"user_id": member_id, "username": "schedule_member", "role": "member", "identity_type": "vendor", "vendor_account_id": vendor_account_id, "vendor_username": "vendor_schedule_only"}, "auth_required"),
+)
+actor_pair_results = {}
+for label, actor_payload, session_values, expected_code in rejected_actor_cases:
+    with client.session_transaction() as session:
+        session.clear()
+        session.update(session_values)
+    before = logical_manifest()
+    response, counters = post_schedule_with_phase_counts(actor_payload)
+    assert_schedule_error(response, status=403, code=expected_code, label=label)
+    assert_rejected_actor_phase(counters, label=label)
+    if logical_manifest() != before:
+        raise SystemExit(f"{label} changed application manifest, schema, or sequence")
+    actor_pair_results[label] = (response.status_code, response.get_json())
+
+for existing_label, missing_label in (
+    ("unauth existing", "unauth missing"),
+    ("malformed internal existing", "malformed internal missing"),
+    ("stale internal existing", "stale internal missing"),
+    ("valid vendor existing", "valid vendor missing"),
+    ("partial vendor existing", "partial vendor missing"),
+    ("stale vendor existing", "stale vendor missing"),
+    ("mixed existing", "mixed missing"),
+):
+    if actor_pair_results[existing_label] != actor_pair_results[missing_label]:
+        raise SystemExit(f"{existing_label} leaked scheduling target existence")
+
 with module.db() as conn:
     ready_context = module.resolve_schedule_entry_context(conn, sheet_id=sheet_id, entry_id=ready_entry_id)
     blocked_context = module.resolve_schedule_entry_context(conn, sheet_id=sheet_id, entry_id=blocked_entry_id)
@@ -13444,17 +13707,12 @@ if blocked_context["scheduling_gate_state"] != "warning":
     raise SystemExit("scheduler persistence blocked entry should remain blocked by scheduling gate")
 
 success_before = fetch_db_snapshot()
+success_manifest_before = logical_manifest()
 set_member_session()
-success_response = client.post(
-    "/api/schedule-entry",
-    json={
-        "entry_id": ready_entry_id,
-        "sheet_id": sheet_id,
-        "action": "schedule_entry",
-        "scheduled_date": "2026-07-08",
-        "scheduled_time": "09:30",
-    },
-)
+with client.session_transaction() as session:
+    session["username"] = "forged_session_username"
+success_response, success_counters = post_schedule_with_phase_counts(schedule_payload)
+assert_internal_phase(success_counters, label="member schedule success", expected_writes=1)
 if success_response.status_code != 200 or not success_response.get_json().get("ok"):
     raise SystemExit("schedulable entry should create schedule successfully")
 success_payload = success_response.get_json()
@@ -13479,32 +13737,40 @@ if success_row["scheduled_by"] != "schedule_member":
     raise SystemExit("schedule entry row should persist scheduling username")
 if not str(success_row["scheduled_at"] or "").strip():
     raise SystemExit("schedule entry row should persist scheduled_at timestamp")
+success_manifest_after = logical_manifest()
+before_tables, before_sequences, before_schema = success_manifest_before
+after_tables, after_sequences, after_schema = success_manifest_after
+if before_schema != after_schema:
+    raise SystemExit("schedule entry success must not change schema or indexes")
+for table_name, before_table in before_tables.items():
+    if table_name != "scheduling_entries" and after_tables[table_name] != before_table:
+        raise SystemExit(f"schedule entry success changed unrelated table {table_name}")
+before_sequence_map = dict(before_sequences)
+after_sequence_map = dict(after_sequences)
+for sequence_name, before_value in before_sequence_map.items():
+    if sequence_name != "scheduling_entries" and after_sequence_map.get(sequence_name) != before_value:
+        raise SystemExit(f"schedule entry success changed unrelated sequence {sequence_name}")
+if set(after_sequence_map) - set(before_sequence_map) - {"scheduling_entries"}:
+    raise SystemExit("schedule entry success created an unrelated sequence")
 
-duplicate_before = fetch_db_snapshot()
+duplicate_before = logical_manifest()
 set_member_session()
-duplicate_response = client.post(
-    "/api/schedule-entry",
-    json={
-        "entry_id": ready_entry_id,
-        "sheet_id": sheet_id,
-        "action": "schedule_entry",
-        "scheduled_date": "2026-07-08",
-        "scheduled_time": "10:00",
-    },
+duplicate_response, duplicate_counters = post_schedule_with_phase_counts(
+    {**schedule_payload, "scheduled_time": "10:00"}
 )
+assert_internal_phase(duplicate_counters, label="duplicate schedule", expected_writes=0)
 if duplicate_response.status_code != 409:
     raise SystemExit("duplicate schedule should be rejected with 409")
 duplicate_payload = duplicate_response.get_json()
 if duplicate_payload.get("ok") is not False or duplicate_payload["error"]["code"] != "duplicate_schedule":
     raise SystemExit("duplicate schedule should preserve duplicate_schedule error code")
-if fetch_db_snapshot() != duplicate_before:
+if logical_manifest() != duplicate_before:
     raise SystemExit("duplicate schedule rejection must keep DB unchanged")
 
-blocked_before = fetch_db_snapshot()
+blocked_before = logical_manifest()
 set_member_session()
-blocked_response = client.post(
-    "/api/schedule-entry",
-    json={
+blocked_response, _ = post_schedule_with_phase_counts(
+    {
         "entry_id": blocked_entry_id,
         "sheet_id": sheet_id,
         "action": "schedule_entry",
@@ -13517,7 +13783,7 @@ if blocked_response.status_code != 409:
 blocked_payload = blocked_response.get_json()
 if blocked_payload.get("ok") is not False or blocked_payload["error"]["code"] != "entry_not_schedulable":
     raise SystemExit("blocked schedule should preserve entry_not_schedulable")
-if fetch_db_snapshot() != blocked_before:
+if logical_manifest() != blocked_before:
     raise SystemExit("blocked schedule rejection must keep DB unchanged")
 
 with client.session_transaction() as session:
@@ -13526,10 +13792,9 @@ with client.session_transaction() as session:
     session["vendor_account_id"] = int(vendor_account_id)
     session["vendor_username"] = "vendor_schedule_only"
     session["vendor_name"] = "Vendor Schedule"
-vendor_before = fetch_db_snapshot()
-vendor_response = client.post(
-    "/api/schedule-entry",
-    json={
+vendor_before = logical_manifest()
+vendor_response, _ = post_schedule_with_phase_counts(
+    {
         "entry_id": ready_entry_id,
         "sheet_id": sheet_id,
         "action": "schedule_entry",
@@ -13542,14 +13807,13 @@ if vendor_response.status_code != 403:
 vendor_payload = vendor_response.get_json()
 if vendor_payload.get("ok") is not False or vendor_payload["error"]["code"] != "vendor_auth_forbidden":
     raise SystemExit("vendor schedule rejection should preserve vendor_auth_forbidden")
-if fetch_db_snapshot() != vendor_before:
+if logical_manifest() != vendor_before:
     raise SystemExit("vendor schedule rejection must keep DB unchanged")
 
-missing_site_before = fetch_db_snapshot()
+missing_site_before = logical_manifest()
 set_member_session(with_current_site=False)
-missing_site_response = client.post(
-    "/api/schedule-entry",
-    json={
+missing_site_response, _ = post_schedule_with_phase_counts(
+    {
         "entry_id": ready_entry_id,
         "sheet_id": sheet_id,
         "action": "schedule_entry",
@@ -13562,14 +13826,35 @@ if missing_site_response.status_code != 403:
 missing_site_payload = missing_site_response.get_json()
 if missing_site_payload.get("ok") is not False or missing_site_payload["error"]["code"] != "site_context_invalid":
     raise SystemExit("missing current site schedule rejection should preserve site_context_invalid")
-if fetch_db_snapshot() != missing_site_before:
+if logical_manifest() != missing_site_before:
     raise SystemExit("missing current site schedule rejection must keep DB unchanged")
 
-cross_site_before = fetch_db_snapshot()
+with client.session_transaction() as session:
+    session.clear()
+    session["user_id"] = int(unauthorized_member_id)
+    session["username"] = "forged_no_permission"
+    session["role"] = "member"
+    session["current_site_id"] = int(default_site_id)
+    session["current_site_name"] = str(default_site_name)
+    session["site_selection_required"] = False
+unauthorized_before = logical_manifest()
+unauthorized_response, unauthorized_counters = post_schedule_with_phase_counts(
+    {**schedule_payload, "scheduled_time": "13:30"}
+)
+assert_internal_phase(unauthorized_counters, label="member without site permission", expected_writes=0)
+assert_schedule_error(
+    unauthorized_response,
+    status=403,
+    code="site_permission_missing",
+    label="member without site permission",
+)
+if logical_manifest() != unauthorized_before:
+    raise SystemExit("site-permission rejection must keep DB unchanged")
+
+cross_site_before = logical_manifest()
 set_member_session()
-cross_site_response = client.post(
-    "/api/schedule-entry",
-    json={
+cross_site_response, _ = post_schedule_with_phase_counts(
+    {
         "entry_id": secondary_entry_id,
         "sheet_id": secondary_sheet_id,
         "action": "schedule_entry",
@@ -13582,14 +13867,13 @@ if cross_site_response.status_code != 403:
 cross_site_payload = cross_site_response.get_json()
 if cross_site_payload.get("ok") is not False or cross_site_payload["error"]["code"] != "write_target_not_in_current_site":
     raise SystemExit("cross-site schedule rejection should preserve write_target_not_in_current_site")
-if fetch_db_snapshot() != cross_site_before:
+if logical_manifest() != cross_site_before:
     raise SystemExit("cross-site schedule rejection must keep DB unchanged")
 
-sheet_mismatch_before = fetch_db_snapshot()
+sheet_mismatch_before = logical_manifest()
 set_member_session()
-sheet_mismatch_response = client.post(
-    "/api/schedule-entry",
-    json={
+sheet_mismatch_response, _ = post_schedule_with_phase_counts(
+    {
         "entry_id": ready_entry_id,
         "sheet_id": secondary_sheet_id,
         "action": "schedule_entry",
@@ -13602,30 +13886,43 @@ if sheet_mismatch_response.status_code != 409:
 sheet_mismatch_payload = sheet_mismatch_response.get_json()
 if sheet_mismatch_payload.get("ok") is not False or sheet_mismatch_payload["error"]["code"] != "sheet_mismatch":
     raise SystemExit("sheet mismatch schedule rejection should preserve sheet_mismatch")
-if fetch_db_snapshot() != sheet_mismatch_before:
+if logical_manifest() != sheet_mismatch_before:
     raise SystemExit("sheet mismatch schedule rejection must keep DB unchanged")
 
-missing_entry_before = fetch_db_snapshot()
+missing_sheet_before = logical_manifest()
 set_member_session()
-missing_entry_response = client.post(
-    "/api/schedule-entry",
-    json={
-        "entry_id": 999999,
-        "sheet_id": sheet_id,
-        "action": "schedule_entry",
-        "scheduled_date": "2026-07-08",
-        "scheduled_time": "16:00",
-    },
+missing_sheet_response, missing_sheet_counters = post_schedule_with_phase_counts(
+    {**schedule_payload, "sheet_id": 999999, "scheduled_time": "15:30"}
 )
+assert_internal_phase(missing_sheet_counters, label="internal missing sheet", expected_writes=0)
+assert_schedule_error(
+    missing_sheet_response,
+    status=404,
+    code="sheet_not_found",
+    label="internal missing sheet",
+)
+if logical_manifest() != missing_sheet_before:
+    raise SystemExit("missing sheet schedule rejection must keep DB unchanged")
+
+missing_entry_before = logical_manifest()
+set_member_session()
+missing_entry_response, missing_entry_counters = post_schedule_with_phase_counts(
+    {**schedule_payload, "entry_id": 999999, "scheduled_time": "16:00"}
+)
+assert_internal_phase(missing_entry_counters, label="internal missing entry", expected_writes=0)
 if missing_entry_response.status_code != 404:
     raise SystemExit("missing entry schedule should be rejected with 404")
 missing_entry_payload = missing_entry_response.get_json()
 if missing_entry_payload.get("ok") is not False or missing_entry_payload["error"]["code"] != "entry_not_found":
     raise SystemExit("missing entry schedule rejection should preserve entry_not_found")
-if fetch_db_snapshot() != missing_entry_before:
+if logical_manifest() != missing_entry_before:
     raise SystemExit("missing entry schedule rejection must keep DB unchanged")
 
+if postgres_calls:
+    raise SystemExit(f"schedule entry write path must not connect to PostgreSQL: {postgres_calls}")
+
 print("scheduler persistence smoke PASS")
+print("schedule entry authentication order focused smoke PASS")
 """
     result = subprocess.run(
         [
@@ -13642,6 +13939,9 @@ print("scheduler persistence smoke PASS")
     )
     if "scheduler persistence smoke PASS" not in result.stdout:
         raise AssertionError("scheduler persistence smoke subprocess did not report PASS.")
+    if "schedule entry authentication order focused smoke PASS" not in result.stdout:
+        raise AssertionError("schedule entry authentication-order subprocess did not report PASS.")
+    print("schedule entry authentication order focused smoke PASS")
 
 
 def run_scheduler_persistence_guardrail_smoke(db_path: Path) -> None:

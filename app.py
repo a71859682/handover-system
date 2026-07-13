@@ -2349,20 +2349,32 @@ def authorize_schedule_entry_write(
     *,
     sheet_id: int,
     entry_id: int,
+    internal_user=None,
 ) -> dict[str, object]:
     context = resolve_schedule_entry_context(
         conn,
         sheet_id=sheet_id,
         entry_id=entry_id,
     )
-    user = _current_internal_user()
+    user = internal_user if internal_user is not None else _current_internal_user()
     if user is None:
         if current_vendor_account() is not None:
             raise LookupError("vendor_auth_forbidden")
         raise LookupError("auth_required")
     if is_global_admin(user):
-        current_site_context = authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
-        context["current_site_id"] = int(current_site_context["current_site_id"])
+        if internal_user is None:
+            current_site_context = authorize_admin_site_scoped_write(conn, sheet_id=sheet_id)
+            current_site_id = int(current_site_context["current_site_id"])
+        else:
+            current_site_id = get_current_site_id()
+            if current_site_id is None:
+                raise LookupError("site_context_invalid")
+            site_row = _fetch_site_row_by_id(conn, int(current_site_id))
+            if site_row is None or int(site_row["is_active"]) != 1:
+                raise LookupError("site_context_invalid")
+            if int(context["site_id"]) != int(current_site_id):
+                raise LookupError("write_target_not_in_current_site")
+        context["current_site_id"] = int(current_site_id)
         return context
 
     current_site_id = _resolve_non_admin_read_site_id(conn, user)
@@ -7941,12 +7953,18 @@ def api_schedule_entry():
     except ValueError as exc:
         return crew_api_error("invalid_request", str(exc))
 
+    try:
+        actor = resolve_canonical_internal_mutation_actor()
+    except LookupError as exc:
+        return _handle_schedule_entry_lookup_error(exc)
+
     with db() as conn:
         try:
             schedule_context = authorize_schedule_entry_write(
                 conn,
                 sheet_id=sheet_id,
                 entry_id=entry_id,
+                internal_user=actor,
             )
         except LookupError as exc:
             return _handle_schedule_entry_lookup_error(exc)
@@ -7972,8 +7990,7 @@ def api_schedule_entry():
                 status=409,
             )
 
-        user = _current_internal_user()
-        scheduled_by = str(user["username"] if user is not None else "")
+        scheduled_by = str(actor["username"])
         try:
             row = conn.execute(
                 """
