@@ -7533,12 +7533,18 @@ def api_crew_work_entry_formal_approve():
         return crew_api_error("invalid_request", str(exc))
 
     try:
+        actor = resolve_canonical_internal_mutation_actor()
+    except LookupError as exc:
+        return _handle_vendor_work_entry_formal_approve_lookup_error(exc)
+
+    try:
         with db() as conn:
             try:
                 approval_context = authorize_vendor_work_entry_formal_approve(
                     conn,
                     sheet_id=sheet_id,
                     entry_id=entry_id,
+                    internal_user=actor,
                 )
             except LookupError as exc:
                 return _handle_vendor_work_entry_formal_approve_lookup_error(exc)
@@ -7561,8 +7567,7 @@ def api_crew_work_entry_formal_approve():
                     status=409,
                 )
 
-            user = _current_internal_user()
-            approved_by = str(user["username"] if user is not None else "")
+            approved_by = str(actor["username"])
             if conn.in_transaction:
                 raise RuntimeError("formal approval creation requires a fresh connection transaction")
             conn.execute("BEGIN IMMEDIATE")
