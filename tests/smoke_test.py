@@ -10662,6 +10662,555 @@ print("progress write isolation smoke PASS")
         raise AssertionError("progress write isolation smoke subprocess did not report PASS.")
 
 
+def run_unit_extra_authentication_order_focused_smoke(db_path: Path) -> None:
+    script = r'''
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import sys
+
+sample_db_path, root_dir = sys.argv[1:3]
+sys.path.insert(0, root_dir)
+os.environ["APP_DB_PATH"] = sample_db_path
+spec = importlib.util.spec_from_file_location("unit_extra_auth_order_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+module.app.config["PROPAGATE_EXCEPTIONS"] = False
+module.app.logger.disabled = True
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site = conn.execute("SELECT id, site_name FROM sites ORDER BY id LIMIT 1").fetchone()
+    default_site_id = int(default_site["id"])
+    unit_row = conn.execute(
+        """
+        SELECT u.id, f.sheet_id
+        FROM units u
+        JOIN floors f ON f.id = u.floor_id
+        ORDER BY u.id
+        LIMIT 1
+        """
+    ).fetchone()
+    unit_id = int(unit_row["id"])
+    sheet_id = int(unit_row["sheet_id"])
+    conn.execute(
+        """
+        INSERT INTO extra_fields (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+        VALUES (?, 'unit_extra_auth_custom', 'Unit Extra Auth Custom', 'text', 900, 0, 1)
+        """,
+        (sheet_id,),
+    )
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES ('Unit Extra Auth Secondary', 'UEAS', 1) RETURNING id"
+        ).fetchone()["id"]
+    )
+    secondary_sheet_id = int(
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES ('Unit Extra Auth Secondary', 901, ?, CURRENT_TIMESTAMP) RETURNING id",
+            (secondary_site_id,),
+        ).fetchone()["id"]
+    )
+    secondary_floor_id = int(
+        conn.execute(
+            "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, 901, 'UEA', 'UEA', 1) RETURNING id",
+            (secondary_sheet_id,),
+        ).fetchone()["id"]
+    )
+    secondary_unit_id = int(
+        conn.execute(
+            "INSERT INTO units (floor_id, sort_order, name) VALUES (?, 1, 'UEA-1') RETURNING id",
+            (secondary_floor_id,),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        """
+        INSERT INTO extra_fields (sheet_id, field_key, name, field_type, sort_order, is_builtin, active)
+        VALUES (?, 'unit_extra_auth_secondary', 'Unit Extra Auth Secondary', 'status', 901, 0, 1)
+        """,
+        (secondary_sheet_id,),
+    )
+    conn.execute(
+        "INSERT INTO unit_extra (unit_id, handover, updated_by, updated_at) VALUES (?, ?, 1, CURRENT_TIMESTAMP)",
+        (secondary_unit_id, module.WORKING_VALUE),
+    )
+    member_id = int(
+        conn.execute(
+            "INSERT INTO users (username, display_name, password_hash, role) VALUES ('unit_extra_auth_member', 'Unit Extra Auth Member', ?, 'member') RETURNING id",
+            (module.generate_password_hash("member-pass"),),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'member')",
+        (member_id, default_site_id),
+    )
+    admin = conn.execute("SELECT id, username, role FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").fetchone()
+    admin_id = int(admin["id"])
+    admin_username = str(admin["username"])
+    conn.commit()
+
+client = module.app.test_client()
+missing_unit_id = 999999991
+missing_field = "unit_extra_auth_missing"
+target_tables = (
+    "units", "floors", "sheets", "extra_fields", "unit_extra", "unit_extra_values",
+    "sites", "user_site_permissions",
+)
+original_db = module.db
+original_actor_resolver = module.resolve_canonical_internal_mutation_actor
+original_postgres = module.get_primary_postgres_connection
+postgres_calls = []
+
+def postgres_sentinel(*args, **kwargs):
+    postgres_calls.append((args, kwargs))
+    raise AssertionError("unit-extra auth-order smoke must not connect to PostgreSQL")
+
+def sql_references_table(normalized_sql, table_name):
+    tokens = re.findall(r'[a-z_][a-z0-9_]*', normalized_sql)
+    return any(
+        index > 0 and tokens[index - 1] in {"from", "join", "update", "into", "delete"} and token == table_name
+        for index, token in enumerate(tokens)
+    )
+
+class TraceConnection:
+    def __init__(self, connection, counters, phase):
+        self.connection = connection
+        self.counters = counters
+        self.phase = phase
+
+    def __enter__(self):
+        self.counters[f"{self.phase}_context_entries"] += 1
+        self.connection.__enter__()
+        self.connection.set_trace_callback(self._trace)
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.connection.set_trace_callback(None)
+        result = self.connection.__exit__(exc_type, exc, traceback)
+        if self.phase == "target" and self.counters["target_writes"]:
+            self.counters["phase"] = "response"
+        return result
+
+    def _trace(self, sql):
+        normalized = " ".join(str(sql).lower().split())
+        if normalized.startswith("begin"):
+            self.counters[f"{self.phase}_begins"] += 1
+
+    def execute(self, sql, parameters=()):
+        normalized = " ".join(str(sql).lower().split())
+        self.counters[f"{self.phase}_statements"].append(normalized)
+        if self.phase == "auth":
+            if sql_references_table(normalized, "users"):
+                self.counters["auth_users_queries"] += 1
+            if sql_references_table(normalized, "vendor_accounts"):
+                self.counters["auth_vendor_queries"] += 1
+            if any(sql_references_table(normalized, table) for table in target_tables):
+                self.counters["auth_target_queries"] += 1
+        elif self.phase == "target":
+            if sql_references_table(normalized, "users"):
+                self.counters["target_users_queries"] += 1
+            if sql_references_table(normalized, "vendor_accounts"):
+                self.counters["target_vendor_queries"] += 1
+            if any(sql_references_table(normalized, table) for table in target_tables):
+                self.counters["target_queries"] += 1
+            if normalized.startswith(("insert ", "update ", "delete ", "replace ")):
+                self.counters["target_writes"] += 1
+        elif normalized.startswith(("insert ", "update ", "delete ", "replace ")):
+            self.counters["response_writes"] += 1
+        return self.connection.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+def full_manifest():
+    with original_db() as conn:
+        conn.row_factory = sqlite3.Row
+        table_names = [
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        ]
+        table_rows = {}
+        for table_name in table_names:
+            columns = [str(row["name"]) for row in conn.execute(f'PRAGMA table_info("{table_name}")')]
+            table_rows[table_name] = tuple(
+                tuple(row[column] for column in columns)
+                for row in conn.execute(f'SELECT * FROM "{table_name}" ORDER BY rowid').fetchall()
+            )
+        sequences = tuple(tuple(row) for row in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name"))
+        schema = tuple(
+            tuple(row)
+            for row in conn.execute(
+                "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master "
+                "WHERE type IN ('table', 'index') ORDER BY type, name"
+            )
+        )
+    if len(table_names) != 18:
+        raise SystemExit(f"unit-extra auth-order manifest expected 18 application tables, got {table_names}")
+    return table_rows, sequences, schema
+
+def set_session(values):
+    with client.session_transaction() as session:
+        session.clear()
+        session.update(values)
+
+def member_session(*, with_site=True):
+    values = {
+        "user_id": member_id,
+        "username": "forged-member-name",
+        "display_name": "forged",
+        "role": "admin",
+    }
+    if with_site:
+        values.update(
+            {
+                "current_site_id": default_site_id,
+                "current_site_name": str(default_site["site_name"]),
+                "site_selection_required": False,
+            }
+        )
+    set_session(values)
+
+def admin_session():
+    set_session(
+        {
+            "user_id": admin_id,
+            "username": "forged-admin-name",
+            "display_name": "forged",
+            "role": "member",
+            "current_site_id": default_site_id,
+            "current_site_name": str(default_site["site_name"]),
+            "site_selection_required": False,
+        }
+    )
+
+def post_with_counts(payload=None, *, raw_json=None):
+    counters = {
+        "phase": "target", "actor_resolutions": 0, "resolved_actor": None,
+        "auth_db_factory_calls": 0, "auth_context_entries": 0, "auth_statements": [],
+        "auth_begins": 0, "auth_users_queries": 0, "auth_vendor_queries": 0, "auth_target_queries": 0,
+        "target_db_factory_calls": 0, "target_context_entries": 0, "target_statements": [],
+        "target_begins": 0, "target_queries": 0, "target_writes": 0,
+        "target_users_queries": 0, "target_vendor_queries": 0,
+        "response_db_factory_calls": 0, "response_context_entries": 0, "response_statements": [],
+        "response_begins": 0, "response_writes": 0,
+    }
+
+    def tracing_actor_resolver():
+        counters["actor_resolutions"] += 1
+        counters["phase"] = "auth"
+        try:
+            actor = original_actor_resolver()
+            counters["resolved_actor"] = actor
+            return actor
+        finally:
+            counters["phase"] = "target"
+
+    def tracing_db():
+        phase = str(counters["phase"])
+        counters[f"{phase}_db_factory_calls"] += 1
+        return TraceConnection(original_db(), counters, phase)
+
+    module.db = tracing_db
+    module.resolve_canonical_internal_mutation_actor = tracing_actor_resolver
+    try:
+        if raw_json is None:
+            response = client.post("/api/unit-extra", json=payload, follow_redirects=False)
+        else:
+            response = client.post(
+                "/api/unit-extra", data=raw_json, content_type="application/json", follow_redirects=False
+            )
+    finally:
+        module.db = original_db
+        module.resolve_canonical_internal_mutation_actor = original_actor_resolver
+    counters.pop("phase")
+    return response, counters
+
+def response_contract(response):
+    return {
+        "status": response.status_code,
+        "location": response.headers.get("Location"),
+        "json": response.get_json(silent=True),
+    }
+
+def assert_json(response, status, payload, label):
+    if response.status_code != status or response.get_json(silent=True) != payload:
+        raise SystemExit(f"{label} expected {status} {payload!r}, got {response_contract(response)!r}")
+
+def assert_actor_once(counters, label):
+    if counters["actor_resolutions"] != 1:
+        raise SystemExit(f"{label} must resolve actor exactly once: {counters}")
+
+def assert_no_target_phase(counters, label):
+    for key in (
+        "target_db_factory_calls", "target_context_entries", "target_begins", "target_queries",
+        "target_writes", "target_users_queries", "target_vendor_queries",
+    ):
+        if counters[key] != 0:
+            raise SystemExit(f"{label} expected {key}=0: {counters}")
+    if counters["auth_target_queries"] != 0 or counters["auth_begins"] != 0:
+        raise SystemExit(f"{label} auth phase reached target facts or transaction: {counters}")
+
+def assert_internal_actor(counters, expected, label):
+    assert_actor_once(counters, label)
+    actor = counters["resolved_actor"]
+    if isinstance(actor, sqlite3.Row) or not isinstance(actor, dict) or set(actor) != {"id", "username", "role"}:
+        raise SystemExit(f"{label} did not receive minimal plain actor snapshot: {actor!r}")
+    if actor != expected:
+        raise SystemExit(f"{label} actor was not canonical: {actor!r} != {expected!r}")
+    if counters["auth_db_factory_calls"] != 1 or counters["auth_context_entries"] != 1:
+        raise SystemExit(f"{label} canonical auth connection count changed: {counters}")
+    if counters["auth_users_queries"] != 1 or counters["auth_vendor_queries"] != 0:
+        raise SystemExit(f"{label} canonical auth lookup count changed: {counters}")
+    if counters["target_users_queries"] != 0 or counters["target_vendor_queries"] != 0:
+        raise SystemExit(f"{label} target phase re-resolved actor: {counters}")
+
+valid_payload = {"unit_id": unit_id, "field": "handover", "value": module.DONE_VALUE}
+custom_payload = {"unit_id": unit_id, "field": "unit_extra_auth_custom", "value": "custom value"}
+missing_unit_payload = {**valid_payload, "unit_id": missing_unit_id}
+missing_field_payload = {**valid_payload, "field": missing_field}
+invalid_payload = {"unit_id": "not-an-integer", "field": "handover", "value": module.DONE_VALUE}
+auth_error = {"ok": False, "message": "authentication is required."}
+member_actor = {"id": member_id, "username": "unit_extra_auth_member", "role": "member"}
+admin_actor = {"id": admin_id, "username": admin_username, "role": "admin"}
+
+def run_cases():
+    decorator_sessions = {
+        "no session": {},
+        "vendor only": {
+            "identity_type": "vendor", "vendor_account_id": 777,
+            "vendor_username": "vendor-only", "vendor_name": "Vendor Only",
+        },
+    }
+    for label, session_values in decorator_sessions.items():
+        results = []
+        for case_label, payload in (
+            ("existing", valid_payload), ("missing unit", missing_unit_payload),
+            ("missing field", missing_field_payload), ("invalid payload", invalid_payload),
+        ):
+            set_session(session_values)
+            before = full_manifest()
+            response, counters = post_with_counts(payload)
+            if response.status_code != 302 or not response.headers.get("Location", "").endswith("/login"):
+                raise SystemExit(f"{label} {case_label} must preserve 302 /login")
+            if counters["actor_resolutions"] != 0:
+                raise SystemExit(f"{label} {case_label} must stop at login_required")
+            assert_no_target_phase(counters, f"{label} {case_label}")
+            if full_manifest() != before:
+                raise SystemExit(f"{label} {case_label} changed manifest")
+            results.append(response_contract(response))
+        if len({json.dumps(item, sort_keys=True) for item in results}) != 1:
+            raise SystemExit(f"{label} decorator response varied by target/payload: {results}")
+
+    vendor_markers = {
+        "identity_type": "vendor", "vendor_account_id": 777,
+        "vendor_username": "mixed", "vendor_name": "Mixed Vendor",
+    }
+    invalid_actor_sessions = {
+        "stale internal": {"user_id": 999999993, "username": "stale", "role": "member"},
+        "malformed internal": {"user_id": "malformed", "username": "bad", "role": "member"},
+        "mixed valid internal vendor": {"user_id": member_id, "username": "forged", "role": "admin", **vendor_markers},
+        "mixed stale internal vendor": {"user_id": 999999993, "username": "stale", "role": "admin", **vendor_markers},
+        "mixed malformed internal vendor": {"user_id": "malformed", "username": "bad", "role": "admin", **vendor_markers},
+    }
+    for label, session_values in invalid_actor_sessions.items():
+        results = []
+        for case_label, payload in (
+            ("existing", valid_payload), ("missing unit", missing_unit_payload),
+            ("missing field", missing_field_payload), ("invalid payload", invalid_payload),
+        ):
+            set_session(session_values)
+            before = full_manifest()
+            response, counters = post_with_counts(payload)
+            assert_json(response, 403, auth_error, f"{label} {case_label}")
+            assert_actor_once(counters, f"{label} {case_label}")
+            assert_no_target_phase(counters, f"{label} {case_label}")
+            if full_manifest() != before:
+                raise SystemExit(f"{label} {case_label} changed manifest")
+            results.append(response_contract(response))
+        if len({json.dumps(item, sort_keys=True) for item in results}) != 1:
+            raise SystemExit(f"{label} response varied by target/payload: {results}")
+
+    member_session()
+    before = full_manifest()
+    bad_json_response, bad_json_counts = post_with_counts(raw_json="")
+    if bad_json_response.status_code != 400:
+        raise SystemExit("valid member malformed JSON contract changed")
+    assert_internal_actor(bad_json_counts, member_actor, "member malformed JSON")
+    assert_no_target_phase(bad_json_counts, "member malformed JSON")
+    if full_manifest() != before:
+        raise SystemExit("member malformed JSON changed manifest")
+
+    member_session()
+    before = full_manifest()
+    invalid_id_response, invalid_id_counts = post_with_counts(invalid_payload)
+    if invalid_id_response.status_code != 500:
+        raise SystemExit("valid member numeric coercion contract changed")
+    assert_internal_actor(invalid_id_counts, member_actor, "member invalid unit_id")
+    assert_no_target_phase(invalid_id_counts, "member invalid unit_id")
+    if full_manifest() != before:
+        raise SystemExit("member invalid unit_id changed manifest")
+
+    domain_cases = (
+        ("invalid status", {**valid_payload, "value": "INVALID"}, 400, {"ok": False, "message": "O/X 欄位只能是 O 或 X。"}),
+        ("missing unit", missing_unit_payload, 404, {"ok": False, "message": "unit_id was not found."}),
+        ("missing field", missing_field_payload, 404, {"ok": False, "message": "field was not found."}),
+        (
+            "field mismatch",
+            {"unit_id": unit_id, "field": "unit_extra_auth_secondary", "value": module.DONE_VALUE},
+            409, {"ok": False, "message": "unit_id and field do not belong to the same sheet."},
+        ),
+        (
+            "cross site",
+            {"unit_id": secondary_unit_id, "field": "unit_extra_auth_secondary", "value": module.DONE_VALUE},
+            403, {"ok": False, "message": "write target does not belong to the current site."},
+        ),
+    )
+    for label, payload, status, expected in domain_cases:
+        member_session()
+        before = full_manifest()
+        response, counters = post_with_counts(payload)
+        assert_json(response, status, expected, label)
+        assert_internal_actor(counters, member_actor, label)
+        if counters["target_db_factory_calls"] != 1 or counters["target_context_entries"] != 1:
+            raise SystemExit(f"{label} target connection topology changed: {counters}")
+        if counters["target_writes"] != 0 or counters["target_begins"] != 0:
+            raise SystemExit(f"{label} unexpectedly started a write: {counters}")
+        if full_manifest() != before:
+            raise SystemExit(f"{label} changed manifest")
+
+    member_session(with_site=False)
+    before = full_manifest()
+    response, counters = post_with_counts(valid_payload)
+    assert_json(response, 403, {"ok": False, "message": "current_site_id is missing or invalid."}, "missing current site")
+    assert_internal_actor(counters, member_actor, "missing current site")
+    if counters["target_writes"] != 0 or full_manifest() != before:
+        raise SystemExit("missing current site changed data")
+
+    with original_db() as conn:
+        conn.execute("DELETE FROM user_site_permissions WHERE user_id = ? AND site_id = ?", (member_id, default_site_id))
+    member_session()
+    before = full_manifest()
+    response, counters = post_with_counts(valid_payload)
+    assert_json(
+        response, 403,
+        {"ok": False, "message": "current user no longer has permission for the current site."},
+        "permission revoked",
+    )
+    assert_internal_actor(counters, member_actor, "permission revoked")
+    if counters["target_writes"] != 0 or full_manifest() != before:
+        raise SystemExit("permission revoked changed data")
+    with original_db() as conn:
+        conn.execute(
+            "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'member')",
+            (member_id, default_site_id),
+        )
+
+    def row_state(target_unit_id, field_key):
+        with original_db() as conn:
+            if field_key in module.EXTRA_FIELDS:
+                row = conn.execute(
+                    f"SELECT unit_id, {field_key} AS value, updated_by, updated_at FROM unit_extra WHERE unit_id = ?",
+                    (target_unit_id,),
+                ).fetchone()
+                count = int(conn.execute("SELECT COUNT(*) FROM unit_extra").fetchone()[0])
+            else:
+                row = conn.execute(
+                    "SELECT unit_id, field_key, value, updated_by, updated_at FROM unit_extra_values WHERE unit_id = ? AND field_key = ?",
+                    (target_unit_id, field_key),
+                ).fetchone()
+                count = int(conn.execute("SELECT COUNT(*) FROM unit_extra_values").fetchone()[0])
+        return (dict(row) if row is not None else None), count
+
+    success_cases = (
+        ("member built-in", member_session, member_actor, valid_payload, "handover", module.DONE_VALUE, 2),
+        ("member custom", member_session, member_actor, custom_payload, "unit_extra_auth_custom", "custom value", 2),
+        (
+            "admin bypass",
+            admin_session,
+            admin_actor,
+            {**valid_payload, "value": module.WORKING_VALUE},
+            "handover",
+            module.WORKING_VALUE,
+            2,
+        ),
+    )
+    for label, session_setter, expected_actor, payload, field_key, expected_value, expected_writes in success_cases:
+        session_setter()
+        target_unit_id = int(payload["unit_id"])
+        before_manifest = full_manifest()
+        before_row, before_count = row_state(target_unit_id, field_key)
+        response, counters = post_with_counts(payload)
+        if response.status_code != 200 or response.get_json(silent=True).get("ok") is not True:
+            raise SystemExit(f"{label} did not preserve success response")
+        assert_internal_actor(counters, expected_actor, label)
+        if counters["target_db_factory_calls"] != 1 or counters["target_context_entries"] != 1:
+            raise SystemExit(f"{label} expected one mutation target connection: {counters}")
+        if counters["target_begins"] != 1 or counters["target_writes"] != expected_writes:
+            raise SystemExit(f"{label} DML/transaction topology changed: {counters}")
+        if counters["response_db_factory_calls"] < 1 or counters["response_context_entries"] < 1:
+            raise SystemExit(f"{label} did not preserve readonly grid reload: {counters}")
+        if counters["response_writes"] != 0 or counters["response_begins"] != 0:
+            raise SystemExit(f"{label} grid reload wrote data: {counters}")
+        after_row, after_count = row_state(target_unit_id, field_key)
+        if after_row is None or after_row["value"] != expected_value or int(after_row["updated_by"]) != int(expected_actor["id"]):
+            raise SystemExit(f"{label} did not persist canonical updated_by/value: {after_row}")
+        expected_delta = 1 if before_row is None else 0
+        if after_count - before_count != expected_delta:
+            raise SystemExit(f"{label} changed row topology unexpectedly")
+        before_tables, before_sequences, before_schema = before_manifest
+        after_tables, after_sequences, after_schema = full_manifest()
+        if before_sequences != after_sequences or before_schema != after_schema:
+            raise SystemExit(f"{label} changed sequences or schema")
+        expected_table = "unit_extra" if field_key in module.EXTRA_FIELDS else "unit_extra_values"
+        for table_name in before_tables:
+            if table_name != expected_table and before_tables[table_name] != after_tables[table_name]:
+                raise SystemExit(f"{label} changed unexpected table {table_name}")
+        statements = counters["target_statements"]
+        if sum(statement.startswith("insert or ignore into unit_extra ") for statement in statements) != 1:
+            raise SystemExit(f"{label} lost unit_extra INSERT OR IGNORE topology: {statements}")
+        if field_key in module.EXTRA_FIELDS:
+            if sum(statement.startswith("update unit_extra ") for statement in statements) != 1:
+                raise SystemExit(f"{label} lost built-in UPDATE topology: {statements}")
+        elif sum(statement.startswith("insert into unit_extra_values ") for statement in statements) != 1:
+            raise SystemExit(f"{label} lost custom UPSERT topology: {statements}")
+
+module.get_primary_postgres_connection = postgres_sentinel
+try:
+    run_cases()
+finally:
+    module.get_primary_postgres_connection = original_postgres
+
+if postgres_calls:
+    raise SystemExit(f"unit-extra auth-order paths connected to PostgreSQL: {postgres_calls}")
+
+print("unit extra authentication order focused smoke PASS")
+'''
+    with tempfile.TemporaryDirectory(prefix="unit-extra-auth-order-") as script_tmpdir:
+        script_path = Path(script_tmpdir) / "unit_extra_auth_order_smoke.py"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-B", str(script_path), str(db_path), str(ROOT_DIR)],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    marker = "unit extra authentication order focused smoke PASS"
+    if result.returncode != 0:
+        raise AssertionError(f"unit-extra auth-order child failed: {result.stderr or result.stdout}")
+    if result.stderr:
+        raise AssertionError(f"unit-extra auth-order child stderr was not empty: {result.stderr}")
+    if result.stdout.count(marker) != 1:
+        raise AssertionError("unit-extra auth-order child marker count must be exactly one")
+    print(marker)
+
+
 def run_unit_extra_write_isolation_smoke(db_path: Path) -> None:
     script = """
 import importlib.util
@@ -15634,6 +16183,21 @@ def run_site_write_isolation_readiness_smoke() -> None:
     for fragment in required_fragments:
         if fragment not in result.stdout:
             raise AssertionError(f"check_site_write_isolation_readiness.py output missing: {fragment}")
+
+    self_test = subprocess.run(
+        [sys.executable, str(script_path), "--self-test"],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    marker = "PASS unit extra readiness checker negative controls passed."
+    if self_test.returncode != 0:
+        raise AssertionError(f"unit-extra readiness checker self-test failed: {self_test.stderr or self_test.stdout}")
+    if self_test.stderr:
+        raise AssertionError(f"unit-extra readiness checker self-test stderr was not empty: {self_test.stderr}")
+    if self_test.stdout.count(marker) != 1:
+        raise AssertionError("unit-extra readiness checker self-test marker count must be exactly one")
 
 
 def run_admin_write_model_readiness_smoke() -> None:
@@ -22198,6 +22762,9 @@ def main() -> int:
         create_sample_sqlite(progress_auth_db)
         run_progress_authentication_order_focused_smoke(progress_auth_db)
         run_progress_write_isolation_smoke(db_path)
+        unit_extra_auth_db = Path(tmpdir) / "unit-extra-auth-order.db"
+        create_sample_sqlite(unit_extra_auth_db)
+        run_unit_extra_authentication_order_focused_smoke(unit_extra_auth_db)
         run_unit_extra_write_isolation_smoke(db_path)
         run_vendor_contact_write_isolation_smoke(db_path)
         run_vendor_work_entry_write_isolation_smoke(db_path)

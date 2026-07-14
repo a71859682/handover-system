@@ -1767,15 +1767,18 @@ def resolve_unit_extra_write_context(conn: sqlite3.Connection, *, unit_id: int, 
     }
 
 
-def authorize_unit_extra_write(conn: sqlite3.Connection, *, unit_id: int, field_key: str) -> dict[str, object]:
+def authorize_unit_extra_write(
+    conn: sqlite3.Connection,
+    *,
+    unit_id: int,
+    field_key: str,
+    internal_user: dict[str, object],
+) -> dict[str, object]:
     context = resolve_unit_extra_write_context(conn, unit_id=unit_id, field_key=field_key)
-    user = _current_internal_user()
-    if user is None:
-        raise LookupError("auth_required")
-    if is_global_admin(user):
+    if is_global_admin(internal_user):
         return context
 
-    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    current_site_id = _resolve_non_admin_read_site_id(conn, internal_user)
     if int(context["site_id"]) != int(current_site_id):
         raise LookupError("write_target_not_in_current_site")
     return context
@@ -6930,13 +6933,22 @@ def api_progress():
 @app.route("/api/unit-extra", methods=["POST"])
 @login_required
 def api_unit_extra():
+    try:
+        actor = resolve_canonical_internal_mutation_actor()
+    except LookupError:
+        return unit_extra_api_error("authentication is required.", status=403)
     data = request.get_json(force=True)
     unit_id = int(data.get("unit_id"))
     field = data.get("field", "")
     value = data.get("value", "")
     with db() as conn:
         try:
-            unit_extra_context = authorize_unit_extra_write(conn, unit_id=unit_id, field_key=field)
+            unit_extra_context = authorize_unit_extra_write(
+                conn,
+                unit_id=unit_id,
+                field_key=field,
+                internal_user=actor,
+            )
         except LookupError as exc:
             return _handle_unit_extra_write_lookup_error(exc)
         if unit_extra_context["field_type"] == "status" and value not in (DONE_VALUE, WORKING_VALUE):
@@ -6952,7 +6964,7 @@ def api_unit_extra():
                 SET {field} = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE unit_id = ?
                 """,
-                (value, session["user_id"], unit_id),
+                (value, int(actor["id"]), unit_id),
             )
         else:
             conn.execute(
@@ -6964,7 +6976,7 @@ def api_unit_extra():
                     updated_by = excluded.updated_by,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (unit_id, field, value, session["user_id"]),
+                (unit_id, field, value, int(actor["id"])),
             )
     return jsonify({"ok": True, "grid": render_grid_payload(int(unit_extra_context["sheet_id"]))})
 
