@@ -1875,6 +1875,7 @@ def authorize_vendor_contact_write(
     sheet_id: int,
     vendor_name: str,
     contact_id: int | None = None,
+    internal_user: dict[str, object],
 ) -> dict[str, object]:
     context = resolve_vendor_contact_write_context(
         conn,
@@ -1882,13 +1883,10 @@ def authorize_vendor_contact_write(
         vendor_name=vendor_name,
         contact_id=contact_id,
     )
-    user = _current_internal_user()
-    if user is None:
-        raise LookupError("auth_required")
-    if is_global_admin(user):
+    if is_global_admin(internal_user):
         return context
 
-    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    current_site_id = _resolve_non_admin_read_site_id(conn, internal_user)
     if int(context["site_id"]) != int(current_site_id):
         raise LookupError("write_target_not_in_current_site")
     return context
@@ -7212,6 +7210,11 @@ def api_management_read_model():
 @app.route("/api/vendor-contact", methods=["POST"])
 @login_required
 def api_vendor_contact():
+    try:
+        actor = resolve_canonical_internal_mutation_actor()
+    except LookupError:
+        return jsonify({"ok": False, "message": "authentication is required."}), 403
+
     data = request.get_json(silent=True) or {}
     try:
         contact_id = parse_optional_positive_int(data.get("id"), field_name="id")
@@ -7241,6 +7244,7 @@ def api_vendor_contact():
                 sheet_id=sheet_id,
                 vendor_name=vendor_name,
                 contact_id=contact_id,
+                internal_user=actor,
             )
         except LookupError as exc:
             return _handle_vendor_contact_lookup_error(exc)

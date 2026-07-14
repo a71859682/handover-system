@@ -11383,6 +11383,682 @@ print("unit-extra write isolation smoke PASS")
         raise AssertionError("unit-extra write isolation smoke subprocess did not report PASS.")
 
 
+def run_vendor_contact_authentication_order_focused_smoke(db_path: Path) -> None:
+    script = r'''
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import sys
+
+sample_db_path, root_dir = sys.argv[1:3]
+sys.path.insert(0, root_dir)
+os.environ["APP_DB_PATH"] = sample_db_path
+spec = importlib.util.spec_from_file_location("vendor_contact_auth_order_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+module.app.config["PROPAGATE_EXCEPTIONS"] = False
+module.app.logger.disabled = True
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site = conn.execute("SELECT id, site_name FROM sites ORDER BY id LIMIT 1").fetchone()
+    default_site_id = int(default_site["id"])
+    target = conn.execute(
+        """
+        SELECT s.id AS sheet_id, t.vendor
+        FROM sheets s
+        JOIN tasks t ON t.sheet_id = s.id
+        WHERE s.site_id = ? AND TRIM(COALESCE(t.vendor, '')) <> ''
+        ORDER BY s.id, t.id
+        LIMIT 1
+        """,
+        (default_site_id,),
+    ).fetchone()
+    sheet_id = int(target["sheet_id"])
+    vendor_name = str(target["vendor"])
+    normal_create_vendor = "Vendor Contact Auth Normal Create"
+    unrelated_vendor = "Vendor Contact Auth Unrelated"
+    conn.execute(
+        "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, 99001, ?, '', 'Vendor Contact Normal Create Task')",
+        (sheet_id, normal_create_vendor),
+    )
+    conn.execute(
+        "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, 99002, ?, '', 'Vendor Contact Unrelated Task')",
+        (sheet_id, unrelated_vendor),
+    )
+    member_id = int(
+        conn.execute(
+            "INSERT INTO users (username, display_name, password_hash, role) VALUES ('vendor_contact_auth_member', 'Vendor Contact Auth Member', ?, 'member') RETURNING id",
+            (module.generate_password_hash("member-pass"),),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'member')",
+        (member_id, default_site_id),
+    )
+    admin = conn.execute("SELECT id, username, role FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").fetchone()
+    admin_id = int(admin["id"])
+    admin_username = str(admin["username"])
+    existing_contact_id = int(
+        conn.execute(
+            """
+            INSERT INTO vendor_contacts (
+                sheet_id, vendor_name, contact_name, contact_title, contact_phone,
+                is_primary, contact_order, created_at, updated_at
+            ) VALUES (?, ?, 'Existing Contact', 'Existing Title', '0900000000', 1, 1,
+                      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            """,
+            (sheet_id, vendor_name),
+        ).fetchone()["id"]
+    )
+    unrelated_contact_id = int(
+        conn.execute(
+            """
+            INSERT INTO vendor_contacts (
+                sheet_id, vendor_name, contact_name, contact_title, contact_phone,
+                is_primary, contact_order, created_at, updated_at
+            ) VALUES (?, ?, 'Unrelated Primary', '', '', 1, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            """,
+            (sheet_id, unrelated_vendor),
+        ).fetchone()["id"]
+    )
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES ('Vendor Contact Auth Secondary', 'VCAS', 1) RETURNING id"
+        ).fetchone()["id"]
+    )
+    secondary_sheet_id = int(
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES ('Vendor Contact Auth Secondary', 903, ?, CURRENT_TIMESTAMP) RETURNING id",
+            (secondary_site_id,),
+        ).fetchone()["id"]
+    )
+    secondary_vendor = "Vendor Contact Auth Secondary Vendor"
+    conn.execute(
+        "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, 99003, ?, '', 'Vendor Contact Auth Task')",
+        (secondary_sheet_id, secondary_vendor),
+    )
+    secondary_contact_id = int(
+        conn.execute(
+            """
+            INSERT INTO vendor_contacts (
+                sheet_id, vendor_name, contact_name, contact_title, contact_phone,
+                is_primary, contact_order, created_at, updated_at
+            ) VALUES (?, ?, 'Secondary Contact', '', '', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            RETURNING id
+            """,
+            (secondary_sheet_id, secondary_vendor),
+        ).fetchone()["id"]
+    )
+    conn.commit()
+
+client = module.app.test_client()
+missing_sheet_id = 999999981
+missing_contact_id = 999999982
+missing_vendor = "Vendor Contact Auth Missing Vendor"
+target_tables = ("sheets", "tasks", "vendor_contacts", "sites", "user_site_permissions")
+original_db = module.db
+original_actor_resolver = module.resolve_canonical_internal_mutation_actor
+original_postgres = module.get_primary_postgres_connection
+postgres_calls = []
+
+def postgres_sentinel(*args, **kwargs):
+    postgres_calls.append((args, kwargs))
+    raise AssertionError("vendor-contact auth-order smoke must not connect to PostgreSQL")
+
+def sql_references_table(normalized_sql, table_name):
+    tokens = re.findall(r'[a-z_][a-z0-9_]*', normalized_sql)
+    return any(
+        index > 0 and tokens[index - 1] in {"from", "join", "update", "into", "delete"} and token == table_name
+        for index, token in enumerate(tokens)
+    )
+
+class TraceConnection:
+    def __init__(self, connection, counters, phase):
+        self.connection = connection
+        self.counters = counters
+        self.phase = phase
+
+    def __enter__(self):
+        self.counters[f"{self.phase}_context_entries"] += 1
+        self.connection.__enter__()
+        self.connection.set_trace_callback(self._trace)
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.connection.set_trace_callback(None)
+        return self.connection.__exit__(exc_type, exc, traceback)
+
+    def _trace(self, sql):
+        if " ".join(str(sql).lower().split()).startswith("begin"):
+            self.counters[f"{self.phase}_begins"] += 1
+
+    def execute(self, sql, parameters=()):
+        normalized = " ".join(str(sql).lower().split())
+        self.counters[f"{self.phase}_statements"].append(normalized)
+        if self.phase == "auth":
+            if sql_references_table(normalized, "users"):
+                self.counters["auth_users_queries"] += 1
+            if sql_references_table(normalized, "vendor_accounts"):
+                self.counters["auth_vendor_queries"] += 1
+            if any(sql_references_table(normalized, table) for table in target_tables):
+                self.counters["auth_target_queries"] += 1
+        else:
+            if sql_references_table(normalized, "users"):
+                self.counters["target_users_queries"] += 1
+            if sql_references_table(normalized, "vendor_accounts"):
+                self.counters["target_vendor_queries"] += 1
+            if any(sql_references_table(normalized, table) for table in target_tables):
+                self.counters["target_queries"] += 1
+            if normalized.startswith(("insert ", "update ", "delete ", "replace ")):
+                self.counters["target_writes"] += 1
+        return self.connection.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+def full_manifest():
+    with original_db() as conn:
+        conn.row_factory = sqlite3.Row
+        table_names = [
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        ]
+        table_rows = {}
+        for table_name in table_names:
+            columns = [str(row["name"]) for row in conn.execute(f'PRAGMA table_info("{table_name}")')]
+            table_rows[table_name] = tuple(
+                tuple(row[column] for column in columns)
+                for row in conn.execute(f'SELECT * FROM "{table_name}" ORDER BY rowid').fetchall()
+            )
+        sequences = tuple(tuple(row) for row in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name"))
+        schema = tuple(
+            tuple(row)
+            for row in conn.execute(
+                "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master "
+                "WHERE type IN ('table', 'index') ORDER BY type, name"
+            )
+        )
+    if len(table_names) != 18:
+        raise SystemExit(f"vendor-contact auth-order manifest expected 18 application tables, got {table_names}")
+    return table_rows, sequences, schema
+
+def canonical_contact(row):
+    contact_name = str(row["contact_name"] or "")
+    contact_title = str(row["contact_title"] or "")
+    stripped_name = contact_name.strip()
+    stripped_title = contact_title.strip()
+    if stripped_title and stripped_name:
+        display_name = f"{stripped_title} {stripped_name}"
+    else:
+        display_name = stripped_title or stripped_name
+    return {
+        "id": row["id"],
+        "sheet_id": row["sheet_id"],
+        "vendor_name": row["vendor_name"],
+        "contact_name": row["contact_name"],
+        "contact_title": row["contact_title"],
+        "contact_phone": row["contact_phone"],
+        "display_name": display_name,
+        "is_primary": row["is_primary"],
+        "contact_order": row["contact_order"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+def canonical_contacts(sheet_value, vendor_value):
+    with original_db() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, sheet_id, vendor_name, contact_name, contact_title, contact_phone,
+                   is_primary, contact_order, created_at, updated_at
+            FROM vendor_contacts
+            WHERE sheet_id = ? AND vendor_name = ?
+            ORDER BY is_primary DESC, contact_order ASC, id ASC
+            """,
+            (sheet_value, vendor_value),
+        ).fetchall()
+    return [canonical_contact(row) for row in rows]
+
+def canonical_all_contacts():
+    with original_db() as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT id, sheet_id, vendor_name, contact_name, contact_title, contact_phone,
+                   is_primary, contact_order, created_at, updated_at
+            FROM vendor_contacts
+            ORDER BY id
+            """
+        ).fetchall()
+    return {int(row["id"]): canonical_contact(row) for row in rows}
+
+def set_session(values):
+    with client.session_transaction() as session:
+        session.clear()
+        session.update(values)
+
+def member_session(*, with_site=True, site_id=None):
+    values = {
+        "user_id": member_id,
+        "username": "forged-member-name",
+        "display_name": "forged",
+        "role": "admin",
+    }
+    if with_site:
+        values.update(
+            {
+                "current_site_id": default_site_id if site_id is None else site_id,
+                "current_site_name": "forged-site-name",
+                "site_selection_required": False,
+            }
+        )
+    set_session(values)
+
+def admin_session():
+    set_session(
+        {
+            "user_id": admin_id,
+            "username": "forged-admin-name",
+            "display_name": "forged",
+            "role": "member",
+            "current_site_id": default_site_id,
+            "current_site_name": "forged-site-name",
+            "site_selection_required": False,
+        }
+    )
+
+def post_with_counts(payload):
+    counters = {
+        "phase": "target", "actor_resolutions": 0, "resolved_actor": None,
+        "auth_db_factory_calls": 0, "auth_context_entries": 0, "auth_statements": [],
+        "auth_begins": 0, "auth_users_queries": 0, "auth_vendor_queries": 0, "auth_target_queries": 0,
+        "target_db_factory_calls": 0, "target_context_entries": 0, "target_statements": [],
+        "target_begins": 0, "target_queries": 0, "target_writes": 0,
+        "target_users_queries": 0, "target_vendor_queries": 0,
+    }
+
+    def tracing_actor_resolver():
+        counters["actor_resolutions"] += 1
+        counters["phase"] = "auth"
+        try:
+            actor = original_actor_resolver()
+            counters["resolved_actor"] = actor
+            return actor
+        finally:
+            counters["phase"] = "target"
+
+    def tracing_db():
+        phase = str(counters["phase"])
+        counters[f"{phase}_db_factory_calls"] += 1
+        return TraceConnection(original_db(), counters, phase)
+
+    module.db = tracing_db
+    module.resolve_canonical_internal_mutation_actor = tracing_actor_resolver
+    try:
+        response = client.post("/api/vendor-contact", json=payload, follow_redirects=False)
+    finally:
+        module.db = original_db
+        module.resolve_canonical_internal_mutation_actor = original_actor_resolver
+    counters.pop("phase")
+    return response, counters
+
+def response_contract(response):
+    return {
+        "status": response.status_code,
+        "location": response.headers.get("Location"),
+        "content_type": response.content_type,
+        "body": response.get_data(as_text=True),
+        "json": response.get_json(silent=True),
+    }
+
+def assert_no_target_phase(counters, label):
+    for key in (
+        "target_db_factory_calls", "target_context_entries", "target_begins", "target_queries",
+        "target_writes", "target_users_queries", "target_vendor_queries",
+    ):
+        if counters[key] != 0:
+            raise SystemExit(f"{label} expected {key}=0: {counters}")
+    if counters["auth_target_queries"] != 0 or counters["auth_begins"] != 0:
+        raise SystemExit(f"{label} auth phase reached target facts or transaction: {counters}")
+
+def assert_actor_once(counters, label):
+    if counters["actor_resolutions"] != 1:
+        raise SystemExit(f"{label} must resolve actor exactly once: {counters}")
+
+def assert_internal_actor(counters, expected, label):
+    assert_actor_once(counters, label)
+    actor = counters["resolved_actor"]
+    if isinstance(actor, sqlite3.Row) or not isinstance(actor, dict) or set(actor) != {"id", "username", "role"}:
+        raise SystemExit(f"{label} did not receive minimal plain actor snapshot: {actor!r}")
+    if actor != expected:
+        raise SystemExit(f"{label} actor was not canonical: {actor!r} != {expected!r}")
+    if counters["auth_db_factory_calls"] != 1 or counters["auth_context_entries"] != 1:
+        raise SystemExit(f"{label} canonical auth connection count changed: {counters}")
+    if counters["auth_users_queries"] != 1 or counters["auth_vendor_queries"] != 0:
+        raise SystemExit(f"{label} canonical auth lookup count changed: {counters}")
+    if counters["target_users_queries"] != 0 or counters["target_vendor_queries"] != 0:
+        raise SystemExit(f"{label} target phase re-resolved actor: {counters}")
+
+def assert_error(response, status, code, label):
+    payload = response.get_json(silent=True)
+    if response.status_code != status or payload is None or payload.get("ok") is not False:
+        raise SystemExit(f"{label} expected {status} error, got {response_contract(response)!r}")
+    if code is not None and payload.get("error", {}).get("code") != code:
+        raise SystemExit(f"{label} expected {code}, got {payload!r}")
+
+create_existing = {
+    "sheet_id": sheet_id, "vendor_name": normal_create_vendor, "contact_name": "Created Contact",
+    "contact_title": "Created Title", "contact_phone": "0911000000", "is_primary": 0,
+}
+create_missing_sheet = {**create_existing, "sheet_id": missing_sheet_id}
+create_missing_vendor = {**create_existing, "vendor_name": missing_vendor}
+create_invalid = {**create_existing, "sheet_id": "not-an-integer"}
+update_existing = {
+    **create_existing, "id": existing_contact_id, "vendor_name": vendor_name,
+    "contact_name": "Updated Contact", "contact_order": 4,
+}
+update_missing = {**update_existing, "id": missing_contact_id}
+update_cross_sheet = {
+    **update_existing, "id": secondary_contact_id, "sheet_id": sheet_id, "vendor_name": vendor_name,
+}
+update_invalid = {**update_existing, "id": "not-an-integer"}
+create_cases = (
+    ("existing", create_existing), ("missing sheet", create_missing_sheet),
+    ("missing vendor", create_missing_vendor), ("invalid", create_invalid),
+)
+update_cases = (
+    ("existing", update_existing), ("missing contact", update_missing),
+    ("cross sheet", update_cross_sheet), ("invalid", update_invalid),
+)
+auth_error = {"ok": False, "message": "authentication is required."}
+member_actor = {"id": member_id, "username": "vendor_contact_auth_member", "role": "member"}
+admin_actor = {"id": admin_id, "username": admin_username, "role": "admin"}
+
+def run_cases():
+    for actor_label, session_values in (
+        ("no session", {}),
+        (
+            "vendor only",
+            {
+                "identity_type": "vendor", "vendor_account_id": 777,
+                "vendor_username": "vendor-only", "vendor_name": "Vendor Only",
+            },
+        ),
+    ):
+        for mode_label, cases in (("create", create_cases), ("update", update_cases)):
+            results = []
+            for case_label, payload in cases:
+                set_session(session_values)
+                before = full_manifest()
+                response, counters = post_with_counts(payload)
+                if response.status_code != 302 or not response.headers.get("Location", "").endswith("/login"):
+                    raise SystemExit(f"{actor_label} {mode_label} {case_label} must preserve 302 /login")
+                if counters["actor_resolutions"] != 0:
+                    raise SystemExit(f"{actor_label} {mode_label} {case_label} must stop at login_required")
+                assert_no_target_phase(counters, f"{actor_label} {mode_label} {case_label}")
+                if full_manifest() != before:
+                    raise SystemExit(f"{actor_label} {mode_label} {case_label} changed manifest")
+                results.append(response_contract(response))
+            if len({json.dumps(item, sort_keys=True) for item in results}) != 1:
+                raise SystemExit(f"{actor_label} {mode_label} decorator responses differ: {results}")
+
+    invalid_actor_sessions = {
+        "stale internal": {"user_id": 999999983, "username": "stale", "role": "member"},
+        "malformed internal": {"user_id": "malformed", "username": "bad", "role": "member"},
+        "mixed valid": {
+            "user_id": member_id, "username": "forged", "role": "admin", "identity_type": "vendor",
+            "vendor_account_id": 777, "vendor_username": "mixed", "vendor_name": "Mixed Vendor",
+        },
+        "mixed stale": {
+            "user_id": 999999984, "username": "stale", "role": "member", "identity_type": "vendor",
+            "vendor_account_id": 777, "vendor_username": "mixed-stale", "vendor_name": "Mixed Vendor",
+        },
+        "mixed malformed": {
+            "user_id": "malformed", "username": "bad", "role": "member", "identity_type": "vendor",
+            "vendor_account_id": 777, "vendor_username": "mixed-bad", "vendor_name": "Mixed Vendor",
+        },
+    }
+    for actor_label, session_values in invalid_actor_sessions.items():
+        for mode_label, cases in (("create", create_cases), ("update", update_cases)):
+            results = []
+            for case_label, payload in cases:
+                set_session(session_values)
+                before = full_manifest()
+                response, counters = post_with_counts(payload)
+                if response.status_code != 403 or response.get_json(silent=True) != auth_error:
+                    raise SystemExit(
+                        f"{actor_label} {mode_label} {case_label} expected canonical 403: {response_contract(response)!r}"
+                    )
+                assert_actor_once(counters, f"{actor_label} {mode_label} {case_label}")
+                assert_no_target_phase(counters, f"{actor_label} {mode_label} {case_label}")
+                if full_manifest() != before:
+                    raise SystemExit(f"{actor_label} {mode_label} {case_label} changed manifest")
+                results.append(response_contract(response))
+            if len({json.dumps(item, sort_keys=True) for item in results}) != 1:
+                raise SystemExit(f"{actor_label} {mode_label} responses varied by target/payload: {results}")
+
+    valid_domain_cases = (
+        ("invalid create", create_invalid, 400, "invalid_request"),
+        ("missing sheet", create_missing_sheet, 404, "sheet_not_found"),
+        ("missing vendor", create_missing_vendor, 404, "vendor_not_in_sheet"),
+        ("missing contact", update_missing, 404, "contact_not_found"),
+        ("cross sheet", update_cross_sheet, 400, "cross_sheet_update_not_allowed"),
+    )
+    for label, payload, status, code in valid_domain_cases:
+        member_session()
+        before = full_manifest()
+        response, counters = post_with_counts(payload)
+        assert_error(response, status, code, label)
+        assert_internal_actor(counters, member_actor, label)
+        if counters["target_writes"] != 0 or counters["target_begins"] != 0 or full_manifest() != before:
+            raise SystemExit(f"{label} unexpectedly wrote data: {counters}")
+
+    for label, session_setter, payload, status, code in (
+        ("missing current site", lambda: member_session(with_site=False), update_existing, 403, "site_context_invalid"),
+        ("stale current site", lambda: member_session(site_id=999999985), update_existing, 403, "site_context_invalid"),
+        ("cross site", member_session, {**update_existing, "id": secondary_contact_id, "sheet_id": secondary_sheet_id, "vendor_name": secondary_vendor}, 403, "write_target_not_in_current_site"),
+    ):
+        session_setter()
+        before = full_manifest()
+        response, counters = post_with_counts(payload)
+        assert_error(response, status, code, label)
+        assert_internal_actor(counters, member_actor, label)
+        if counters["target_writes"] != 0 or full_manifest() != before:
+            raise SystemExit(f"{label} changed data")
+
+    with original_db() as conn:
+        conn.execute("DELETE FROM user_site_permissions WHERE user_id = ? AND site_id = ?", (member_id, default_site_id))
+    try:
+        member_session()
+        before = full_manifest()
+        response, counters = post_with_counts(update_existing)
+        assert_error(response, 403, "site_permission_missing", "permission revoked")
+        assert_internal_actor(counters, member_actor, "permission revoked")
+        if counters["target_writes"] != 0 or full_manifest() != before:
+            raise SystemExit("permission revoked changed data")
+    finally:
+        with original_db() as conn:
+            conn.execute(
+                "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'member')",
+                (member_id, default_site_id),
+            )
+
+    success_cases = (
+        ("member create", member_session, create_existing, member_actor, "create"),
+        ("member update", member_session, update_existing, member_actor, "update"),
+        (
+            "admin create primary", admin_session,
+            {**create_existing, "sheet_id": secondary_sheet_id, "vendor_name": secondary_vendor,
+             "contact_name": "Admin Primary", "is_primary": 1},
+            admin_actor, "create_primary",
+        ),
+        (
+            "admin update primary", admin_session,
+            {"id": secondary_contact_id, "sheet_id": secondary_sheet_id, "vendor_name": secondary_vendor,
+             "contact_name": "Admin Updated", "contact_title": "Admin", "contact_phone": "0922000000",
+             "is_primary": 1, "contact_order": 7},
+            admin_actor, "update_primary",
+        ),
+    )
+    admin_primary_created_id = None
+    for label, session_setter, payload, expected_actor, topology in success_cases:
+        session_setter()
+        before_tables, before_sequences, before_schema = full_manifest()
+        before_count = len(before_tables["vendor_contacts"])
+        before_scope = canonical_contacts(payload["sheet_id"], payload["vendor_name"])
+        before_scope_by_id = {int(item["id"]): item for item in before_scope}
+        before_all = canonical_all_contacts()
+        before_max_order = max((int(item["contact_order"]) for item in before_scope), default=-1)
+        before_primary_ids = {int(item["id"]) for item in before_scope if int(item["is_primary"]) == 1}
+        unrelated_before = before_all[unrelated_contact_id]
+        response, counters = post_with_counts(payload)
+        body = response.get_json(silent=True)
+        if response.status_code != 200 or body is None or set(body) != {"ok", "contact", "contacts"} or body["ok"] is not True:
+            raise SystemExit(f"{label} success response changed: {response_contract(response)!r}")
+        assert_internal_actor(counters, expected_actor, label)
+        if counters["target_db_factory_calls"] != 1 or counters["target_context_entries"] != 1:
+            raise SystemExit(f"{label} target connection topology changed: {counters}")
+        dml = [
+            statement for statement in counters["target_statements"]
+            if statement.startswith(("insert ", "update ", "delete ", "replace "))
+        ]
+        if any(statement.startswith("delete ") for statement in dml):
+            raise SystemExit(f"{label} unexpectedly deleted data: {dml}")
+        if topology == "create" and not (len(dml) == 1 and dml[0].startswith("insert into vendor_contacts ")):
+            raise SystemExit(f"{label} create topology changed: {dml}")
+        if topology == "update" and not (len(dml) == 1 and dml[0].startswith("update vendor_contacts ")):
+            raise SystemExit(f"{label} update topology changed: {dml}")
+        if topology == "create_primary" and not (
+            len(dml) == 3 and dml[0].startswith("insert into vendor_contacts ")
+            and all(statement.startswith("update vendor_contacts ") for statement in dml[1:])
+        ):
+            raise SystemExit(f"{label} primary create topology changed: {dml}")
+        if topology == "update_primary" and not (
+            len(dml) == 3 and all(statement.startswith("update vendor_contacts ") for statement in dml)
+        ):
+            raise SystemExit(f"{label} primary update topology changed: {dml}")
+        after_tables, after_sequences, after_schema = full_manifest()
+        after_scope = canonical_contacts(payload["sheet_id"], payload["vendor_name"])
+        after_scope_by_id = {int(item["id"]): item for item in after_scope}
+        after_all = canonical_all_contacts()
+        if topology.startswith("create"):
+            created_ids = set(after_scope_by_id) - set(before_scope_by_id)
+            if len(created_ids) != 1:
+                raise SystemExit(f"{label} did not create one independently identified row: {created_ids}")
+            saved_contact_id = created_ids.pop()
+        else:
+            saved_contact_id = int(payload["id"])
+            if set(after_scope_by_id) != set(before_scope_by_id):
+                raise SystemExit(f"{label} changed contact IDs during update")
+        saved_contact = after_scope_by_id.get(saved_contact_id)
+        if saved_contact is None:
+            raise SystemExit(f"{label} saved contact missing from canonical DB scope")
+        if set(body) != {"ok", "contact", "contacts"} or body["contact"] != saved_contact:
+            raise SystemExit(f"{label} contact projection differs from saved canonical row: {body!r} != {saved_contact!r}")
+        if body["contacts"] != after_scope:
+            raise SystemExit(f"{label} contacts projection differs from canonical ordered DB list")
+        response_matches = [item for item in body["contacts"] if int(item["id"]) == saved_contact_id]
+        if response_matches != [body["contact"]]:
+            raise SystemExit(f"{label} contact is not the exact saved item in contacts")
+        if [int(item["id"]) for item in body["contacts"]] != [int(item["id"]) for item in after_scope]:
+            raise SystemExit(f"{label} response contact IDs or ordering changed")
+        for field_name in (
+            "sheet_id", "vendor_name", "contact_name", "contact_title", "contact_phone", "is_primary"
+        ):
+            if saved_contact[field_name] != payload[field_name]:
+                raise SystemExit(
+                    f"{label} canonical {field_name} mismatch: {saved_contact[field_name]!r} != {payload[field_name]!r}"
+                )
+        expected_order = int(payload["contact_order"]) if "contact_order" in payload else before_max_order + 1
+        if int(saved_contact["contact_order"]) != expected_order or int(body["contact"]["contact_order"]) != expected_order:
+            raise SystemExit(f"{label} canonical ordering mismatch: {saved_contact!r}")
+        if not topology.startswith("create"):
+            before_target = before_scope_by_id[saved_contact_id]
+            if int(saved_contact["id"]) != int(before_target["id"]):
+                raise SystemExit(f"{label} changed target contact ID")
+            if saved_contact["created_at"] != before_target["created_at"]:
+                raise SystemExit(f"{label} changed target created_at")
+        if topology in {"create_primary", "update_primary"}:
+            after_primary_ids = {int(item["id"]) for item in after_scope if int(item["is_primary"]) == 1}
+            if after_primary_ids != {saved_contact_id}:
+                raise SystemExit(f"{label} primary target/count mismatch: {after_primary_ids}")
+            if not before_primary_ids:
+                raise SystemExit(f"{label} fixture lacked an original primary sibling")
+            for sibling_id in before_primary_ids - {saved_contact_id}:
+                sibling = after_scope_by_id[sibling_id]
+                if int(sibling["is_primary"]) != 0:
+                    raise SystemExit(f"{label} did not demote original primary sibling {sibling_id}")
+                changed = {
+                    field_name
+                    for field_name in sibling
+                    if sibling[field_name] != before_scope_by_id[sibling_id][field_name]
+                }
+                if not changed.issubset({"is_primary", "updated_at"}):
+                    raise SystemExit(f"{label} changed unexpected sibling fields: {changed}")
+            if after_all[unrelated_contact_id] != unrelated_before or int(after_all[unrelated_contact_id]["is_primary"]) != 1:
+                raise SystemExit(f"{label} changed unrelated primary contact")
+            if topology == "create_primary":
+                admin_primary_created_id = saved_contact_id
+            elif admin_primary_created_id not in before_primary_ids:
+                raise SystemExit(f"{label} did not use the previous primary as sibling control")
+        else:
+            for contact_id, before_contact in before_all.items():
+                if contact_id != saved_contact_id and after_all[contact_id] != before_contact:
+                    raise SystemExit(f"{label} changed non-target contact {contact_id}")
+        expected_count = before_count + (1 if topology.startswith("create") else 0)
+        if len(after_tables["vendor_contacts"]) != expected_count:
+            raise SystemExit(f"{label} contact row delta changed")
+        if before_schema != after_schema:
+            raise SystemExit(f"{label} changed schema")
+        for table_name in before_tables:
+            if table_name != "vendor_contacts" and before_tables[table_name] != after_tables[table_name]:
+                raise SystemExit(f"{label} changed unexpected table {table_name}")
+        if not topology.startswith("create") and before_sequences != after_sequences:
+            raise SystemExit(f"{label} update changed sequences")
+        if topology in {"create_primary", "update_primary"} and len(body["contacts"]) < 2:
+            raise SystemExit(f"{label} did not preserve multiple-contact readonly reload")
+
+module.get_primary_postgres_connection = postgres_sentinel
+try:
+    run_cases()
+finally:
+    module.get_primary_postgres_connection = original_postgres
+
+if postgres_calls:
+    raise SystemExit(f"vendor-contact auth-order paths connected to PostgreSQL: {postgres_calls}")
+
+print("vendor contact authentication order focused smoke PASS")
+'''
+    with tempfile.TemporaryDirectory(prefix="vendor-contact-auth-order-") as script_tmpdir:
+        script_path = Path(script_tmpdir) / "vendor_contact_auth_order_smoke.py"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-B", str(script_path), str(db_path), str(ROOT_DIR)],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    marker = "vendor contact authentication order focused smoke PASS"
+    if result.returncode != 0:
+        raise AssertionError(f"vendor-contact auth-order child failed: {result.stderr or result.stdout}")
+    if result.stderr:
+        raise AssertionError(f"vendor-contact auth-order child stderr was not empty: {result.stderr}")
+    if result.stdout.count(marker) != 1:
+        raise AssertionError("vendor-contact auth-order child marker count must be exactly one")
+    print(marker)
+
+
 def run_vendor_contact_write_isolation_smoke(db_path: Path) -> None:
     script = """
 import importlib.util
@@ -16191,13 +16867,17 @@ def run_site_write_isolation_readiness_smoke() -> None:
         text=True,
         check=False,
     )
-    marker = "PASS unit extra readiness checker negative controls passed."
+    markers = (
+        "PASS unit extra readiness checker negative controls passed.",
+        "PASS vendor contact readiness checker negative controls passed.",
+    )
     if self_test.returncode != 0:
         raise AssertionError(f"unit-extra readiness checker self-test failed: {self_test.stderr or self_test.stdout}")
     if self_test.stderr:
         raise AssertionError(f"unit-extra readiness checker self-test stderr was not empty: {self_test.stderr}")
-    if self_test.stdout.count(marker) != 1:
-        raise AssertionError("unit-extra readiness checker self-test marker count must be exactly one")
+    for marker in markers:
+        if self_test.stdout.count(marker) != 1:
+            raise AssertionError(f"readiness checker self-test marker count must be exactly one: {marker}")
 
 
 def run_admin_write_model_readiness_smoke() -> None:
@@ -22766,6 +23446,9 @@ def main() -> int:
         create_sample_sqlite(unit_extra_auth_db)
         run_unit_extra_authentication_order_focused_smoke(unit_extra_auth_db)
         run_unit_extra_write_isolation_smoke(db_path)
+        vendor_contact_auth_db = Path(tmpdir) / "vendor-contact-auth-order.db"
+        create_sample_sqlite(vendor_contact_auth_db)
+        run_vendor_contact_authentication_order_focused_smoke(vendor_contact_auth_db)
         run_vendor_contact_write_isolation_smoke(db_path)
         run_vendor_work_entry_write_isolation_smoke(db_path)
         vendor_authenticated_submit_db = Path(tmpdir) / "vendor-authenticated-submit.db"

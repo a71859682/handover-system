@@ -70,12 +70,7 @@ HIGH_RISK_ITEMS: tuple[InventoryItem, ...] = (
         current_site_enforced="yes",
         ownership_validation_required="yes",
         recommendation="Current-site, site permission, and sheet/vendor ownership validation are enforced before vendor-contact writes.",
-        source_markers=(
-            '@app.route("/api/vendor-contact", methods=["POST"])',
-            'vendor_contact_context = authorize_vendor_contact_write(',
-            'resolve_vendor_contact_write_context(',
-            'return _handle_vendor_contact_lookup_error(exc)',
-        ),
+        source_markers=(),
     ),
     InventoryItem(
         route="/api/vendor-work-entry",
@@ -523,6 +518,81 @@ def validate_unit_extra_route_contract(source: str, issues: list[str]) -> None:
         issues.append("unit_extra_contract:direct_session_user_id_forbidden")
 
 
+def validate_vendor_contact_route_contract(source: str, issues: list[str]) -> None:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        issues.append("vendor_contact_contract:source_syntax_error")
+        return
+
+    routes = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "api_vendor_contact"
+    ]
+    if len(routes) != 1:
+        issues.append("vendor_contact_contract:route_definition_count")
+        return
+    route = routes[0]
+    route_nodes = list(ast.walk(route))
+    calls = [node for node in route_nodes if isinstance(node, ast.Call)]
+    resolver_calls = [node for node in calls if _call_name(node) == "resolve_canonical_internal_mutation_actor"]
+    request_calls = [node for node in calls if _is_request_get_json_call(node)]
+    authorize_calls = [node for node in calls if _call_name(node) == "authorize_vendor_contact_write"]
+
+    if len(resolver_calls) != 1:
+        issues.append("vendor_contact_contract:canonical_resolver_call_count")
+    if len(request_calls) != 1:
+        issues.append("vendor_contact_contract:request_get_json_call_count")
+    if len(authorize_calls) != 1:
+        issues.append("vendor_contact_contract:authorize_call_count")
+
+    resolver_call = resolver_calls[0] if len(resolver_calls) == 1 else None
+    request_call = request_calls[0] if len(request_calls) == 1 else None
+    authorize_call = authorize_calls[0] if len(authorize_calls) == 1 else None
+
+    if resolver_call is not None and not any(_assigns_call_to_actor(node, resolver_call) for node in route_nodes):
+        issues.append("vendor_contact_contract:canonical_actor_assignment_required")
+
+    target_withs = [
+        node
+        for node in route_nodes
+        if isinstance(node, ast.With)
+        and _is_db_with(node)
+        and authorize_call is not None
+        and any(descendant is authorize_call for descendant in ast.walk(node))
+    ]
+    if len(target_withs) != 1:
+        issues.append("vendor_contact_contract:target_db_context_count")
+        target_with = None
+    else:
+        target_with = target_withs[0]
+
+    if resolver_call is not None and request_call is not None and target_with is not None and authorize_call is not None:
+        positions = (
+            (resolver_call.lineno, resolver_call.col_offset),
+            (request_call.lineno, request_call.col_offset),
+            (target_with.lineno, target_with.col_offset),
+            (authorize_call.lineno, authorize_call.col_offset),
+        )
+        if not positions[0] < positions[1] < positions[2] < positions[3]:
+            issues.append("vendor_contact_contract:source_order_invalid")
+
+    if authorize_call is not None:
+        internal_user_keywords = [keyword for keyword in authorize_call.keywords if keyword.arg == "internal_user"]
+        if not (
+            len(internal_user_keywords) == 1
+            and isinstance(internal_user_keywords[0].value, ast.Name)
+            and internal_user_keywords[0].value.id == "actor"
+        ):
+            issues.append("vendor_contact_contract:internal_user_actor_required")
+
+    if any(_call_name(node) == "_current_internal_user" for node in calls):
+        issues.append("vendor_contact_contract:current_internal_user_forbidden")
+    if any(_session_user_id_access(node) for node in route_nodes):
+        issues.append("vendor_contact_contract:direct_session_user_id_forbidden")
+
+
 def run_unit_extra_contract_self_test() -> int:
     valid_source = '''
 def api_unit_extra():
@@ -591,12 +661,105 @@ def api_unit_extra():
     return 0
 
 
+def run_vendor_contact_contract_self_test() -> int:
+    valid_source = '''
+def api_vendor_contact():
+    actor = resolve_canonical_internal_mutation_actor()
+    data = request.get_json(silent=True)
+    with db() as conn:
+        context = authorize_vendor_contact_write(conn, sheet_id=1, vendor_name="Vendor", internal_user=actor)
+    return context
+'''
+    valid_issues: list[str] = []
+    validate_vendor_contact_route_contract(valid_source, valid_issues)
+    if valid_issues:
+        raise SystemExit(f"FAIL vendor-contact checker rejected valid fixture: {valid_issues}")
+
+    negative_fixtures = (
+        (
+            "missing_internal_user",
+            valid_source.replace(', internal_user=actor', ''),
+            "vendor_contact_contract:internal_user_actor_required",
+        ),
+        (
+            "resolver_after_target_db",
+            '''
+def api_vendor_contact():
+    data = request.get_json(silent=True)
+    with db() as conn:
+        actor = resolve_canonical_internal_mutation_actor()
+        context = authorize_vendor_contact_write(conn, sheet_id=1, vendor_name="Vendor", internal_user=actor)
+    return context
+''',
+            "vendor_contact_contract:source_order_invalid",
+        ),
+        (
+            "current_internal_user_fallback",
+            valid_source.replace('data = request.get_json(silent=True)', 'fallback = _current_internal_user()\n    data = request.get_json(silent=True)'),
+            "vendor_contact_contract:current_internal_user_forbidden",
+        ),
+        (
+            "direct_session_user_id",
+            valid_source.replace('data = request.get_json(silent=True)', 'audit_id = session["user_id"]\n    data = request.get_json(silent=True)'),
+            "vendor_contact_contract:direct_session_user_id_forbidden",
+        ),
+        (
+            "comment_string_only_authorize",
+            '''
+def api_vendor_contact():
+    actor = resolve_canonical_internal_mutation_actor()
+    data = request.get_json(silent=True)
+    with db() as conn:
+        # context = authorize_vendor_contact_write(conn, internal_user=actor)
+        "context = authorize_vendor_contact_write(conn, internal_user=actor)"
+    return data
+''',
+            "vendor_contact_contract:authorize_call_count",
+        ),
+        (
+            "duplicate_resolver",
+            valid_source.replace('data = request.get_json(silent=True)', 'actor = resolve_canonical_internal_mutation_actor()\n    data = request.get_json(silent=True)'),
+            "vendor_contact_contract:canonical_resolver_call_count",
+        ),
+        (
+            "duplicate_authorize",
+            valid_source.replace('return context', 'authorize_vendor_contact_write(conn, sheet_id=1, vendor_name="Vendor", internal_user=actor)\n    return context'),
+            "vendor_contact_contract:authorize_call_count",
+        ),
+        (
+            "missing_route",
+            valid_source.replace('api_vendor_contact', 'not_the_route'),
+            "vendor_contact_contract:route_definition_count",
+        ),
+        (
+            "syntax_error",
+            'def api_vendor_contact(:\n    pass\n',
+            "vendor_contact_contract:source_syntax_error",
+        ),
+    )
+    for label, fixture, expected_issue in negative_fixtures:
+        fixture_issues: list[str] = []
+        validate_vendor_contact_route_contract(fixture, fixture_issues)
+        if expected_issue not in fixture_issues:
+            raise SystemExit(
+                f"FAIL vendor-contact checker negative fixture {label} missed {expected_issue}: {fixture_issues}"
+            )
+
+    print("PASS vendor contact readiness checker negative controls passed.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check site write isolation readiness inventory.")
-    parser.add_argument("--self-test", action="store_true", help="Run in-memory unit-extra AST negative controls.")
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="Run in-memory unit-extra and vendor-contact AST negative controls.",
+    )
     args = parser.parse_args()
     if args.self_test:
-        return run_unit_extra_contract_self_test()
+        run_unit_extra_contract_self_test()
+        return run_vendor_contact_contract_self_test()
 
     print("site_write_isolation_readiness_scope: high_risk_group_full_enforcement")
     print(f"app_source: {APP_PATH}")
@@ -623,6 +786,7 @@ def main() -> int:
         render_item(item)
 
     validate_unit_extra_route_contract(source, issues)
+    validate_vendor_contact_route_contract(source, issues)
 
     print(f"issues_count: {len(issues)}")
     if issues:
