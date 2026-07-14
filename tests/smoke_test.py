@@ -9958,6 +9958,552 @@ print("internal sheet current-site isolation smoke PASS")
         raise AssertionError("internal sheet current-site isolation smoke did not report PASS")
 
 
+def run_progress_authentication_order_focused_smoke(db_path: Path) -> None:
+    script = r'''
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sqlite3
+import sys
+
+db_path, root_dir = sys.argv[1:3]
+os.environ["APP_DB_PATH"] = db_path
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+spec = importlib.util.spec_from_file_location("app_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+
+with module.db() as conn:
+    default_site_id = module.ensure_site_foundation_schema(conn)
+    default_site = conn.execute(
+        "SELECT id, site_name FROM sites WHERE id = ?",
+        (default_site_id,),
+    ).fetchone()
+    existing = conn.execute(
+        """
+        SELECT u.id AS unit_id, t.id AS task_id, f.sheet_id AS sheet_id
+        FROM units u
+        JOIN floors f ON f.id = u.floor_id
+        JOIN tasks t ON t.sheet_id = f.sheet_id
+        ORDER BY u.id, t.id
+        LIMIT 1
+        """
+    ).fetchone()
+    if existing is None:
+        raise SystemExit("progress auth-order smoke requires one existing unit/task pair")
+    unit_id = int(existing["unit_id"])
+    task_id = int(existing["task_id"])
+    sheet_id = int(existing["sheet_id"])
+
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+            ("Progress Auth Secondary", "progress-auth-secondary"),
+        ).fetchone()["id"]
+    )
+    secondary_sheet_id = int(
+        conn.execute(
+            "INSERT INTO sheets (name, sort_order, site_id, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) RETURNING id",
+            ("Progress Auth Secondary", 999, secondary_site_id),
+        ).fetchone()["id"]
+    )
+    secondary_floor_id = int(
+        conn.execute(
+            "INSERT INTO floors (sheet_id, sort_order, name, block_name, unit_count) VALUES (?, ?, ?, ?, 1) RETURNING id",
+            (secondary_sheet_id, 999, "PA", "PA",),
+        ).fetchone()["id"]
+    )
+    secondary_unit_id = int(
+        conn.execute(
+            "INSERT INTO units (floor_id, sort_order, name) VALUES (?, ?, ?) RETURNING id",
+            (secondary_floor_id, 1, "PA-1"),
+        ).fetchone()["id"]
+    )
+    secondary_task_id = int(
+        conn.execute(
+            "INSERT INTO tasks (sheet_id, col_index, vendor, location, name) VALUES (?, ?, ?, ?, ?) RETURNING id",
+            (secondary_sheet_id, 999, "Progress Auth Vendor", "PA", "Progress Auth Task"),
+        ).fetchone()["id"]
+    )
+    conn.execute(
+        "INSERT INTO progress (unit_id, task_id, value, updated_by, updated_at) VALUES (?, ?, ?, NULL, CURRENT_TIMESTAMP)",
+        (secondary_unit_id, secondary_task_id, module.WORKING_VALUE),
+    )
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("progress_auth_member", "Progress Auth Member", "unused", "member"),
+    )
+    member_id = int(
+        conn.execute("SELECT id FROM users WHERE username = 'progress_auth_member'").fetchone()["id"]
+    )
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+        (member_id, default_site_id, "member"),
+    )
+    admin = conn.execute(
+        "SELECT id, username, role FROM users WHERE role = 'admin' ORDER BY id LIMIT 1"
+    ).fetchone()
+    if admin is None:
+        raise SystemExit("progress auth-order smoke requires one canonical admin")
+    admin_id = int(admin["id"])
+    admin_username = str(admin["username"])
+
+client = module.app.test_client()
+missing_unit_id = 999999991
+missing_task_id = 999999992
+target_tables = (
+    "units", "floors", "sheets", "tasks", "progress", "sites", "user_site_permissions"
+)
+original_db = module.db
+original_actor_resolver = module.resolve_canonical_internal_mutation_actor
+original_postgres = module.get_primary_postgres_connection
+postgres_calls = []
+
+def postgres_sentinel(*args, **kwargs):
+    postgres_calls.append((args, kwargs))
+    raise AssertionError("progress auth-order smoke must not connect to PostgreSQL")
+
+def sql_references_table(normalized_sql, table_name):
+    tokens = normalized_sql.replace("(", " ").replace(")", " ").replace(",", " ").split()
+    for index, token in enumerate(tokens):
+        if index == 0 or tokens[index - 1] not in {"from", "join", "update", "into", "delete"}:
+            continue
+        if token.strip('"`[]') == table_name:
+            return True
+    return False
+
+class TraceConnection:
+    def __init__(self, connection, counters, phase):
+        self.connection = connection
+        self.counters = counters
+        self.phase = phase
+
+    def __enter__(self):
+        self.counters[f"{self.phase}_context_entries"] += 1
+        self.connection.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        result = self.connection.__exit__(exc_type, exc, traceback)
+        if self.phase == "target" and self.counters["target_writes"]:
+            self.counters["phase"] = "response"
+        return result
+
+    def execute(self, sql, parameters=()):
+        normalized = " ".join(str(sql).lower().split())
+        self.counters[f"{self.phase}_statements"].append(normalized)
+        if normalized.startswith("begin"):
+            self.counters[f"{self.phase}_begins"] += 1
+        if self.phase == "auth":
+            if sql_references_table(normalized, "users"):
+                self.counters["auth_users_queries"] += 1
+            if sql_references_table(normalized, "vendor_accounts"):
+                self.counters["auth_vendor_queries"] += 1
+            if any(sql_references_table(normalized, table) for table in target_tables):
+                self.counters["auth_target_queries"] += 1
+        elif self.phase == "target":
+            if sql_references_table(normalized, "users"):
+                self.counters["target_users_queries"] += 1
+            if sql_references_table(normalized, "vendor_accounts"):
+                self.counters["target_vendor_queries"] += 1
+            if any(sql_references_table(normalized, table) for table in target_tables):
+                self.counters["target_queries"] += 1
+            if normalized.startswith(("insert ", "update ", "delete ", "replace ")):
+                self.counters["target_writes"] += 1
+        else:
+            if normalized.startswith(("insert ", "update ", "delete ", "replace ")):
+                self.counters["response_writes"] += 1
+        return self.connection.execute(sql, parameters)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+def full_manifest():
+    with original_db() as conn:
+        conn.row_factory = sqlite3.Row
+        table_names = [
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        ]
+        table_rows = {}
+        for table_name in table_names:
+            columns = [str(row["name"]) for row in conn.execute(f'PRAGMA table_info("{table_name}")')]
+            table_rows[table_name] = tuple(
+                tuple(row[column] for column in columns)
+                for row in conn.execute(f'SELECT * FROM "{table_name}" ORDER BY rowid').fetchall()
+            )
+        sequences = tuple(
+            tuple(row)
+            for row in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name").fetchall()
+        )
+        schema = tuple(
+            tuple(row)
+            for row in conn.execute(
+                "SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master "
+                "WHERE type IN ('table', 'index') ORDER BY type, name"
+            ).fetchall()
+        )
+    return table_rows, sequences, schema
+
+def set_session(values):
+    with client.session_transaction() as session:
+        session.clear()
+        session.update(values)
+
+def member_session(*, with_site=True):
+    values = {
+        "user_id": member_id,
+        "username": "forged-member-name",
+        "display_name": "forged",
+        "role": "admin",
+    }
+    if with_site:
+        values.update(
+            {
+                "current_site_id": int(default_site_id),
+                "current_site_name": str(default_site["site_name"]),
+                "site_selection_required": False,
+            }
+        )
+    set_session(values)
+
+def admin_session():
+    set_session(
+        {
+            "user_id": admin_id,
+            "username": "forged-admin-name",
+            "display_name": "forged",
+            "role": "member",
+            "current_site_id": int(default_site_id),
+            "current_site_name": str(default_site["site_name"]),
+            "site_selection_required": False,
+        }
+    )
+
+def post_with_counts(payload):
+    counters = {
+        "phase": "target",
+        "actor_resolutions": 0,
+        "resolved_actor": None,
+        "auth_db_factory_calls": 0,
+        "auth_context_entries": 0,
+        "auth_statements": [],
+        "auth_begins": 0,
+        "auth_users_queries": 0,
+        "auth_vendor_queries": 0,
+        "auth_target_queries": 0,
+        "target_db_factory_calls": 0,
+        "target_context_entries": 0,
+        "target_statements": [],
+        "target_begins": 0,
+        "target_queries": 0,
+        "target_writes": 0,
+        "target_users_queries": 0,
+        "target_vendor_queries": 0,
+        "response_db_factory_calls": 0,
+        "response_context_entries": 0,
+        "response_statements": [],
+        "response_begins": 0,
+        "response_writes": 0,
+    }
+
+    def tracing_actor_resolver():
+        counters["actor_resolutions"] += 1
+        counters["phase"] = "auth"
+        try:
+            actor = original_actor_resolver()
+            counters["resolved_actor"] = actor
+            return actor
+        finally:
+            counters["phase"] = "target"
+
+    def tracing_db():
+        phase = str(counters["phase"])
+        counters[f"{phase}_db_factory_calls"] += 1
+        return TraceConnection(original_db(), counters, phase)
+
+    module.db = tracing_db
+    module.resolve_canonical_internal_mutation_actor = tracing_actor_resolver
+    try:
+        response = client.post("/api/progress", json=payload)
+    finally:
+        module.db = original_db
+        module.resolve_canonical_internal_mutation_actor = original_actor_resolver
+    counters.pop("phase")
+    return response, counters
+
+def response_contract(response):
+    return {
+        "status": response.status_code,
+        "location": response.headers.get("Location"),
+        "json": response.get_json(silent=True),
+    }
+
+def assert_no_target_phase(counters, label):
+    for key in (
+        "target_db_factory_calls", "target_context_entries", "target_begins",
+        "target_queries", "target_writes", "target_users_queries", "target_vendor_queries",
+    ):
+        if counters[key] != 0:
+            raise SystemExit(f"{label} expected {key}=0: {counters}")
+    if counters["auth_target_queries"] != 0 or counters["auth_begins"] != 0:
+        raise SystemExit(f"{label} auth phase reached target facts or transaction: {counters}")
+
+def assert_actor_once(counters, label):
+    if counters["actor_resolutions"] != 1:
+        raise SystemExit(f"{label} must resolve actor exactly once: {counters}")
+
+def assert_internal_actor(counters, label):
+    assert_actor_once(counters, label)
+    actor = counters["resolved_actor"]
+    if isinstance(actor, sqlite3.Row) or not isinstance(actor, dict) or set(actor) != {"id", "username", "role"}:
+        raise SystemExit(f"{label} did not receive minimal plain actor snapshot: {actor!r}")
+    if counters["auth_db_factory_calls"] != 1 or counters["auth_context_entries"] != 1:
+        raise SystemExit(f"{label} must use one canonical auth connection: {counters}")
+    if counters["auth_users_queries"] != 1 or counters["auth_vendor_queries"] != 0:
+        raise SystemExit(f"{label} canonical auth lookup count mismatch: {counters}")
+    if counters["auth_target_queries"] != 0 or counters["auth_begins"] != 0:
+        raise SystemExit(f"{label} auth phase reached target facts or transaction: {counters}")
+    if counters["target_users_queries"] != 0 or counters["target_vendor_queries"] != 0:
+        raise SystemExit(f"{label} target phase re-resolved actor: {counters}")
+
+def assert_json(response, status, payload, label):
+    if response.status_code != status or response.get_json(silent=True) != payload:
+        raise SystemExit(f"{label} expected {status} {payload!r}, got {response_contract(response)!r}")
+
+valid_payload = {"unit_id": unit_id, "task_id": task_id, "value": module.WORKING_VALUE}
+missing_unit_payload = {**valid_payload, "unit_id": missing_unit_id}
+missing_task_payload = {**valid_payload, "task_id": missing_task_id}
+invalid_payload = {"unit_id": "not-an-integer", "task_id": None, "value": "INVALID"}
+auth_error = {"ok": False, "message": "authentication is required."}
+
+def run_cases():
+    decorator_sessions = {
+        "no session": {},
+        "vendor only": {
+            "identity_type": "vendor",
+            "vendor_account_id": 777,
+            "vendor_username": "vendor-only",
+            "vendor_name": "Vendor Only",
+        },
+    }
+    for label, session_values in decorator_sessions.items():
+        results = []
+        for case_label, payload in (
+            ("existing", valid_payload),
+            ("missing unit", missing_unit_payload),
+            ("missing task", missing_task_payload),
+        ):
+            set_session(session_values)
+            before = full_manifest()
+            response, counters = post_with_counts(payload)
+            if response.status_code != 302 or not response.headers.get("Location", "").endswith("/login"):
+                raise SystemExit(f"{label} {case_label} must preserve 302 /login")
+            if counters["actor_resolutions"] != 0:
+                raise SystemExit(f"{label} {case_label} must stop at login_required")
+            assert_no_target_phase(counters, f"{label} {case_label}")
+            if full_manifest() != before:
+                raise SystemExit(f"{label} {case_label} changed manifest")
+            results.append(response_contract(response))
+        if len({json.dumps(item, sort_keys=True) for item in results}) != 1:
+            raise SystemExit(f"{label} existing/missing decorator responses differ: {results}")
+
+    invalid_actor_sessions = {
+        "stale internal": {"user_id": 999999993, "username": "stale", "role": "member"},
+        "malformed internal": {"user_id": "malformed", "username": "bad", "role": "member"},
+        "mixed internal vendor": {
+            "user_id": member_id,
+            "username": "forged",
+            "role": "admin",
+            "identity_type": "vendor",
+            "vendor_account_id": 777,
+            "vendor_username": "mixed",
+            "vendor_name": "Mixed Vendor",
+        },
+    }
+    for label, session_values in invalid_actor_sessions.items():
+        results = []
+        for case_label, payload in (
+            ("existing", valid_payload),
+            ("missing unit", missing_unit_payload),
+            ("missing task", missing_task_payload),
+            ("invalid payload", invalid_payload),
+        ):
+            set_session(session_values)
+            before = full_manifest()
+            response, counters = post_with_counts(payload)
+            assert_json(response, 403, auth_error, f"{label} {case_label}")
+            assert_actor_once(counters, f"{label} {case_label}")
+            assert_no_target_phase(counters, f"{label} {case_label}")
+            if full_manifest() != before:
+                raise SystemExit(f"{label} {case_label} changed manifest")
+            results.append(response_contract(response))
+        if len({json.dumps(item, sort_keys=True) for item in results}) != 1:
+            raise SystemExit(f"{label} response varied by target/payload: {results}")
+
+    for label, session_setter in (("member", member_session), ("admin", admin_session)):
+        session_setter()
+        before = full_manifest()
+        response, counters = post_with_counts({**valid_payload, "value": "INVALID"})
+        assert_json(response, 400, {"ok": False, "message": "狀態只能是 O 或 X。"}, f"{label} invalid value")
+        assert_internal_actor(counters, f"{label} invalid value")
+        assert_no_target_phase(counters, f"{label} invalid value")
+        if full_manifest() != before:
+            raise SystemExit(f"{label} invalid value changed manifest")
+
+    domain_cases = (
+        ("missing unit", missing_unit_payload, 404, {"ok": False, "message": "unit_id was not found."}),
+        ("missing task", missing_task_payload, 404, {"ok": False, "message": "task_id was not found."}),
+        (
+            "unit task mismatch",
+            {"unit_id": unit_id, "task_id": secondary_task_id, "value": module.WORKING_VALUE},
+            409,
+            {"ok": False, "message": "unit_id and task_id do not belong to the same sheet."},
+        ),
+        (
+            "cross site",
+            {"unit_id": secondary_unit_id, "task_id": secondary_task_id, "value": module.WORKING_VALUE},
+            403,
+            {"ok": False, "message": "write target does not belong to the current site."},
+        ),
+    )
+    for label, payload, status, expected in domain_cases:
+        member_session()
+        before = full_manifest()
+        response, counters = post_with_counts(payload)
+        assert_json(response, status, expected, label)
+        assert_internal_actor(counters, label)
+        if counters["target_db_factory_calls"] != 1 or counters["target_context_entries"] != 1:
+            raise SystemExit(f"{label} target connection topology changed: {counters}")
+        if counters["target_writes"] != 0 or counters["target_begins"] != 0:
+            raise SystemExit(f"{label} unexpectedly started a write: {counters}")
+        if full_manifest() != before:
+            raise SystemExit(f"{label} changed manifest")
+
+    member_session(with_site=False)
+    before = full_manifest()
+    response, counters = post_with_counts(valid_payload)
+    assert_json(
+        response,
+        403,
+        {"ok": False, "message": "current_site_id is missing or invalid."},
+        "missing current site",
+    )
+    assert_internal_actor(counters, "missing current site")
+    if counters["target_writes"] != 0 or full_manifest() != before:
+        raise SystemExit("missing current site changed data")
+
+    with original_db() as conn:
+        conn.execute(
+            "DELETE FROM user_site_permissions WHERE user_id = ? AND site_id = ?",
+            (member_id, default_site_id),
+        )
+    member_session()
+    before = full_manifest()
+    response, counters = post_with_counts(valid_payload)
+    assert_json(
+        response,
+        403,
+        {"ok": False, "message": "current user no longer has permission for the current site."},
+        "permission revoked",
+    )
+    assert_internal_actor(counters, "permission revoked")
+    if counters["target_writes"] != 0 or full_manifest() != before:
+        raise SystemExit("permission revoked changed data")
+    with original_db() as conn:
+        conn.execute(
+            "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, ?)",
+            (member_id, default_site_id, "member"),
+        )
+
+    def progress_state():
+        with original_db() as conn:
+            row = conn.execute(
+                "SELECT unit_id, task_id, value, updated_by, updated_at FROM progress WHERE unit_id = ? AND task_id = ?",
+                (unit_id, task_id),
+            ).fetchone()
+            count = int(conn.execute("SELECT COUNT(*) FROM progress").fetchone()[0])
+        return dict(row), count
+
+    for label, session_setter, actor_id, actor_username, actor_role, value in (
+        ("member success", member_session, member_id, "progress_auth_member", "member", module.DONE_VALUE),
+        ("admin success", admin_session, admin_id, admin_username, "admin", module.WORKING_VALUE),
+    ):
+        session_setter()
+        before_manifest = full_manifest()
+        before_row, before_count = progress_state()
+        response, counters = post_with_counts({**valid_payload, "value": value})
+        if response.status_code != 200 or response.get_json().get("ok") is not True:
+            raise SystemExit(f"{label} did not preserve success response")
+        assert_internal_actor(counters, label)
+        if counters["resolved_actor"] != {"id": actor_id, "username": actor_username, "role": actor_role}:
+            raise SystemExit(f"{label} actor identity was not canonical: {counters['resolved_actor']}")
+        if counters["target_db_factory_calls"] != 1 or counters["target_context_entries"] != 1:
+            raise SystemExit(f"{label} expected one mutation target connection: {counters}")
+        if counters["response_db_factory_calls"] < 1 or counters["response_context_entries"] < 1:
+            raise SystemExit(f"{label} did not preserve the existing grid reload: {counters}")
+        if counters["response_writes"] != 0 or counters["response_begins"] != 0:
+            raise SystemExit(f"{label} response rendering unexpectedly wrote data: {counters}")
+        if counters["target_writes"] != 1:
+            raise SystemExit(f"{label} must execute exactly one progress write: {counters}")
+        after_row, after_count = progress_state()
+        if after_count != before_count:
+            raise SystemExit(f"{label} changed progress row topology")
+        if after_row["value"] != value or int(after_row["updated_by"]) != actor_id:
+            raise SystemExit(f"{label} did not persist canonical updated_by: {after_row}")
+        before_tables, before_sequences, before_schema = before_manifest
+        after_tables, after_sequences, after_schema = full_manifest()
+        if before_sequences != after_sequences or before_schema != after_schema:
+            raise SystemExit(f"{label} changed sequences or schema")
+        for table_name in before_tables:
+            if table_name != "progress" and before_tables[table_name] != after_tables[table_name]:
+                raise SystemExit(f"{label} changed unexpected table {table_name}")
+        changed_fields = {key for key in before_row if before_row[key] != after_row[key]}
+        if not changed_fields.issubset({"value", "updated_by", "updated_at"}):
+            raise SystemExit(f"{label} changed unexpected progress fields: {changed_fields}")
+
+module.get_primary_postgres_connection = postgres_sentinel
+try:
+    run_cases()
+finally:
+    module.get_primary_postgres_connection = original_postgres
+
+if postgres_calls:
+    raise SystemExit(f"progress auth-order paths connected to PostgreSQL: {postgres_calls}")
+
+print("progress authentication order focused smoke PASS")
+'''
+    with tempfile.TemporaryDirectory(prefix="progress-auth-order-") as script_tmpdir:
+        script_path = Path(script_tmpdir) / "progress_auth_order_smoke.py"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(script_path),
+                str(db_path),
+                str(ROOT_DIR),
+            ],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    marker = "progress authentication order focused smoke PASS"
+    if result.returncode != 0:
+        raise AssertionError(f"progress auth-order child failed: {result.stderr or result.stdout}")
+    if result.stderr:
+        raise AssertionError(f"progress auth-order child stderr was not empty: {result.stderr}")
+    if result.stdout.count(marker) != 1:
+        raise AssertionError("progress auth-order child marker count must be exactly one")
+    print(marker)
+
+
 def run_progress_write_isolation_smoke(db_path: Path) -> None:
     script = """
 import importlib.util
@@ -21648,6 +22194,9 @@ def main() -> int:
         current_site_read_db = Path(tmpdir) / "internal-sheet-current-site-isolation.db"
         create_sample_sqlite(current_site_read_db)
         run_internal_sheet_current_site_isolation_smoke(current_site_read_db)
+        progress_auth_db = Path(tmpdir) / "progress-auth-order.db"
+        create_sample_sqlite(progress_auth_db)
+        run_progress_authentication_order_focused_smoke(progress_auth_db)
         run_progress_write_isolation_smoke(db_path)
         run_unit_extra_write_isolation_smoke(db_path)
         run_vendor_contact_write_isolation_smoke(db_path)

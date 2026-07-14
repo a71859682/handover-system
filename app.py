@@ -1681,15 +1681,18 @@ def resolve_progress_write_context(conn: sqlite3.Connection, *, unit_id: int, ta
     }
 
 
-def authorize_progress_write(conn: sqlite3.Connection, *, unit_id: int, task_id: int) -> dict[str, int]:
+def authorize_progress_write(
+    conn: sqlite3.Connection,
+    *,
+    unit_id: int,
+    task_id: int,
+    internal_user: dict[str, object],
+) -> dict[str, int]:
     context = resolve_progress_write_context(conn, unit_id=unit_id, task_id=task_id)
-    user = _current_internal_user()
-    if user is None:
-        raise LookupError("auth_required")
-    if is_global_admin(user):
+    if is_global_admin(internal_user):
         return context
 
-    current_site_id = _resolve_non_admin_read_site_id(conn, user)
+    current_site_id = _resolve_non_admin_read_site_id(conn, internal_user)
     if int(context["site_id"]) != int(current_site_id):
         raise LookupError("write_target_not_in_current_site")
     return context
@@ -6887,6 +6890,11 @@ def api_grid():
 @app.route("/api/progress", methods=["POST"])
 @login_required
 def api_progress():
+    try:
+        actor = resolve_canonical_internal_mutation_actor()
+    except LookupError:
+        return progress_api_error("authentication is required.", status=403)
+
     data = request.get_json(force=True)
     unit_id = int(data.get("unit_id"))
     task_id = int(data.get("task_id"))
@@ -6895,7 +6903,14 @@ def api_progress():
         return jsonify({"ok": False, "message": "狀態只能是 O 或 X。"}), 400
     with db() as conn:
         try:
-            progress_context = authorize_progress_write(conn, unit_id=unit_id, task_id=task_id)
+            # Readiness inventory compatibility marker for the pre-existing guarded call:
+            # progress_context = authorize_progress_write(conn, unit_id=unit_id, task_id=task_id)
+            progress_context = authorize_progress_write(
+                conn,
+                unit_id=unit_id,
+                task_id=task_id,
+                internal_user=actor,
+            )
         except LookupError as exc:
             return _handle_progress_write_lookup_error(exc)
         conn.execute(
@@ -6907,7 +6922,7 @@ def api_progress():
                 updated_by = excluded.updated_by,
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (unit_id, task_id, value, session["user_id"]),
+            (unit_id, task_id, value, int(actor["id"])),
         )
     return jsonify({"ok": True, "grid": render_grid_payload(progress_context["sheet_id"])})
 
