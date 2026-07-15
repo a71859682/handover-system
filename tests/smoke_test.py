@@ -9737,6 +9737,738 @@ print("user site permissions smoke guardrail PASS")
         raise AssertionError("user site permissions smoke guardrail subprocess did not report PASS.")
 
 
+def run_admin_users_authentication_order_focused_smoke(db_path: Path) -> None:
+    script = r'''
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import sqlite3
+import sys
+
+sample_db_path, root_dir = sys.argv[1:3]
+sys.path.insert(0, root_dir)
+os.environ["APP_DB_PATH"] = sample_db_path
+os.environ["DUAL_WRITE_ENABLED"] = "1"
+os.environ["DUAL_WRITE_TABLES"] = "users"
+os.environ["DUAL_WRITE_DRY_RUN"] = "0"
+os.environ["USE_SQLALCHEMY_WRITES"] = "0"
+spec = importlib.util.spec_from_file_location("admin_users_auth_order_under_test", str(Path(root_dir) / "app.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.app.testing = True
+module.app.config["PROPAGATE_EXCEPTIONS"] = False
+module.app.logger.disabled = True
+
+with module.db() as conn:
+    conn.row_factory = sqlite3.Row
+    default_site_id = int(module.ensure_site_foundation_schema(conn))
+    default_site_name = str(
+        conn.execute("SELECT site_name FROM sites WHERE id = ?", (default_site_id,)).fetchone()["site_name"]
+    )
+    secondary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+            ("Admin Users Auth Secondary", "AUAS"),
+        ).fetchone()["id"]
+    )
+    tertiary_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 1) RETURNING id",
+            ("Admin Users Auth Tertiary", "AUAT"),
+        ).fetchone()["id"]
+    )
+    inactive_site_id = int(
+        conn.execute(
+            "INSERT INTO sites (site_name, site_code, is_active) VALUES (?, ?, 0) RETURNING id",
+            ("Admin Users Auth Inactive", "AUAI"),
+        ).fetchone()["id"]
+    )
+    password_hash = module.generate_password_hash("x")
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("admin_users_member", "Admin Users Member", password_hash, "member"),
+    )
+    member_id = int(conn.execute("SELECT id FROM users WHERE username = 'admin_users_member'").fetchone()["id"])
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'member')",
+        (member_id, default_site_id),
+    )
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("admin_users_update_target", "Admin Users Update Target", password_hash, "member"),
+    )
+    update_target_id = int(
+        conn.execute("SELECT id FROM users WHERE username = 'admin_users_update_target'").fetchone()["id"]
+    )
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("admin_users_delete_target", "Admin Users Delete Target", password_hash, "member"),
+    )
+    delete_target_id = int(
+        conn.execute("SELECT id FROM users WHERE username = 'admin_users_delete_target'").fetchone()["id"]
+    )
+    conn.execute(
+        "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'member')",
+        (delete_target_id, secondary_site_id),
+    )
+    conn.execute(
+        "INSERT INTO users (username, display_name, password_hash, role) VALUES (?, ?, ?, ?)",
+        ("admin_users_permission_target", "Admin Users Permission Target", password_hash, "member"),
+    )
+    permission_target_id = int(
+        conn.execute("SELECT id FROM users WHERE username = 'admin_users_permission_target'").fetchone()["id"]
+    )
+    add_permission_existing_site_id = tertiary_site_id
+    update_permission_id = int(
+        conn.execute(
+            "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'member') RETURNING id",
+            (permission_target_id, default_site_id),
+        ).fetchone()["id"]
+    )
+    delete_permission_id = int(
+        conn.execute(
+            "INSERT INTO user_site_permissions (user_id, site_id, role) VALUES (?, ?, 'supervisor') RETURNING id",
+            (permission_target_id, secondary_site_id),
+        ).fetchone()["id"]
+    )
+    admin_row = conn.execute(
+        "SELECT id, username, role FROM users WHERE id = 1"
+    ).fetchone()
+    if admin_row is None:
+        raise SystemExit("fixture missing canonical admin id=1")
+    admin_actor = {
+        "id": int(admin_row["id"]),
+        "username": str(admin_row["username"]),
+        "role": str(admin_row["role"]),
+    }
+    conn.commit()
+
+client = module.app.test_client()
+
+missing_user_id = 999999961
+missing_permission_id = 999999962
+missing_site_id = 999999963
+invalid_delete_user_action = "delete_user:not-an-int"
+invalid_update_user_action = "update_user:not-an-int"
+target_tables = ("users", "user_site_permissions", "sites")
+original_db = module.db
+original_actor_resolver = module.resolve_canonical_internal_mutation_actor
+original_current_internal_user = module._current_internal_user
+original_pg_connect = module.get_primary_postgres_connection
+original_create_user_postgres = module.create_user_postgres
+original_update_user_role_postgres = module.update_user_role_postgres
+original_delete_user_postgres = module.delete_user_postgres
+request_state = {"active": False, "counters": None}
+phase_state = {"value": "idle"}
+postgres_connection_calls = []
+dual_write_calls = []
+
+def sql_references_table(normalized_sql, table_name):
+    tokens = re.findall(r"[a-z_][a-z0-9_]*", normalized_sql)
+    return any(
+        index > 0 and tokens[index - 1] in {"from", "join", "update", "into", "delete"} and token == table_name
+        for index, token in enumerate(tokens)
+    )
+
+class TraceConnection:
+    def __init__(self, connection, counters, phase):
+        self.connection = connection
+        self.counters = counters
+        self.phase = phase
+
+    def __enter__(self):
+        self.counters[f"{self.phase}_context_entries"] += 1
+        self.connection.__enter__()
+        self.connection.set_trace_callback(self._trace)
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.connection.set_trace_callback(None)
+        return self.connection.__exit__(exc_type, exc, traceback)
+
+    def _trace(self, sql):
+        normalized = " ".join(str(sql).lower().split())
+        if normalized.startswith("begin"):
+            self.counters[f"{self.phase}_begins"] += 1
+
+    def execute(self, sql, parameters=()):
+        normalized = " ".join(str(sql).lower().split())
+        self.counters[f"{self.phase}_statements"].append(normalized)
+        if self.phase == "auth":
+            if sql_references_table(normalized, "users"):
+                self.counters["auth_users_queries"] += 1
+            if sql_references_table(normalized, "vendor_accounts"):
+                self.counters["auth_vendor_queries"] += 1
+            if any(sql_references_table(normalized, table_name) for table_name in target_tables):
+                self.counters["auth_target_queries"] += 1
+        else:
+            if any(sql_references_table(normalized, table_name) for table_name in target_tables):
+                self.counters["target_queries"] += 1
+            if normalized.startswith(("insert ", "update ", "delete ", "replace ")):
+                self.counters["target_writes"] += 1
+        return self.connection.execute(sql, parameters)
+
+    def executemany(self, sql, seq_of_parameters):
+        normalized = " ".join(str(sql).lower().split())
+        self.counters[f"{self.phase}_statements"].append(normalized)
+        if self.phase == "auth":
+            if sql_references_table(normalized, "users"):
+                self.counters["auth_users_queries"] += 1
+            if sql_references_table(normalized, "vendor_accounts"):
+                self.counters["auth_vendor_queries"] += 1
+            if any(sql_references_table(normalized, table_name) for table_name in target_tables):
+                self.counters["auth_target_queries"] += 1
+        else:
+            if any(sql_references_table(normalized, table_name) for table_name in target_tables):
+                self.counters["target_queries"] += 1
+            if normalized.startswith(("insert ", "update ", "delete ", "replace ")):
+                self.counters["target_writes"] += len(list(seq_of_parameters))
+        return self.connection.executemany(sql, seq_of_parameters)
+
+    def __getattr__(self, name):
+        return getattr(self.connection, name)
+
+def traced_db(*args, **kwargs):
+    if not request_state["active"] or request_state["counters"] is None:
+        return original_db(*args, **kwargs)
+    phase = "auth" if phase_state["value"] == "auth" else "target"
+    request_state["counters"][f"{phase}_db_factory_calls"] += 1
+    return TraceConnection(original_db(*args, **kwargs), request_state["counters"], phase)
+
+def traced_resolver():
+    counters = request_state["counters"]
+    if counters is not None:
+        counters["actor_resolutions"] += 1
+    previous_phase = phase_state["value"]
+    phase_state["value"] = "auth"
+    try:
+        actor = original_actor_resolver()
+    finally:
+        phase_state["value"] = previous_phase
+    if counters is not None:
+        counters["resolved_actors"].append(dict(actor))
+    return actor
+
+def traced_current_internal_user(*args, **kwargs):
+    if request_state["active"] and request_state["counters"] is not None:
+        request_state["counters"]["current_user_calls"] += 1
+    return original_current_internal_user(*args, **kwargs)
+
+def traced_get_primary_postgres_connection():
+    postgres_connection_calls.append("connect")
+    return object()
+
+def traced_create_user_postgres(connection, **kwargs):
+    dual_write_calls.append(("create", dict(kwargs)))
+
+def traced_update_user_role_postgres(connection, user_id, *, role):
+    dual_write_calls.append(("update", {"user_id": int(user_id), "role": str(role)}))
+
+def traced_delete_user_postgres(connection, *, id, username):
+    dual_write_calls.append(("delete", {"id": int(id), "username": str(username)}))
+
+def reset_request_counters():
+    return {
+        "actor_resolutions": 0,
+        "resolved_actors": [],
+        "current_user_calls": 0,
+        "auth_db_factory_calls": 0,
+        "auth_context_entries": 0,
+        "auth_users_queries": 0,
+        "auth_vendor_queries": 0,
+        "auth_target_queries": 0,
+        "auth_begins": 0,
+        "auth_statements": [],
+        "target_db_factory_calls": 0,
+        "target_context_entries": 0,
+        "target_queries": 0,
+        "target_begins": 0,
+        "target_writes": 0,
+        "target_statements": [],
+        "postgres_connections_delta": 0,
+        "dual_write_calls_delta": [],
+    }
+
+def full_manifest():
+    with original_db() as conn:
+        conn.row_factory = sqlite3.Row
+        table_names = [
+            str(row["name"])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        ]
+        table_rows = {}
+        for table_name in table_names:
+            columns = [str(row["name"]) for row in conn.execute(f'PRAGMA table_info("{table_name}")')]
+            table_rows[table_name] = tuple(
+                tuple(row[column] for column in columns)
+                for row in conn.execute(f'SELECT * FROM "{table_name}" ORDER BY rowid').fetchall()
+            )
+        sequences = tuple(tuple(row) for row in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name"))
+        schema = tuple(
+            tuple(row)
+            for row in conn.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+            ).fetchall()
+        )
+    db_file = Path(sample_db_path)
+    sidecars = {
+        suffix: (db_file.with_name(db_file.name + suffix).exists(), db_file.with_name(db_file.name + suffix).stat().st_size if db_file.with_name(db_file.name + suffix).exists() else 0)
+        for suffix in ("-wal", "-shm", "-journal")
+    }
+    return (
+        table_rows,
+        sequences,
+        schema,
+        {
+            "size": db_file.stat().st_size,
+            "mtime_ns": db_file.stat().st_mtime_ns,
+            "sidecars": sidecars,
+        },
+    )
+
+def set_session(values):
+    with client.session_transaction() as session:
+        session.clear()
+        for key, value in values.items():
+            session[key] = value
+
+def decorator_vendor_session():
+    return {
+        "identity_type": "vendor",
+        "vendor_account_id": 999,
+        "vendor_username": "vendor-only",
+        "vendor_name": "Vendor Only",
+    }
+
+def partial_vendor_session():
+    return {"vendor_username": "partial-only"}
+
+def stale_vendor_session():
+    return {
+        "identity_type": "vendor",
+        "vendor_account_id": 999,
+        "vendor_username": "stale-vendor",
+    }
+
+def canonical_member_forged_admin_session():
+    return {
+        "user_id": member_id,
+        "username": "forged-admin",
+        "display_name": "Forged Admin",
+        "role": "admin",
+    }
+
+def stale_internal_admin_like_session():
+    return {
+        "user_id": 999999970,
+        "username": "stale-admin",
+        "display_name": "Stale Admin",
+        "role": "admin",
+    }
+
+def malformed_internal_admin_like_session():
+    return {
+        "user_id": "malformed-admin",
+        "username": "malformed-admin",
+        "display_name": "Malformed Admin",
+        "role": "admin",
+    }
+
+def mixed_admin_vendor_session():
+    session_values = canonical_admin_session()
+    session_values.update(decorator_vendor_session())
+    return session_values
+
+def mixed_stale_internal_vendor_session():
+    session_values = stale_internal_admin_like_session()
+    session_values.update(decorator_vendor_session())
+    return session_values
+
+def mixed_malformed_internal_vendor_session():
+    session_values = malformed_internal_admin_like_session()
+    session_values.update(decorator_vendor_session())
+    return session_values
+
+def canonical_admin_session():
+    return {
+        "user_id": admin_actor["id"],
+        "username": "forged-session-admin",
+        "display_name": "Forged Session Admin",
+        "role": "admin",
+    }
+
+def fetch_flashes():
+    with client.session_transaction() as session:
+        flashes = tuple((str(category), str(message)) for category, message in session.get("_flashes", []))
+        session.pop("_flashes", None)
+        return flashes
+
+def response_contract(response, flashes):
+    body = response.get_data()
+    return {
+        "status": int(response.status_code),
+        "location": response.headers.get("Location", ""),
+        "content_type": response.headers.get("Content-Type", ""),
+        "body_hash": hashlib.sha256(body).hexdigest(),
+        "body_length": len(body),
+        "flashes": flashes,
+    }
+
+def post_with_counts(payload):
+    counters = reset_request_counters()
+    postgres_before = len(postgres_connection_calls)
+    dual_before = len(dual_write_calls)
+    request_state["active"] = True
+    request_state["counters"] = counters
+    try:
+        response = client.post("/admin/users", data=payload, follow_redirects=False)
+    finally:
+        request_state["active"] = False
+        request_state["counters"] = None
+        phase_state["value"] = "idle"
+    counters["postgres_connections_delta"] = len(postgres_connection_calls) - postgres_before
+    counters["dual_write_calls_delta"] = dual_write_calls[dual_before:]
+    flashes = fetch_flashes()
+    return response, flashes, counters
+
+def require(condition, message):
+    if not condition:
+        raise SystemExit(message)
+
+def assert_no_target_phase(counters, label):
+    if (
+        counters["target_db_factory_calls"] != 0
+        or counters["target_context_entries"] != 0
+        or counters["target_queries"] != 0
+        or counters["target_begins"] != 0
+        or counters["target_writes"] != 0
+    ):
+        raise SystemExit(f"{label} reached target phase: {counters}")
+    if counters["dual_write_calls_delta"] or counters["postgres_connections_delta"] != 0:
+        raise SystemExit(f"{label} triggered external writes: {counters}")
+
+def assert_single_actor_resolution(counters, label, expected_auth_user_queries):
+    require(counters["actor_resolutions"] == 1, f"{label} should resolve actor exactly once: {counters}")
+    require(len(counters["resolved_actors"]) <= 1, f"{label} resolved multiple actors: {counters}")
+    require(counters["auth_users_queries"] == expected_auth_user_queries, f"{label} auth users lookup changed: {counters}")
+    require(counters["auth_vendor_queries"] == 0, f"{label} should not query vendor_accounts: {counters}")
+    require(counters["auth_target_queries"] == expected_auth_user_queries, f"{label} auth target query count changed: {counters}")
+    require(counters["current_user_calls"] == expected_auth_user_queries, f"{label} current-user lookup changed: {counters}")
+
+def assert_admin_actor(counters, label):
+    require(counters["actor_resolutions"] == 1, f"{label} should resolve canonical admin once: {counters}")
+    require(counters["resolved_actors"] == [admin_actor], f"{label} actor snapshot changed: {counters['resolved_actors']!r}")
+    require(counters["auth_users_queries"] == 1, f"{label} should perform one canonical users lookup: {counters}")
+    require(counters["auth_vendor_queries"] == 0, f"{label} should not touch vendor_accounts: {counters}")
+    require(counters["current_user_calls"] == 1, f"{label} current-user lookup changed: {counters}")
+
+def assert_redirect_contract(response, flashes, *, status, location_suffix, expected_flashes, label):
+    require(response.status_code == status, f"{label} status changed: {response.status_code}")
+    require(response.headers.get("Location", "").endswith(location_suffix), f"{label} location changed: {response.headers.get('Location')!r}")
+    require(tuple(flashes) == tuple(expected_flashes), f"{label} flash contract changed: {flashes!r}")
+
+def load_user(user_id):
+    with original_db() as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT id, username, display_name, password_hash, role, created_at FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+
+def load_permission(permission_id):
+    with original_db() as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT id, user_id, site_id, role, updated_at FROM user_site_permissions WHERE id = ?",
+            (permission_id,),
+        ).fetchone()
+
+invalid_actor_cases = (
+    ("create user", {"action": "create_user", "username": "ia_create", "display_name": "IA Create", "password": "pw", "role": "member"}),
+    ("update existing user", {"action": f"update_user:{update_target_id}", "role": "admin"}),
+    ("update missing user", {"action": f"update_user:{missing_user_id}", "role": "member"}),
+    ("delete existing user", {"action": f"delete_user:{delete_target_id}"}),
+    ("delete missing user", {"action": f"delete_user:{missing_user_id}"}),
+    ("delete malformed user id", {"action": invalid_delete_user_action}),
+    ("add existing site permission", {"action": f"add_site_permission:{permission_target_id}", "site_id": str(add_permission_existing_site_id), "site_role": "supervisor"}),
+    ("add malformed site permission form", {"action": f"add_site_permission:{permission_target_id}", "site_id": "bad-site", "site_role": "member"}),
+    ("update existing site permission", {"action": f"update_site_permission:{update_permission_id}", "site_role": "supervisor"}),
+    ("update missing site permission", {"action": f"update_site_permission:{missing_permission_id}", "site_role": "member"}),
+    ("delete existing site permission", {"action": f"delete_site_permission:{delete_permission_id}"}),
+    ("delete missing site permission", {"action": f"delete_site_permission:{missing_permission_id}"}),
+    ("unknown action", {"action": "unknown_action"}),
+)
+
+domain_failure_cases = (
+    ("duplicate username", {"action": "create_user", "username": "admin", "display_name": "Admin Copy", "password": "pw", "role": "member"}, "/admin/users", (("error", "帳號已存在。"),), 0, [], 1),
+    ("invalid create role", {"action": "create_user", "username": "bad_role", "display_name": "Bad Role", "password": "pw", "role": "supervisor"}, "/admin/users", (("error", "角色設定錯誤。"),), 0, [], 0),
+    ("missing password", {"action": "create_user", "username": "missing_pw", "display_name": "Missing Pw", "password": "", "role": "member"}, "/admin/users", (("error", "請輸入帳號與密碼。"),), 0, [], 0),
+    ("update missing user", {"action": f"update_user:{missing_user_id}", "role": "member"}, "/admin/users", (("success", "成員資料已更新。"),), 1, [("update", {"user_id": missing_user_id, "role": "member"})], 1),
+    ("invalid update role", {"action": f"update_user:{update_target_id}", "role": "supervisor"}, "/admin/users", (("error", "角色設定錯誤。"),), 0, [], 0),
+    ("self update", {"action": f"update_user:{admin_actor['id']}", "role": "member"}, "/admin/users", (("error", "本階段不允許修改自己的角色"),), 0, [], 0),
+    ("delete missing user", {"action": f"delete_user:{missing_user_id}"}, "/admin/users", (("error", "找不到要刪除的成員。"),), 0, [], 0),
+    ("self delete protected", {"action": f"delete_user:{admin_actor['id']}"}, "/admin/users", (("error", "管理員或保護帳號不可刪除。"),), 0, [], 0),
+    ("add permission missing user", {"action": f"add_site_permission:{missing_user_id}", "site_id": str(add_permission_existing_site_id), "site_role": "member"}, "/admin/users", (("error", "找不到成員。"),), 0, [], 0),
+    ("add permission inactive site", {"action": f"add_site_permission:{permission_target_id}", "site_id": str(inactive_site_id), "site_role": "member"}, "/admin/users", (("error", "找不到工地或工地已停用。"),), 0, [], 0),
+    ("add permission invalid role", {"action": f"add_site_permission:{permission_target_id}", "site_id": str(add_permission_existing_site_id), "site_role": "invalid"}, "/admin/users", (("error", "工地角色設定錯誤。"),), 0, [], 0),
+    ("add permission invalid site id", {"action": f"add_site_permission:{permission_target_id}", "site_id": "bad-site", "site_role": "member"}, "/admin/users", (("error", "工地選擇無效。"),), 0, [], 0),
+    ("update permission missing", {"action": f"update_site_permission:{missing_permission_id}", "site_role": "member"}, "/admin/users", (("error", "找不到工地授權。"),), 0, [], 0),
+    ("delete permission missing", {"action": f"delete_site_permission:{missing_permission_id}"}, "/admin/users", (("error", "找不到工地授權。"),), 0, [], 0),
+    ("unknown action", {"action": "unknown_action"}, "/admin/users", (("error", "操作無效。"),), 0, [], 0),
+)
+
+success_cases = (
+    (
+        "create user success",
+        {"action": "create_user", "username": "admin_users_created", "display_name": "Created User", "password": "pw", "role": "member"},
+        ("success", "成員已新增。"),
+        "create_user",
+    ),
+    (
+        "update user success",
+        {"action": f"update_user:{update_target_id}", "role": "admin"},
+        ("success", "成員資料已更新。"),
+        "update_user",
+    ),
+    (
+        "delete user success",
+        {"action": f"delete_user:{delete_target_id}"},
+        ("success", "成員已刪除。"),
+        "delete_user",
+    ),
+    (
+        "add site permission success",
+        {"action": f"add_site_permission:{permission_target_id}", "site_id": str(add_permission_existing_site_id), "site_role": "supervisor"},
+        ("success", "工地權限已新增。"),
+        "add_site_permission",
+    ),
+    (
+        "update site permission success",
+        {"action": f"update_site_permission:{update_permission_id}", "site_role": "supervisor"},
+        ("success", "工地角色已更新。"),
+        "update_site_permission",
+    ),
+    (
+        "delete site permission success",
+        {"action": f"delete_site_permission:{delete_permission_id}"},
+        ("success", "工地授權已刪除。"),
+        "delete_site_permission",
+    ),
+)
+
+def run_cases():
+    module.db = traced_db
+    module.resolve_canonical_internal_mutation_actor = traced_resolver
+    module._current_internal_user = traced_current_internal_user
+    module.get_primary_postgres_connection = traced_get_primary_postgres_connection
+    module.create_user_postgres = traced_create_user_postgres
+    module.update_user_role_postgres = traced_update_user_role_postgres
+    module.delete_user_postgres = traced_delete_user_postgres
+    try:
+        decorator_only_sessions = (
+            ("no session", {}, tuple(), 0),
+            ("vendor only", decorator_vendor_session(), tuple(), 0),
+            ("partial vendor only", partial_vendor_session(), tuple(), 0),
+            ("stale vendor only", stale_vendor_session(), tuple(), 0),
+        )
+        for actor_label, session_values, expected_flashes, expected_resolutions in decorator_only_sessions:
+            contracts = []
+            for case_label, payload in invalid_actor_cases:
+                set_session(session_values)
+                before = full_manifest()
+                response, flashes, counters = post_with_counts(payload)
+                assert_redirect_contract(
+                    response,
+                    flashes,
+                    status=302,
+                    location_suffix="/login",
+                    expected_flashes=expected_flashes,
+                    label=f"{actor_label} {case_label}",
+                )
+                require(counters["actor_resolutions"] == expected_resolutions, f"{actor_label} should not resolve actor")
+                assert_no_target_phase(counters, f"{actor_label} {case_label}")
+                require(full_manifest() == before, f"{actor_label} {case_label} changed manifest")
+                contracts.append(response_contract(response, flashes))
+            require(
+                len({json.dumps(item, ensure_ascii=False, sort_keys=True) for item in contracts}) == 1,
+                f"{actor_label} redirect contract varied by action: {contracts}",
+            )
+
+        invalid_canonical_sessions = (
+            ("stale internal", stale_internal_admin_like_session(), 1, (("error", "請先登入。"),)),
+            ("malformed internal", malformed_internal_admin_like_session(), 0, (("error", "請先登入。"),)),
+            ("canonical member forged admin", canonical_member_forged_admin_session(), 1, (("error", "需要管理員權限。"),)),
+            ("canonical admin + vendor markers", mixed_admin_vendor_session(), 0, (("error", "請先登入。"),)),
+            ("stale internal + vendor markers", mixed_stale_internal_vendor_session(), 0, (("error", "請先登入。"),)),
+            ("malformed internal + vendor markers", mixed_malformed_internal_vendor_session(), 0, (("error", "請先登入。"),)),
+        )
+        for actor_label, session_values, expected_auth_user_queries, expected_flashes in invalid_canonical_sessions:
+            contracts = []
+            for case_label, payload in invalid_actor_cases:
+                set_session(session_values)
+                before = full_manifest()
+                response, flashes, counters = post_with_counts(payload)
+                expected_location = "/sheet" if "需要管理員權限" in expected_flashes[0][1] else "/login"
+                assert_redirect_contract(
+                    response,
+                    flashes,
+                    status=302,
+                    location_suffix=expected_location,
+                    expected_flashes=expected_flashes,
+                    label=f"{actor_label} {case_label}",
+                )
+                assert_single_actor_resolution(counters, f"{actor_label} {case_label}", expected_auth_user_queries)
+                assert_no_target_phase(counters, f"{actor_label} {case_label}")
+                require(full_manifest() == before, f"{actor_label} {case_label} changed manifest")
+                contracts.append(response_contract(response, flashes))
+            require(
+                len({json.dumps(item, ensure_ascii=False, sort_keys=True) for item in contracts}) == 1,
+                f"{actor_label} response contract varied by action/target: {contracts}",
+            )
+
+        for label, payload, expected_location, expected_flashes, expected_postgres_calls, expected_dual_write, expected_target_writes in domain_failure_cases:
+            set_session(canonical_admin_session())
+            before = full_manifest()
+            response, flashes, counters = post_with_counts(payload)
+            assert_redirect_contract(
+                response,
+                flashes,
+                status=302,
+                location_suffix=expected_location,
+                expected_flashes=expected_flashes,
+                label=label,
+            )
+            assert_admin_actor(counters, label)
+            require(counters["postgres_connections_delta"] == expected_postgres_calls, f"{label} postgres call count changed: {counters}")
+            require(counters["dual_write_calls_delta"] == expected_dual_write, f"{label} dual-write delta changed: {counters['dual_write_calls_delta']!r}")
+            if expected_dual_write or expected_target_writes:
+                require(counters["target_db_factory_calls"] == 1 and counters["target_context_entries"] == 1, f"{label} target DB topology changed: {counters}")
+            if label == "update missing user":
+                require(load_user(missing_user_id) is None, "update missing user should not create a user row")
+            require(counters["target_writes"] == expected_target_writes, f"{label} SQLite DML count changed: {counters}")
+            require(full_manifest() == before, f"{label} changed manifest")
+
+        for label, payload, expected_flash, topology in success_cases:
+            set_session(canonical_admin_session())
+            before_tables, before_sequences, before_schema, before_file = full_manifest()
+            before_users = {int(row[0]): row for row in before_tables["users"]}
+            before_permissions = {int(row[0]): row for row in before_tables.get("user_site_permissions", ())}
+            response, flashes, counters = post_with_counts(payload)
+            assert_redirect_contract(
+                response,
+                flashes,
+                status=302,
+                location_suffix="/admin/users",
+                expected_flashes=(expected_flash,),
+                label=label,
+            )
+            assert_admin_actor(counters, label)
+            after_tables, after_sequences, after_schema, after_file = full_manifest()
+            after_users = {int(row[0]): row for row in after_tables["users"]}
+            after_permissions = {int(row[0]): row for row in after_tables.get("user_site_permissions", ())}
+            require(before_schema == after_schema, f"{label} changed schema")
+            require(before_file["sidecars"] == after_file["sidecars"], f"{label} changed sidecar state")
+            if topology == "create_user":
+                created_ids = set(after_users) - set(before_users)
+                require(len(created_ids) == 1, f"{label} should create exactly one user row")
+                created_id = created_ids.pop()
+                created_row = load_user(created_id)
+                require(created_row is not None, f"{label} created row missing from canonical DB")
+                require(str(created_row["username"]) == payload["username"], f"{label} username mismatch")
+                require(str(created_row["display_name"]) == payload["display_name"], f"{label} display_name mismatch")
+                require(str(created_row["role"]) == payload["role"], f"{label} role mismatch")
+                require(str(created_row["password_hash"]) != payload["password"], f"{label} password hash should be canonical hash")
+                require(counters["target_writes"] >= 1, f"{label} should write SQLite")
+                require(counters["dual_write_calls_delta"] == [("create", {
+                    "id": int(created_row["id"]),
+                    "username": str(created_row["username"]),
+                    "display_name": str(created_row["display_name"]),
+                    "password_hash": str(created_row["password_hash"]),
+                    "role": str(created_row["role"]),
+                    "created_at": str(created_row["created_at"]),
+                })], f"{label} dual-write create contract changed: {counters['dual_write_calls_delta']!r}")
+                require(counters["postgres_connections_delta"] == 1, f"{label} should connect postgres exactly once")
+            elif topology == "update_user":
+                updated_row = load_user(update_target_id)
+                require(updated_row is not None, f"{label} target row missing")
+                require(str(updated_row["role"]) == payload["role"], f"{label} role did not persist")
+                require(counters["target_writes"] == 1, f"{label} should update one SQLite row")
+                require(counters["dual_write_calls_delta"] == [("update", {"user_id": update_target_id, "role": payload["role"]})], f"{label} dual-write update contract changed: {counters['dual_write_calls_delta']!r}")
+                require(counters["postgres_connections_delta"] == 1, f"{label} should connect postgres exactly once")
+                require(after_sequences == before_sequences, f"{label} should not change sqlite_sequence")
+            elif topology == "delete_user":
+                require(load_user(delete_target_id) is None, f"{label} target user should be deleted")
+                require(all(row[1] != delete_target_id for row in after_tables.get("user_site_permissions", ())), f"{label} should delete site permissions lineage")
+                require(counters["target_writes"] == 2, f"{label} should delete permissions then user: {counters['target_statements']!r}")
+                require(
+                    counters["dual_write_calls_delta"] == [("delete", {"id": delete_target_id, "username": "admin_users_delete_target"})],
+                    f"{label} dual-write delete contract changed: {counters['dual_write_calls_delta']!r}",
+                )
+                require(counters["postgres_connections_delta"] == 1, f"{label} should connect postgres exactly once")
+                require(after_sequences == before_sequences, f"{label} should not change sqlite_sequence")
+            elif topology == "add_site_permission":
+                created_ids = set(after_permissions) - set(before_permissions)
+                require(len(created_ids) == 1, f"{label} should create one permission row")
+                created_permission = load_permission(created_ids.pop())
+                require(created_permission is not None, f"{label} permission row missing")
+                require(int(created_permission["user_id"]) == permission_target_id, f"{label} permission user mismatch")
+                require(int(created_permission["site_id"]) == add_permission_existing_site_id, f"{label} permission site mismatch")
+                require(str(created_permission["role"]) == "supervisor", f"{label} permission role mismatch")
+                require(counters["target_writes"] == 1, f"{label} should insert one permission row")
+                require(counters["dual_write_calls_delta"] == [], f"{label} should not dual-write")
+                require(counters["postgres_connections_delta"] == 0, f"{label} should not connect postgres")
+            elif topology == "update_site_permission":
+                updated_permission = load_permission(update_permission_id)
+                require(updated_permission is not None, f"{label} permission row missing")
+                require(str(updated_permission["role"]) == "supervisor", f"{label} permission role mismatch")
+                require(counters["target_writes"] == 1, f"{label} should update one permission row")
+                require(counters["dual_write_calls_delta"] == [], f"{label} should not dual-write")
+                require(counters["postgres_connections_delta"] == 0, f"{label} should not connect postgres")
+                require(after_sequences == before_sequences, f"{label} should not advance sqlite_sequence")
+            elif topology == "delete_site_permission":
+                require(load_permission(delete_permission_id) is None, f"{label} permission row should be deleted")
+                require(counters["target_writes"] == 1, f"{label} should delete one permission row")
+                require(counters["dual_write_calls_delta"] == [], f"{label} should not dual-write")
+                require(counters["postgres_connections_delta"] == 0, f"{label} should not connect postgres")
+                require(after_sequences == before_sequences, f"{label} should not advance sqlite_sequence")
+            require(counters["current_user_calls"] == 1, f"{label} should not re-resolve actor beyond canonical lookup: {counters}")
+    finally:
+        module.db = original_db
+        module.resolve_canonical_internal_mutation_actor = original_actor_resolver
+        module._current_internal_user = original_current_internal_user
+        module.get_primary_postgres_connection = original_pg_connect
+        module.create_user_postgres = original_create_user_postgres
+        module.update_user_role_postgres = original_update_user_role_postgres
+        module.delete_user_postgres = original_delete_user_postgres
+
+run_cases()
+print("admin users authentication order focused smoke PASS")
+'''
+    with tempfile.TemporaryDirectory(prefix="admin-users-auth-order-") as script_tmpdir:
+        script_path = Path(script_tmpdir) / "admin_users_auth_order_smoke.py"
+        script_path.write_text(script, encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-B", str(script_path), str(db_path), str(ROOT_DIR)],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    marker = "admin users authentication order focused smoke PASS"
+    if result.returncode != 0:
+        raise AssertionError(f"admin-users auth-order child failed: {result.stderr or result.stdout}")
+    if result.stderr:
+        raise AssertionError(f"admin-users auth-order child stderr was not empty: {result.stderr}")
+    if result.stdout.count(marker) != 1:
+        raise AssertionError("admin-users auth-order child marker count must be exactly one")
+    print(marker)
+
+
 def run_site_read_isolation_smoke(db_path: Path) -> None:
     result = subprocess.run(
         [
@@ -16932,6 +17664,21 @@ def run_admin_write_model_readiness_smoke() -> None:
         if fragment not in result.stdout:
             raise AssertionError(f"check_admin_write_model_readiness.py output missing: {fragment}")
 
+    self_test = subprocess.run(
+        [sys.executable, str(script_path), "--self-test"],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    marker = "PASS admin users readiness checker negative controls passed."
+    if self_test.returncode != 0:
+        raise AssertionError(f"admin-users readiness checker self-test failed: {self_test.stderr or self_test.stdout}")
+    if self_test.stderr:
+        raise AssertionError(f"admin-users readiness checker self-test stderr was not empty: {self_test.stderr}")
+    if self_test.stdout.count(marker) != 1:
+        raise AssertionError("admin-users readiness checker self-test marker count must be exactly one")
+
 
 def run_vendor_auth_foundation_smoke(db_path: Path) -> None:
     script = """
@@ -23434,6 +24181,9 @@ def main() -> int:
         run_user_create_helper_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_admin_user_role_update_smoke(db_path, Path(tmpdir) / "app-smoke.db")
         run_user_site_permissions_smoke_guardrail(db_path, Path(tmpdir) / "app-smoke.db")
+        admin_users_auth_db = Path(tmpdir) / "admin-users-auth-order.db"
+        create_sample_sqlite(admin_users_auth_db)
+        run_admin_users_authentication_order_focused_smoke(admin_users_auth_db)
         run_site_read_isolation_smoke(db_path)
         current_site_read_db = Path(tmpdir) / "internal-sheet-current-site-isolation.db"
         create_sample_sqlite(current_site_read_db)
@@ -23591,6 +24341,9 @@ def main() -> int:
     ):
         if fragment not in admin_write_model_result.stdout:
             raise AssertionError(f"check_admin_write_model_readiness.py missing expected inventory fragment: {fragment}")
+    admin_write_model_self_test = run_script("check_admin_write_model_readiness.py", args=["--self-test"], env={"DATABASE_URL": ""})
+    if admin_write_model_self_test.stdout.count("PASS admin users readiness checker negative controls passed.") != 1:
+        raise AssertionError("check_admin_write_model_readiness.py --self-test did not report expected marker exactly once.")
     persistence_result = run_script("check_sqlite_runtime_persistence.py", env={"DATABASE_URL": ""})
     if "resolved_sqlite_source_path:" not in persistence_result.stdout or "PASS" not in persistence_result.stdout:
         raise AssertionError("check_sqlite_runtime_persistence.py did not report expected PASS output.")

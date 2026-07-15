@@ -4142,6 +4142,16 @@ def admin_required(fn):
     return wrapper
 
 
+def _redirect_admin_users_auth_required():
+    flash("請先登入。", "error")
+    return redirect(url_for("login"))
+
+
+def _redirect_admin_users_admin_required():
+    flash("需要管理員權限。", "error")
+    return redirect(url_for("sheet"))
+
+
 VENDOR_SESSION_MARKER_KEYS = ("vendor_account_id", "vendor_username", "vendor_name")
 
 
@@ -8278,6 +8288,14 @@ def api_crew_missing():
 @admin_required
 def users():
     if request.method == "POST":
+        try:
+            actor = resolve_canonical_internal_mutation_actor()
+        except LookupError:
+            return _redirect_admin_users_auth_required()
+        if str(actor.get("role") or "").strip() != "admin":
+            return _redirect_admin_users_admin_required()
+
+        actor_id = int(actor["id"])
         action = request.form.get("action", "create_user")
         username = request.form.get("username", "").strip()
         display_name = request.form.get("display_name", "").strip() or username
@@ -8404,17 +8422,13 @@ def users():
                 flash("\u89d2\u8272\u8a2d\u5b9a\u932f\u8aa4\u3002", "error")
                 return redirect(url_for("users"))
             user_id = int(action.split(":", 1)[1])
-            if user_id == session.get("user_id"):
+            if user_id == actor_id:
                 flash("\u672c\u968e\u6bb5\u4e0d\u5141\u8a31\u4fee\u6539\u81ea\u5df1\u7684\u89d2\u8272", "error")
             else:
                 try:
                     with db() as conn:
                         update_user_role_sqlite(conn, user_id, role=role)
                     maybe_dual_write_user_role_update(user_id, role=role)
-                    if user_id == session.get("user_id"):
-                        session["username"] = username
-                        session["display_name"] = display_name
-                        session["role"] = role
                     flash("\u6210\u54e1\u8cc7\u6599\u5df2\u66f4\u65b0\u3002", "success")
                 except sqlite3.IntegrityError:
                     flash("\u5e33\u865f\u5df2\u5b58\u5728\u3002", "error")
