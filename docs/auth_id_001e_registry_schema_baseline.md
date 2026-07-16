@@ -732,7 +732,7 @@ Non-negotiable boundaries:
 | Decision | Owner slice | Why deferred | Frozen invariant |
 |---|---|---|---|
 | physical SQLite DDL and migration | `AUTH-ID-001E1` | This slice freezes logical schema shape first; physical DDL, naming, migration ordering, provenance enforcement, and deployment verification need their own implementation review. | DDL must preserve opaque global identity, preserve raw alias separately from normalized key, enforce closed or fail-closed provenance consistency, and must not perform backfill. |
-| exact ID generation format | `AUTH-ID-001E2` | Opaque-key format affects storage, audit ergonomics, and future interoperability, but does not block the logical schema boundary. | Identity keys must remain opaque stable keys and must not encode username, backend type, or authority. |
+| exact ID generation format | `AUTH-ID-001E2` | This decision was deferred because opaque-key format affects storage, audit ergonomics, and future interoperability; it is now format-frozen in Section 15. | Identity keys must remain opaque stable keys and must not encode username, backend type, or authority. |
 | lifecycle / tombstone / merge policy | `AUTH-ID-001F` | Safe lifecycle states require separate operational and authority review beyond initial schema shape. | No tombstone, merge, or lifecycle field may imply hot-merge support or authority by itself. |
 | explicit cross-backend account linking | `AUTH-ID-001G` | Linking is a high-risk identity decision and must be isolated from initial schema introduction. | Shared alias text must never auto-link internal and vendor principals. |
 | legacy alias import | `AUTH-ID-001F` | Import, retirement, compatibility, and history handling depend on lifecycle semantics after schema shape is frozen. | Existing backend usernames remain canonical credential lookup data until a controlled later migration. |
@@ -794,3 +794,173 @@ Explicitly out of scope:
 - `vendor_account_id` and future `vendor_id` remain distinct.
 - This document does not define vendor organization schema.
 - Schema, backfill, and authority switch remain isolated slices.
+
+## 15. AUTH-ID-001E2 exact ID generation format
+
+### 15.1 Governing standard and frozen decision
+
+The governing UUID standard is RFC 9562, which supersedes RFC 4122. The frozen UUID version is UUIDv4.
+
+Normal generation uses Python `str(uuid.uuid4())`. Python `uuid.uuid4()` provides a cryptographically secure random UUIDv4, and `str(...)` produces the canonical hyphenated lowercase representation required by this application contract. Python's `uuid.RFC_4122` constant name is retained for backward compatibility; RFC 4122 is not the current governing standard.
+
+RFC 9562 textual representation permits uppercase or lowercase hexadecimal characters. Lowercase-only acceptance is an additional canonical application rule frozen by this system, not a restriction imposed by RFC 9562 itself.
+
+Official references:
+
+- [RFC 9562](https://www.rfc-editor.org/rfc/rfc9562.html)
+- [Python 3.14 `uuid` documentation](https://docs.python.org/3.14/library/uuid.html)
+
+### 15.2 Per-entity format and semantic boundary
+
+| Field | Format | Prefix |
+|---|---|---|
+| `global_identity_id` | RFC 9562 UUIDv4 canonical lowercase text | none |
+| `login_identifier_alias_id` | RFC 9562 UUIDv4 canonical lowercase text | none |
+| `backend_principal_mapping_id` | RFC 9562 UUIDv4 canonical lowercase text | none |
+
+All three IDs share the same format. Entity type is expressed by table ownership, column ownership, and typed code ownership rather than by identifier text.
+
+Frozen rules:
+
+- IDs contain no entity prefix.
+- Prefixes such as `gid_`, `alias_`, `map_`, `internal_`, and `vendor_` are forbidden.
+- IDs must not encode username, raw alias, normalized lookup key, backend, role, site, permission, `vendor_name`, credential, or authority meaning.
+- An ID is an identifier, not a secret, identity proof, authentication proof, or authorization proof.
+
+### 15.3 Exact canonical lexical and validation contract
+
+The canonical lexical contract is:
+
+- type = actual string
+- exact length = `36` ASCII characters
+- exact regular expression:
+
+```text
+[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}
+```
+
+- version nibble = `4`
+- RFC 9562 variant = `10xx`
+- variant hexadecimal nibble = `8`, `9`, `a`, or `b`
+- lowercase only
+- hyphens in canonical positions only
+- no prefix or suffix
+
+Validation order is frozen as:
+
+1. Require the exact lexical regular expression to match the original input.
+2. Parse the original input with `uuid.UUID`.
+3. Require `parsed.version == 4`.
+4. Require the RFC 9562 `10xx` variant.
+5. Require `str(parsed)` to equal the original input exactly.
+
+Validation must reject:
+
+- `None` or any non-string value
+- empty string
+- nil / all-zero UUID
+- leading or trailing whitespace
+- uppercase or mixed-case text
+- braces
+- `urn:uuid:` form
+- 32-character compact hexadecimal form
+- UUIDv1, UUIDv3, UUIDv5, UUIDv6, UUIDv7, or UUIDv8
+- malformed version or variant
+- any parseable but noncanonical equivalent representation
+
+Validation must not trim, lowercase, repair, rewrite, or canonicalize input before deciding whether to accept it.
+
+### 15.4 Generation ownership
+
+Normal creation of a new registry record must:
+
+- generate its ID only in trusted server-side code
+- use Python stdlib `uuid.uuid4()`
+- use `str(...)` for this system's canonical lowercase representation
+- add no third-party dependency
+- reject browser-, form-, API caller-, session-, or CLI business-input selection of the ID
+- prevent caller-supplied ID from becoming normal creation authority
+- remain independent of SQLite `AUTOINCREMENT` and PostgreSQL
+- remain independent of username, alias, backend, and business data
+
+A future controlled import, upgrade, or reconciliation workflow that must handle existing IDs requires a separately approved later slice. This slice does not pre-authorize caller-supplied IDs for such a workflow.
+
+### 15.5 Collision and transaction contract
+
+Normal logical creation is frozen to the following contract:
+
+- Each logical creation permits at most three generation attempts.
+- Collision is confirmed by target `TEXT PRIMARY KEY` uniqueness.
+- Retry is permitted only when the failure is proven to be a collision on the target PK generated by that attempt.
+- A non-PK or noncollision `IntegrityError` fails immediately.
+- Constraint failures must not be classified as collisions by fuzzy string matching.
+- If the third attempt collides, generation stops.
+- Retry exhaustion returns a generic internal failure.
+- The complete logical creation rolls back on failure.
+- Multi-row identity / alias / mapping creation is all-or-nothing.
+- Retry must leave no partial rows.
+- After a collision, every candidate ID for the retried logical creation is newly generated.
+
+Exact transaction and savepoint ownership belongs to the implementation slice. Its implementation must preserve caller-owned transaction boundaries and complete rollback invariants.
+
+### 15.6 Logging and error boundary
+
+Logs and error responses must not expose:
+
+- failed candidate IDs
+- random bytes or generator state
+- username
+- raw alias or normalized lookup key
+- backend principal key
+- backend-derived authority
+- credential, session, role, site, or permission data
+- database connection or environment secrets
+
+A committed ID may appear as an identifier in a controlled audit record. It must never be treated as identity proof or authorization proof.
+
+### 15.7 Existing-data and schema boundary
+
+Frozen boundaries:
+
+- This format governs only future newly generated registry IDs.
+- DEV and Production registry tables are not assumed to be empty.
+- Current DDL permits arbitrary `TEXT` primary-key values.
+- This slice adds no DDL `CHECK` constraint and changes no schema or index.
+- This slice does not scan, validate, rewrite, or delete existing rows.
+- Existing test fixture values such as `gid-a` and `alias-a1` are not rewritten in this slice.
+- A future discovery of a noncanonical existing ID must fail closed and enter an independently approved reconciliation gate.
+- This slice performs no backfill, creates no registry mapping, and switches no runtime authority.
+
+### 15.8 Rejected alternatives
+
+| Alternative | Frozen rejection reason |
+|---|---|
+| UUIDv7 | Exposes time and ordering without a demonstrated need. |
+| ULID | Exposes time and lacks a native Python stdlib ULID API. |
+| Random Base32 | Requires a custom canonical encoding contract. |
+| Random Base64url | Has more complex case, padding, and human-transcription rules. |
+| Deterministic hash | Is linkable or derivable and does not fit registry identity semantics. |
+| Integer ID | Is sequentially guessable, database-dependent, and conflicts with the opaque `TEXT` contract. |
+| Prefixed opaque ID | Adds unnecessary entity semantics and format coupling. |
+
+UUIDv4 has worse random index locality than UUIDv7. This system deliberately prioritizes opacity, Python stdlib support, and cross-system interoperability over UUIDv7's locality advantage.
+
+### 15.9 Future implementation acceptance matrix
+
+Future implementation must verify:
+
+- all three generators satisfy the exact frozen lexical contract
+- exact length, alphabet, version, variant, and parse / stringify round-trip
+- complete rejection of the frozen negative cases
+- uppercase and other noncanonical equivalents are not silently repaired
+- browser- and caller-supplied IDs are rejected for normal creation
+- deterministic injection proves first-attempt collision followed by success
+- deterministic injection proves second-attempt collision followed by success
+- deterministic injection proves third-attempt exhaustion and the exact maximum of three attempts
+- noncollision integrity failure is not retried
+- disposable SQLite tests prove complete rollback and no partial rows
+- existing noncanonical fixtures are not rewritten
+- DEV and Production persistent databases are not accessed
+- `DATABASE_URL` is not used
+- no dependency is added
+- authentication, authorization, session, API, lifecycle, merge, and reconciliation behavior remain unchanged
