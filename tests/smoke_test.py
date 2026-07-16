@@ -11582,8 +11582,8 @@ def full_manifest():
                 "WHERE type IN ('table', 'index') ORDER BY type, name"
             )
         )
-    if len(table_names) != 18:
-        raise SystemExit(f"unit-extra auth-order manifest expected 18 application tables, got {table_names}")
+    if len(table_names) != 21:
+        raise SystemExit(f"unit-extra auth-order manifest expected 21 application tables, got {table_names}")
     return table_rows, sequences, schema
 
 def set_session(values):
@@ -12319,8 +12319,8 @@ def full_manifest():
                 "WHERE type IN ('table', 'index') ORDER BY type, name"
             )
         )
-    if len(table_names) != 18:
-        raise SystemExit(f"vendor-contact auth-order manifest expected 18 application tables, got {table_names}")
+    if len(table_names) != 21:
+        raise SystemExit(f"vendor-contact auth-order manifest expected 21 application tables, got {table_names}")
     return table_rows, sequences, schema
 
 def canonical_contact(row):
@@ -24078,6 +24078,526 @@ async function cancelCase({reasonValue, responses, expectedPosts, expectedRemove
     print(marker)
 
 
+def run_identity_registry_schema_smoke(temp_root: Path) -> None:
+    temp_root.mkdir(parents=True, exist_ok=True)
+    child_path = temp_root / "identity-registry-schema-smoke.py"
+    child_path.write_text(
+        r'''
+import importlib.util
+import inspect
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+app_path, fresh_db_path, existing_db_path, root_dir = sys.argv[1:5]
+root_dir = str(Path(root_dir).resolve())
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
+postgres_connect_calls = []
+
+import psycopg
+
+original_postgres_connect = psycopg.connect
+
+
+def raising_postgres_connect(*args, **kwargs):
+    postgres_connect_calls.append({"args": args, "kwargs": kwargs})
+    raise AssertionError("PostgreSQL connect should not be called during identity registry schema smoke")
+
+
+psycopg.connect = raising_postgres_connect
+
+
+BUSINESS_TABLES = (
+    "meta",
+    "users",
+    "sheets",
+    "tasks",
+    "floors",
+    "units",
+    "progress",
+    "unit_extra",
+    "extra_fields",
+    "unit_extra_values",
+    "sites",
+    "user_site_permissions",
+    "vendor_accounts",
+    "vendor_contacts",
+    "vendor_work_entries",
+    "formal_approvals",
+    "scheduling_entries",
+)
+REGISTRY_TABLES = (
+    "global_identities",
+    "login_identifier_aliases",
+    "backend_principal_mappings",
+)
+REGISTRY_INDEXES = (
+    "idx_login_identifier_aliases_candidate_lookup",
+    "idx_login_identifier_aliases_provenance_reconciliation",
+    "idx_login_identifier_aliases_active_exact_alias",
+)
+
+
+def import_app_for(db_path: Path, module_name: str):
+    os.environ["APP_DB_PATH"] = str(db_path)
+    spec = importlib.util.spec_from_file_location(module_name, app_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def fetch_counts(conn, tables):
+    return {
+        table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in tables
+    }
+
+
+def current_table_names(conn):
+    return tuple(
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+    )
+
+
+def table_sql(conn, table_name):
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row[0] if row else ""
+
+
+def normalize_sql(sql):
+    return " ".join((sql or "").strip().lower().split())
+
+
+def strict_flag(conn, table_name):
+    conn.row_factory = sqlite3.Row
+    for row in conn.execute("PRAGMA table_list").fetchall():
+        if row["name"] == table_name:
+            return bool(row["strict"])
+    return False
+
+
+def assert_registry_tables_exist(conn, label):
+    names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    for table_name in REGISTRY_TABLES:
+        if table_name not in names:
+            raise AssertionError(f"{label}: missing table {table_name}")
+
+
+def assert_registry_rows_empty(conn, label):
+    for table_name in REGISTRY_TABLES:
+        count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        if count != 0:
+            raise AssertionError(f"{label}: expected zero rows in {table_name}, got {count}")
+
+
+def assert_registry_objects_absent(conn, label):
+    table_names = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    }
+    index_names = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+    }
+    for table_name in REGISTRY_TABLES:
+        if table_name in table_names:
+            raise AssertionError(f"{label}: unexpected registry table persisted: {table_name}")
+    for index_name in REGISTRY_INDEXES:
+        if index_name in index_names:
+            raise AssertionError(f"{label}: unexpected registry index persisted: {index_name}")
+
+
+def assert_registry_schema_metadata(conn, label):
+    if not strict_flag(conn, "global_identities"):
+        raise AssertionError(f"{label}: global_identities must be STRICT")
+    if not strict_flag(conn, "login_identifier_aliases"):
+        raise AssertionError(f"{label}: login_identifier_aliases must be STRICT")
+    if not strict_flag(conn, "backend_principal_mappings"):
+        raise AssertionError(f"{label}: backend_principal_mappings must be STRICT")
+
+    backend_columns = {row[1]: row for row in conn.execute("PRAGMA table_info(backend_principal_mappings)")}
+    if backend_columns["backend_principal_key"][2].upper() != "ANY":
+        raise AssertionError(f"{label}: backend_principal_key must use ANY")
+
+    alias_indexes = {
+        row[1]: {
+            "unique": bool(row[2]),
+            "columns": tuple(info[2] for info in conn.execute(f"PRAGMA index_info({row[1]})").fetchall()),
+            "sql": normalize_sql(conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name = ?", (row[1],)).fetchone()[0]),
+        }
+        for row in conn.execute("PRAGMA index_list(login_identifier_aliases)").fetchall()
+    }
+    exact_index = alias_indexes.get("idx_login_identifier_aliases_active_exact_alias")
+    if exact_index is None:
+        raise AssertionError(f"{label}: missing partial unique alias index")
+    if not exact_index["unique"]:
+        raise AssertionError(f"{label}: partial alias index must be unique")
+    if exact_index["columns"] != (
+        "global_identity_id",
+        "raw_alias",
+        "normalized_lookup_key",
+        "normalization_algorithm_family",
+        "normalization_profile",
+        "unicode_data_version",
+        "trim_conformance_profile",
+    ):
+        raise AssertionError(f"{label}: partial alias index columns mismatch")
+    if "where alias_status = 'active'" not in exact_index["sql"]:
+        raise AssertionError(f"{label}: partial alias index predicate mismatch")
+
+    alias_sql = normalize_sql(table_sql(conn, "login_identifier_aliases"))
+    for fragment in (
+        "check (normalization_algorithm_family = 'nfkc_casefold_v1')",
+        "check (normalization_profile = 'nfkc_casefold_v1_ucd16_0_0')",
+        "check (unicode_data_version = '16.0.0')",
+        "check (trim_conformance_profile = 'py3146_ucd16_0_0_strip_v1')",
+        "check (alias_status in ('active', 'disabled', 'superseded'))",
+        "on delete restrict",
+        "on update no action",
+    ):
+        if fragment not in alias_sql:
+            raise AssertionError(f"{label}: alias schema missing fragment {fragment}")
+
+    mapping_sql = normalize_sql(table_sql(conn, "backend_principal_mappings"))
+    for fragment in (
+        "check (backend_kind in ('internal', 'vendor'))",
+        "check (mapping_status in ('active', 'disabled'))",
+        "check (typeof(backend_principal_key) = 'integer' and backend_principal_key > 0)",
+        "unique (backend_kind, backend_principal_key)",
+        "unique (global_identity_id, backend_kind)",
+        "on delete restrict",
+        "on update no action",
+    ):
+        if fragment not in mapping_sql:
+            raise AssertionError(f"{label}: mapping schema missing fragment {fragment}")
+
+
+def assert_constraints(path: Path, label: str):
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+            raise AssertionError(f"{label}: test-only foreign_keys enforcement did not enable")
+
+        def reset_registry():
+            for table_name in ("login_identifier_aliases", "backend_principal_mappings", "global_identities"):
+                conn.execute(f"DELETE FROM {table_name}")
+            conn.commit()
+
+        reset_registry()
+        try:
+            conn.execute(
+                "INSERT INTO global_identities (global_identity_id, registry_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?)",
+                ("g1", "pending", "p", "p"),
+            )
+        except sqlite3.IntegrityError:
+            conn.rollback()
+        else:
+            raise AssertionError(f"{label}: invalid registry_status should be rejected")
+
+        conn.execute(
+            "INSERT INTO global_identities (global_identity_id, registry_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?)",
+            ("g1", "active", "p", "p"),
+        )
+        conn.rollback()
+
+        reset_registry()
+        conn.execute(
+            "INSERT INTO global_identities (global_identity_id, registry_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?)",
+            ("gid-a", "disabled", "seed", "seed"),
+        )
+        conn.commit()
+
+        def expect_integrity_error(sql, params, description):
+            try:
+                conn.execute(sql, params)
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                return
+            raise AssertionError(f"{label}: {description} should be rejected")
+
+        expect_integrity_error(
+            "INSERT INTO login_identifier_aliases (login_identifier_alias_id, global_identity_id, raw_alias, normalized_lookup_key, normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, alias_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("alias-invalid-status", "gid-a", "raw", "norm", "NFKC_CASEFOLD_V1", "NFKC_CASEFOLD_V1_UCD16_0_0", "16.0.0", "PY3146_UCD16_0_0_STRIP_V1", "pending", "seed", "seed"),
+            "invalid alias_status",
+        )
+        expect_integrity_error(
+            "INSERT INTO login_identifier_aliases (login_identifier_alias_id, global_identity_id, raw_alias, normalized_lookup_key, normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, alias_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("alias-invalid-tuple", "gid-a", "raw", "norm", "NFKC_CASEFOLD_V1", "NFKC_CASEFOLD_V1_UCD16_0_0", "16.0.0", "WRONG_TRIM", "active", "seed", "seed"),
+            "mixed provenance tuple",
+        )
+        expect_integrity_error(
+            "INSERT INTO login_identifier_aliases (login_identifier_alias_id, global_identity_id, raw_alias, normalized_lookup_key, normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, alias_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("alias-missing-parent", "gid-missing", "raw", "norm", "NFKC_CASEFOLD_V1", "NFKC_CASEFOLD_V1_UCD16_0_0", "16.0.0", "PY3146_UCD16_0_0_STRIP_V1", "active", "seed", "seed"),
+            "missing global identity FK",
+        )
+        expect_integrity_error(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-invalid-status", "gid-a", "internal", 1, "pending", "seed", "seed"),
+            "invalid mapping_status",
+        )
+        expect_integrity_error(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-string", "gid-a", "internal", "1", "active", "seed", "seed"),
+            "numeric string principal key",
+        )
+        expect_integrity_error(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-float", "gid-a", "internal", 1.5, "active", "seed", "seed"),
+            "float principal key",
+        )
+        expect_integrity_error(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-text", "gid-a", "internal", "abc", "active", "seed", "seed"),
+            "text principal key",
+        )
+        expect_integrity_error(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-zero", "gid-a", "internal", 0, "active", "seed", "seed"),
+            "zero principal key",
+        )
+        expect_integrity_error(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-negative", "gid-a", "internal", -1, "active", "seed", "seed"),
+            "negative principal key",
+        )
+        expect_integrity_error(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-no-parent", "gid-missing", "internal", 1, "active", "seed", "seed"),
+            "missing mapping FK",
+        )
+
+        conn.execute(
+            "INSERT INTO login_identifier_aliases (login_identifier_alias_id, global_identity_id, raw_alias, normalized_lookup_key, normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, alias_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("alias-a1", "gid-a", "VendorA", "norm-key", "NFKC_CASEFOLD_V1", "NFKC_CASEFOLD_V1_UCD16_0_0", "16.0.0", "PY3146_UCD16_0_0_STRIP_V1", "active", "seed", "seed"),
+        )
+        conn.execute(
+            "INSERT INTO global_identities (global_identity_id, registry_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?)",
+            ("gid-b", "disabled", "seed", "seed"),
+        )
+        conn.execute(
+            "INSERT INTO login_identifier_aliases (login_identifier_alias_id, global_identity_id, raw_alias, normalized_lookup_key, normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, alias_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("alias-b1", "gid-b", "VendorB", "norm-key", "NFKC_CASEFOLD_V1", "NFKC_CASEFOLD_V1_UCD16_0_0", "16.0.0", "PY3146_UCD16_0_0_STRIP_V1", "active", "seed", "seed"),
+        )
+        conn.commit()
+
+        expect_integrity_error(
+            "INSERT INTO login_identifier_aliases (login_identifier_alias_id, global_identity_id, raw_alias, normalized_lookup_key, normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, alias_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("alias-a2", "gid-a", "VendorA", "norm-key", "NFKC_CASEFOLD_V1", "NFKC_CASEFOLD_V1_UCD16_0_0", "16.0.0", "PY3146_UCD16_0_0_STRIP_V1", "active", "seed", "seed"),
+            "same identity active exact duplicate alias",
+        )
+        conn.execute(
+            "INSERT INTO login_identifier_aliases (login_identifier_alias_id, global_identity_id, raw_alias, normalized_lookup_key, normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, alias_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("alias-a-disabled", "gid-a", "VendorA", "norm-key", "NFKC_CASEFOLD_V1", "NFKC_CASEFOLD_V1_UCD16_0_0", "16.0.0", "PY3146_UCD16_0_0_STRIP_V1", "disabled", "seed", "seed"),
+        )
+        conn.execute(
+            "INSERT INTO login_identifier_aliases (login_identifier_alias_id, global_identity_id, raw_alias, normalized_lookup_key, normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, alias_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("alias-a-superseded", "gid-a", "VendorA", "norm-key", "NFKC_CASEFOLD_V1", "NFKC_CASEFOLD_V1_UCD16_0_0", "16.0.0", "PY3146_UCD16_0_0_STRIP_V1", "superseded", "seed", "seed"),
+        )
+        conn.commit()
+
+        conn.execute(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-internal-a", "gid-a", "internal", 1, "active", "seed", "seed"),
+        )
+        conn.execute(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-vendor-a", "gid-a", "vendor", 2, "active", "seed", "seed"),
+        )
+        conn.commit()
+
+        expect_integrity_error(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-duplicate-principal", "gid-b", "internal", 1, "active", "seed", "seed"),
+            "duplicate backend principal",
+        )
+        expect_integrity_error(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-duplicate-kind", "gid-a", "internal", 3, "active", "seed", "seed"),
+            "duplicate backend kind per identity",
+        )
+
+        conn.execute(
+            "INSERT INTO global_identities (global_identity_id, registry_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?)",
+            ("gid-valid", "disabled", "seed", "seed"),
+        )
+        conn.execute(
+            "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("map-valid", "gid-valid", "internal", 99, "active", "seed", "seed"),
+        )
+        conn.commit()
+
+        expect_integrity_error(
+            "DELETE FROM global_identities WHERE global_identity_id = ?",
+            ("gid-a",),
+            "referenced global identity delete",
+        )
+        expect_integrity_error(
+            "UPDATE global_identities SET global_identity_id = ? WHERE global_identity_id = ?",
+            ("gid-a-renamed", "gid-a"),
+            "referenced global identity update",
+        )
+
+        reset_registry()
+        conn.execute("SAVEPOINT partial_row_reject")
+        conn.execute(
+            "INSERT INTO global_identities (global_identity_id, registry_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?)",
+            ("gid-partial", "disabled", "seed", "seed"),
+        )
+        try:
+            conn.execute(
+                "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("map-partial", "gid-partial", "internal", "1", "active", "seed", "seed"),
+            )
+        except sqlite3.IntegrityError:
+            conn.execute("ROLLBACK TO SAVEPOINT partial_row_reject")
+            conn.execute("RELEASE SAVEPOINT partial_row_reject")
+        else:
+            raise AssertionError(f"{label}: rejected transaction should fail before commit")
+        if conn.execute("SELECT COUNT(*) FROM global_identities").fetchone()[0] != 0:
+            raise AssertionError(f"{label}: rejected transaction left partial global identity row")
+        if conn.execute("SELECT COUNT(*) FROM login_identifier_aliases").fetchone()[0] != 0:
+            raise AssertionError(f"{label}: rejected transaction left partial alias row")
+        if conn.execute("SELECT COUNT(*) FROM backend_principal_mappings").fetchone()[0] != 0:
+            raise AssertionError(f"{label}: rejected transaction left partial mapping row")
+    finally:
+        conn.close()
+
+
+try:
+    fresh_db_path = Path(fresh_db_path)
+    existing_db_path = Path(existing_db_path)
+    module_fresh = import_app_for(fresh_db_path, "app_identity_registry_fresh")
+    if "PRAGMA foreign_keys" in inspect.getsource(module_fresh.db):
+        raise AssertionError("db() must not change global foreign_keys behavior")
+    ensure_source = inspect.getsource(module_fresh.ensure_identity_registry_schema)
+    for forbidden in ("executescript", "psycopg.connect", "get_primary_postgres_connection", ".commit(", ".rollback("):
+        if forbidden in ensure_source:
+            raise AssertionError(f"identity registry schema helper contains forbidden fragment: {forbidden}")
+
+    transaction_probe_path = fresh_db_path.parent / "identity-registry-transaction-probe.db"
+    transaction_probe_conn = sqlite3.connect(transaction_probe_path)
+    try:
+        transaction_probe_conn.execute("CREATE TABLE transaction_probe (probe_id INTEGER PRIMARY KEY, note TEXT NOT NULL)")
+        transaction_probe_conn.commit()
+        transaction_probe_conn.execute("BEGIN")
+        transaction_probe_conn.execute(
+            "INSERT INTO transaction_probe (probe_id, note) VALUES (?, ?)",
+            (1, "caller-owned-transaction"),
+        )
+        module_fresh.ensure_identity_registry_schema(transaction_probe_conn)
+        transaction_probe_conn.rollback()
+    finally:
+        transaction_probe_conn.close()
+
+    transaction_probe_verify = sqlite3.connect(transaction_probe_path)
+    try:
+        probe_count = transaction_probe_verify.execute("SELECT COUNT(*) FROM transaction_probe").fetchone()[0]
+        if probe_count != 0:
+            raise AssertionError("caller rollback control: transaction probe row persisted after rollback")
+        assert_registry_objects_absent(transaction_probe_verify, "caller rollback control")
+    finally:
+        transaction_probe_verify.close()
+
+    transaction_commit_conn = sqlite3.connect(transaction_probe_path)
+    try:
+        transaction_commit_conn.row_factory = sqlite3.Row
+        transaction_commit_conn.execute("BEGIN")
+        module_fresh.ensure_identity_registry_schema(transaction_commit_conn)
+        transaction_commit_conn.commit()
+        assert_registry_tables_exist(transaction_commit_conn, "caller explicit commit")
+        assert_registry_rows_empty(transaction_commit_conn, "caller explicit commit")
+        assert_registry_schema_metadata(transaction_commit_conn, "caller explicit commit")
+    finally:
+        transaction_commit_conn.close()
+
+    with module_fresh.db() as conn:
+        conn.row_factory = sqlite3.Row
+        assert_registry_tables_exist(conn, "fresh init")
+        assert_registry_rows_empty(conn, "fresh init")
+        assert_registry_schema_metadata(conn, "fresh init")
+
+    create_sample_sqlite = None
+    smoke_spec = importlib.util.spec_from_file_location("smoke_module", str(Path(root_dir) / "tests" / "smoke_test.py"))
+    smoke_module = importlib.util.module_from_spec(smoke_spec)
+    smoke_spec.loader.exec_module(smoke_module)
+    create_sample_sqlite = smoke_module.create_sample_sqlite
+    create_sample_sqlite(existing_db_path)
+    module_existing = import_app_for(existing_db_path, "app_identity_registry_existing")
+    with module_existing.db() as conn:
+        conn.row_factory = sqlite3.Row
+        assert_registry_tables_exist(conn, "existing migration")
+        assert_registry_rows_empty(conn, "existing migration")
+        assert_registry_schema_metadata(conn, "existing migration")
+        stabilized_tables = tuple(table for table in current_table_names(conn) if table not in REGISTRY_TABLES)
+        stabilized_manifest = fetch_counts(conn, stabilized_tables)
+
+    module_existing.bootstrap()
+    with module_existing.db() as conn:
+        conn.row_factory = sqlite3.Row
+        after_repeat_manifest = fetch_counts(conn, stabilized_tables)
+        if stabilized_manifest != after_repeat_manifest:
+            raise AssertionError("repeated bootstrap changed business manifests")
+        assert_registry_rows_empty(conn, "repeated bootstrap")
+
+    assert_constraints(existing_db_path, "constraint smoke")
+
+    if postgres_connect_calls:
+        raise AssertionError(f"PostgreSQL connection attempts observed: {postgres_connect_calls}")
+finally:
+    psycopg.connect = original_postgres_connect
+
+print("identity registry schema smoke PASS")
+''',
+        encoding="utf-8",
+    )
+    env = {
+        **os.environ,
+        "DATABASE_URL": "",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": str((temp_root / "pycache").resolve()),
+    }
+    fresh_db_path = temp_root / "identity-registry-fresh.db"
+    existing_db_path = temp_root / "identity-registry-existing.db"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            str(child_path),
+            str(ROOT_DIR / "app.py"),
+            str(fresh_db_path),
+            str(existing_db_path),
+            str(ROOT_DIR),
+        ],
+        cwd=ROOT_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    marker = "identity registry schema smoke PASS"
+    if result.returncode != 0:
+        raise AssertionError(f"identity registry schema child failed: {result.stderr or result.stdout}")
+    if result.stderr:
+        raise AssertionError(f"identity registry schema child stderr was not empty: {result.stderr}")
+    if result.stdout.count(marker) != 1:
+        raise AssertionError("identity registry schema child marker count must be exactly one")
+    print(marker)
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         run_dev_vendor_credential_rotation_smoke(Path(tmpdir) / "dev-vendor-credential-rotation")
@@ -24206,6 +24726,7 @@ def main() -> int:
         run_vendor_authenticated_submit_path_smoke(vendor_authenticated_submit_db)
         run_vendor_work_entry_requirement_confirmation_smoke(db_path)
         run_vendor_work_entry_formal_approve_smoke(db_path)
+        run_identity_registry_schema_smoke(Path(tmpdir) / "identity-registry-schema")
         vendor_auth_db = Path(tmpdir) / "vendor-auth-foundation.db"
         create_sample_sqlite(vendor_auth_db)
         run_vendor_auth_foundation_smoke(vendor_auth_db)
@@ -24231,6 +24752,7 @@ def main() -> int:
     run_help("check_site_permission_readiness.py")
     run_help("check_site_read_isolation.py")
     run_help("check_site_write_isolation_readiness.py")
+    run_help("check_identity_registry_schema.py")
     run_help("check_admin_write_model_readiness.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
@@ -24302,6 +24824,39 @@ def main() -> int:
     for fragment in ("/api/progress", "/api/unit-extra", "/api/vendor-contact", "/api/vendor-work-entry"):
         if fragment not in site_write_isolation_result.stdout:
             raise AssertionError(f"check_site_write_isolation_readiness.py missing expected inventory fragment: {fragment}")
+    with tempfile.TemporaryDirectory(prefix="identity-registry-checker-") as identity_registry_checker_tmpdir:
+        identity_registry_checker_db = Path(identity_registry_checker_tmpdir) / "identity-registry-checker.db"
+        create_sample_sqlite(identity_registry_checker_db)
+        identity_registry_schema_smoke_env = {
+            **os.environ,
+            "APP_DB_PATH": str(identity_registry_checker_db),
+            "DATABASE_URL": "",
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+        identity_registry_bootstrap = subprocess.run(
+            [sys.executable, "-B", "-c", "import app"],
+            cwd=ROOT_DIR,
+            env=identity_registry_schema_smoke_env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if identity_registry_bootstrap.stderr:
+            raise AssertionError(f"identity registry bootstrap stderr was not empty: {identity_registry_bootstrap.stderr}")
+        identity_registry_result = run_script(
+            "check_identity_registry_schema.py",
+            args=["--db", str(identity_registry_checker_db)],
+            env={"DATABASE_URL": "", "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        if "issues_count: 0" not in identity_registry_result.stdout or "PASS identity registry schema check passed." not in identity_registry_result.stdout:
+            raise AssertionError("check_identity_registry_schema.py did not report expected PASS output.")
+        identity_registry_self_test = run_script(
+            "check_identity_registry_schema.py",
+            args=["--self-test"],
+            env={"DATABASE_URL": "", "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        if identity_registry_self_test.stdout.count("PASS identity registry schema self-test passed.") != 1:
+            raise AssertionError("check_identity_registry_schema.py --self-test did not report expected marker exactly once.")
     admin_write_model_result = run_script("check_admin_write_model_readiness.py", env={"DATABASE_URL": ""})
     if "admin_write_model_readiness_scope: admin_site_content_enforced_save_internal_split_reset_sheet_enforced" not in admin_write_model_result.stdout:
         raise AssertionError("check_admin_write_model_readiness.py did not report expected reset-sheet-enforced scope.")

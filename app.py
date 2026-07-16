@@ -95,6 +95,113 @@ def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
+IDENTITY_REGISTRY_NORMALIZATION_ALGORITHM_FAMILY = "NFKC_CASEFOLD_V1"
+IDENTITY_REGISTRY_NORMALIZATION_PROFILE = "NFKC_CASEFOLD_V1_UCD16_0_0"
+IDENTITY_REGISTRY_UNICODE_DATA_VERSION = "16.0.0"
+IDENTITY_REGISTRY_TRIM_CONFORMANCE_PROFILE = "PY3146_UCD16_0_0_STRIP_V1"
+IDENTITY_REGISTRY_SCHEMA_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS global_identities (
+        global_identity_id TEXT PRIMARY KEY,
+        registry_status TEXT NOT NULL DEFAULT 'disabled',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_provenance TEXT NOT NULL,
+        updated_provenance TEXT NOT NULL,
+        CHECK (registry_status IN ('active', 'disabled'))
+    ) STRICT;
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS login_identifier_aliases (
+        login_identifier_alias_id TEXT PRIMARY KEY,
+        global_identity_id TEXT NOT NULL,
+        raw_alias TEXT NOT NULL,
+        normalized_lookup_key TEXT NOT NULL,
+        normalization_algorithm_family TEXT NOT NULL,
+        normalization_profile TEXT NOT NULL,
+        unicode_data_version TEXT NOT NULL,
+        trim_conformance_profile TEXT NOT NULL,
+        alias_status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_provenance TEXT NOT NULL,
+        updated_provenance TEXT NOT NULL,
+        FOREIGN KEY (global_identity_id)
+            REFERENCES global_identities(global_identity_id)
+            ON DELETE RESTRICT
+            ON UPDATE NO ACTION,
+        CHECK (alias_status IN ('active', 'disabled', 'superseded')),
+        CHECK (normalization_algorithm_family = '{IDENTITY_REGISTRY_NORMALIZATION_ALGORITHM_FAMILY}'),
+        CHECK (normalization_profile = '{IDENTITY_REGISTRY_NORMALIZATION_PROFILE}'),
+        CHECK (unicode_data_version = '{IDENTITY_REGISTRY_UNICODE_DATA_VERSION}'),
+        CHECK (trim_conformance_profile = '{IDENTITY_REGISTRY_TRIM_CONFORMANCE_PROFILE}')
+    ) STRICT;
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS backend_principal_mappings (
+        backend_principal_mapping_id TEXT PRIMARY KEY,
+        global_identity_id TEXT NOT NULL,
+        backend_kind TEXT NOT NULL,
+        backend_principal_key ANY NOT NULL,
+        mapping_status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        created_provenance TEXT NOT NULL,
+        updated_provenance TEXT NOT NULL,
+        FOREIGN KEY (global_identity_id)
+            REFERENCES global_identities(global_identity_id)
+            ON DELETE RESTRICT
+            ON UPDATE NO ACTION,
+        CHECK (backend_kind IN ('internal', 'vendor')),
+        CHECK (mapping_status IN ('active', 'disabled')),
+        CHECK (typeof(backend_principal_key) = 'integer' AND backend_principal_key > 0),
+        UNIQUE (backend_kind, backend_principal_key),
+        UNIQUE (global_identity_id, backend_kind)
+    ) STRICT;
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_login_identifier_aliases_candidate_lookup
+    ON login_identifier_aliases (
+        normalization_algorithm_family,
+        normalization_profile,
+        unicode_data_version,
+        trim_conformance_profile,
+        normalized_lookup_key,
+        alias_status
+    );
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_login_identifier_aliases_provenance_reconciliation
+    ON login_identifier_aliases (
+        normalization_algorithm_family,
+        normalization_profile,
+        unicode_data_version,
+        trim_conformance_profile,
+        global_identity_id,
+        alias_status
+    );
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_login_identifier_aliases_active_exact_alias
+    ON login_identifier_aliases (
+        global_identity_id,
+        raw_alias,
+        normalized_lookup_key,
+        normalization_algorithm_family,
+        normalization_profile,
+        unicode_data_version,
+        trim_conformance_profile
+    )
+    WHERE alias_status = 'active';
+    """,
+)
+
+
+def ensure_identity_registry_schema(conn: sqlite3.Connection) -> None:
+    for statement in IDENTITY_REGISTRY_SCHEMA_STATEMENTS:
+        conn.execute(statement)
+
+
 def env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -5000,6 +5107,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     ensure_formal_approvals_schema(conn)
     ensure_scheduling_entries_schema(conn)
     ensure_vendor_contacts_schema(conn)
+    ensure_identity_registry_schema(conn)
 
 
 def seed_admin(conn: sqlite3.Connection) -> None:
@@ -6131,6 +6239,7 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     ensure_scheduling_entries_schema(conn)
     ensure_site_foundation_schema(conn)
     ensure_vendor_contacts_schema(conn)
+    ensure_identity_registry_schema(conn)
 
 
 def normalize_progress_values(conn: sqlite3.Connection) -> None:
