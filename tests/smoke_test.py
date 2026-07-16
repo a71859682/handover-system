@@ -4,6 +4,7 @@ import builtins
 import importlib.util
 import contextlib
 import io
+import json
 import os
 import inspect
 import re
@@ -9103,7 +9104,17 @@ print("users delete submit verifier smoke PASS")
 
 
 def run_users_read_inventory_smoke() -> None:
-    result = run_script("check_users_read_inventory.py")
+    with tempfile.TemporaryDirectory(prefix="users-read-inventory-") as tmpdir:
+        app_db_path = Path(tmpdir) / "users-read-inventory.db"
+        create_sample_sqlite(app_db_path)
+        result = run_script(
+            "check_users_read_inventory.py",
+            env={
+                "APP_DB_PATH": str(app_db_path),
+                "DATABASE_URL": "",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
+        )
     output = result.stdout
     if result.returncode != 0:
         raise AssertionError(f"check_users_read_inventory.py failed:\n{output}")
@@ -24598,6 +24609,210 @@ print("identity registry schema smoke PASS")
     print(marker)
 
 
+def run_schema_manifest_serializer_smoke(temp_root: Path) -> None:
+    temp_root.mkdir(parents=True, exist_ok=True)
+    parent_app_db_path_present = "APP_DB_PATH" in os.environ
+    parent_database_url_present = "DATABASE_URL" in os.environ
+    parent_app_db_path = os.environ.get("APP_DB_PATH")
+    parent_database_url = os.environ.get("DATABASE_URL")
+    db_root = temp_root / "db"
+    artifact_root = temp_root / "artifacts"
+    db_root.mkdir()
+    artifact_root.mkdir()
+    base_db = db_root / "schema-manifest-base.db"
+    registry_db = db_root / "schema-manifest-registry.db"
+    create_sample_sqlite(base_db)
+    shutil.copy2(base_db, registry_db)
+    base_db_before = base_db.stat()
+
+    env = {
+        **os.environ,
+        "DATABASE_URL": "",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": str((temp_root / "pycache").resolve()),
+    }
+
+    def capture(db_path: Path, output_dir: Path) -> dict[str, object]:
+        before = db_path.stat()
+        result = run_script(
+            "capture_schema_manifest.py",
+            args=["capture", "--db", str(db_path), "--output-dir", str(output_dir)],
+            env=env,
+        )
+        if result.stderr:
+            raise AssertionError(f"capture_schema_manifest.py capture stderr was not empty: {result.stderr}")
+        after = db_path.stat()
+        if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
+            raise AssertionError("source DB changed during schema manifest capture")
+        return json.loads(result.stdout)
+
+    def compare(pre_dir: Path, post_dir: Path) -> dict[str, object]:
+        result = run_script(
+            "capture_schema_manifest.py",
+            args=["compare", "--pre-dir", str(pre_dir), "--post-dir", str(post_dir)],
+            env=env,
+        )
+        if result.stderr:
+            raise AssertionError(f"capture_schema_manifest.py compare stderr was not empty: {result.stderr}")
+        return json.loads(result.stdout)
+
+    def add_registry_only_schema(db_path: Path) -> None:
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE global_identities (
+                    global_identity_id TEXT PRIMARY KEY,
+                    registry_status TEXT NOT NULL DEFAULT 'disabled',
+                    created_provenance TEXT NOT NULL,
+                    updated_provenance TEXT NOT NULL
+                ) STRICT;
+                CREATE TABLE login_identifier_aliases (
+                    login_identifier_alias_id TEXT PRIMARY KEY,
+                    global_identity_id TEXT NOT NULL,
+                    raw_alias TEXT NOT NULL,
+                    normalized_lookup_key TEXT NOT NULL,
+                    normalization_algorithm_family TEXT NOT NULL,
+                    normalization_profile TEXT NOT NULL,
+                    unicode_data_version TEXT NOT NULL,
+                    trim_conformance_profile TEXT NOT NULL,
+                    alias_status TEXT NOT NULL DEFAULT 'active',
+                    created_provenance TEXT NOT NULL,
+                    updated_provenance TEXT NOT NULL,
+                    FOREIGN KEY (global_identity_id) REFERENCES global_identities(global_identity_id) ON DELETE RESTRICT ON UPDATE NO ACTION
+                ) STRICT;
+                CREATE TABLE backend_principal_mappings (
+                    backend_principal_mapping_id TEXT PRIMARY KEY,
+                    global_identity_id TEXT NOT NULL,
+                    backend_kind TEXT NOT NULL,
+                    backend_principal_key ANY NOT NULL,
+                    mapping_status TEXT NOT NULL DEFAULT 'active',
+                    created_provenance TEXT NOT NULL,
+                    updated_provenance TEXT NOT NULL,
+                    FOREIGN KEY (global_identity_id) REFERENCES global_identities(global_identity_id) ON DELETE RESTRICT ON UPDATE NO ACTION,
+                    UNIQUE (backend_kind, backend_principal_key),
+                    UNIQUE (global_identity_id, backend_kind)
+                ) STRICT;
+                CREATE INDEX idx_login_identifier_aliases_candidate_lookup
+                ON login_identifier_aliases (
+                    normalization_algorithm_family,
+                    normalization_profile,
+                    normalized_lookup_key
+                );
+                CREATE INDEX idx_login_identifier_aliases_provenance_reconciliation
+                ON login_identifier_aliases (
+                    global_identity_id,
+                    created_provenance
+                );
+                CREATE INDEX idx_login_identifier_aliases_active_exact_alias
+                ON login_identifier_aliases (
+                    raw_alias
+                )
+                WHERE alias_status = 'active';
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    base_capture_dir = artifact_root / "base-capture"
+    base_capture_again_dir = artifact_root / "base-capture-again"
+    base_capture = capture(base_db, base_capture_dir)
+    base_capture_again = capture(base_db, base_capture_again_dir)
+    if not base_capture["source_db_unchanged"] or not base_capture_again["source_db_unchanged"]:
+        raise AssertionError("capture did not report source_db_unchanged")
+
+    identical_compare = compare(base_capture_dir, base_capture_again_dir)
+    if identical_compare["classifications"] != ["identical"]:
+        raise AssertionError(f"identical compare classification mismatch: {identical_compare['classifications']}")
+    if not identical_compare["legacy_manifest_byte_equality"]:
+        raise AssertionError("identical compare did not preserve legacy manifest bytes")
+
+    add_registry_only_schema(registry_db)
+    registry_db_after_registry_only_schema = registry_db.stat()
+
+    registry_capture_dir = artifact_root / "registry-capture"
+    registry_capture = capture(registry_db, registry_capture_dir)
+    registry_payload = json.loads((registry_capture_dir / "manifest_payload_v1.json").read_text(encoding="utf-8"))
+    if registry_payload["postgresql_attempts"] != 0:
+        raise AssertionError("schema manifest serializer touched PostgreSQL")
+    if registry_payload["write_attempts"] != 0:
+        raise AssertionError("schema manifest serializer reported write attempts during normal capture")
+
+    registry_compare = compare(base_capture_dir, registry_capture_dir)
+    if "expected registry-only schema delta" not in registry_compare["classifications"]:
+        raise AssertionError(f"registry-only delta classification mismatch: {registry_compare['classifications']}")
+    if "legacy schema drift" in registry_compare["classifications"]:
+        raise AssertionError("registry-only delta was incorrectly classified as legacy drift")
+
+    transport_dir = artifact_root / "transport"
+    pack_result = run_script(
+        "capture_schema_manifest.py",
+        args=["pack-transport", "--input-dir", str(registry_capture_dir), "--output-dir", str(transport_dir)],
+        env=env,
+    )
+    if pack_result.stderr:
+        raise AssertionError(f"capture_schema_manifest.py pack-transport stderr was not empty: {pack_result.stderr}")
+    pack_summary = json.loads(pack_result.stdout)
+    transport_file = Path(pack_summary["transport_file"])
+    reconstructed_dir = artifact_root / "reconstructed"
+    reconstruct_result = run_script(
+        "capture_schema_manifest.py",
+        args=["reconstruct-transport", "--transport-file", str(transport_file), "--output-dir", str(reconstructed_dir)],
+        env=env,
+    )
+    if reconstruct_result.stderr:
+        raise AssertionError(f"capture_schema_manifest.py reconstruct-transport stderr was not empty: {reconstruct_result.stderr}")
+    reconstructed_compare = compare(registry_capture_dir, reconstructed_dir)
+    if reconstructed_compare["classifications"] != ["identical"]:
+        raise AssertionError("reconstructed manifest artifacts did not compare as identical")
+
+    corrupted_transport = json.loads(transport_file.read_text(encoding="utf-8"))
+    corrupted_transport["chunks"][-1]["text"] = corrupted_transport["chunks"][-1]["text"][:-1]
+    corrupted_path = transport_dir / "transport_chunks_corrupted.json"
+    corrupted_path.write_text(
+        json.dumps(corrupted_transport, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    corrupted_result = subprocess.run(
+        [
+            sys.executable,
+            str(TOOLS_DIR / "capture_schema_manifest.py"),
+            "reconstruct-transport",
+            "--transport-file",
+            str(corrupted_path),
+            "--output-dir",
+            str(artifact_root / "corrupted-reconstructed"),
+        ],
+        cwd=ROOT_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if corrupted_result.returncode == 0:
+        raise AssertionError("corrupted transport unexpectedly reconstructed successfully")
+    if "FAIL" not in corrupted_result.stderr and "FAIL" not in corrupted_result.stdout:
+        raise AssertionError("corrupted transport failure did not report FAIL status")
+
+    for artifact_dir in (base_capture_dir, base_capture_again_dir, registry_capture_dir, transport_dir, reconstructed_dir):
+        if temp_root.resolve() not in artifact_dir.resolve().parents and artifact_dir.resolve() != temp_root.resolve():
+            raise AssertionError("serializer artifacts escaped the serializer temp root")
+    if base_db.stat().st_size != base_db_before.st_size or base_db.stat().st_mtime_ns != base_db_before.st_mtime_ns:
+        raise AssertionError("base serializer smoke DB changed")
+    if (
+        registry_db.stat().st_size != registry_db_after_registry_only_schema.st_size
+        or registry_db.stat().st_mtime_ns != registry_db_after_registry_only_schema.st_mtime_ns
+    ):
+        raise AssertionError("registry serializer smoke DB changed")
+    if ("APP_DB_PATH" in os.environ) != parent_app_db_path_present or os.environ.get("APP_DB_PATH") != parent_app_db_path:
+        raise AssertionError("serializer smoke changed parent APP_DB_PATH")
+    if ("DATABASE_URL" in os.environ) != parent_database_url_present or os.environ.get("DATABASE_URL") != parent_database_url:
+        raise AssertionError("serializer smoke changed parent DATABASE_URL")
+
+    marker = "schema manifest serializer smoke PASS"
+    print(marker)
+
+
 def main() -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         run_dev_vendor_credential_rotation_smoke(Path(tmpdir) / "dev-vendor-credential-rotation")
@@ -24727,6 +24942,7 @@ def main() -> int:
         run_vendor_work_entry_requirement_confirmation_smoke(db_path)
         run_vendor_work_entry_formal_approve_smoke(db_path)
         run_identity_registry_schema_smoke(Path(tmpdir) / "identity-registry-schema")
+        run_schema_manifest_serializer_smoke(Path(tmpdir) / "schema-manifest-serializer")
         vendor_auth_db = Path(tmpdir) / "vendor-auth-foundation.db"
         create_sample_sqlite(vendor_auth_db)
         run_vendor_auth_foundation_smoke(vendor_auth_db)
@@ -24753,6 +24969,7 @@ def main() -> int:
     run_help("check_site_read_isolation.py")
     run_help("check_site_write_isolation_readiness.py")
     run_help("check_identity_registry_schema.py")
+    run_help("capture_schema_manifest.py")
     run_help("check_admin_write_model_readiness.py")
     run_help("check_sqlite_runtime_persistence.py")
     run_help("check_users_id_allocation.py")
@@ -24775,7 +24992,13 @@ def main() -> int:
     users_role_result = run_script("check_users_secondary_update.py", args=["--field", "role"], env={"DATABASE_URL": ""})
     if "DATABASE_URL is not configured." not in users_role_result.stdout or "PASS" not in users_role_result.stdout:
         raise AssertionError("check_users_secondary_update.py --field role did not report expected PASS without DATABASE_URL.")
-    site_permission_result = run_script("check_site_permission_readiness.py")
+    with tempfile.TemporaryDirectory(prefix="site-permission-readiness-") as site_permission_tmpdir:
+        site_permission_db = Path(site_permission_tmpdir) / "site-permission-readiness.db"
+        create_sample_sqlite(site_permission_db)
+        site_permission_result = run_script(
+            "check_site_permission_readiness.py",
+            env={"APP_DB_PATH": str(site_permission_db), "DATABASE_URL": ""},
+        )
     if "PASS site permission readiness check passed." not in site_permission_result.stdout:
         raise AssertionError("check_site_permission_readiness.py did not report PASS.")
     baseline_result = run_script("check_users_baseline_and_sequence.py", env={"DATABASE_URL": ""})
