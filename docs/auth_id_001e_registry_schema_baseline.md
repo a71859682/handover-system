@@ -2,7 +2,35 @@ Status: schema baseline
 
 Scope: docs-only
 
-Implementation status: not started
+Implementation status: implemented and Production-frozen
+
+AUTH-ID-001E1 implementation evidence:
+
+- Implementation commit: `5ce7a1971cb3820d1088c66d7e209885f7e27d73`
+- Commit message: `Add identity registry SQLite schema`
+- Implementation date: `2026-07-16`
+- Exact changed files:
+  - `app.py`
+  - `tests/smoke_test.py`
+  - `tools/check_identity_registry_schema.py`
+- DEV deployment: `dep-d9c5gq1oagis73c07gfg`
+- Production deployment: `dep-d9cba7cm0tmc739im64g`
+- Deployed commit: `5ce7a1971cb3820d1088c66d7e209885f7e27d73`
+- Current frozen descendant baseline: `6549010c1bffef41bb82c98017d55faf1e918d78`
+- Commit `6549010c1bffef41bb82c98017d55faf1e918d78` did not modify the registry implementation in `app.py`.
+- Disposable rollback, explicit commit, existing-database migration, idempotency, constraint, and PostgreSQL-boundary evidence passed.
+- Standalone identity schema checker normal and self-test validation passed.
+
+AUTH-ID-001E1 implementation boundary:
+
+- The implementation creates only the physical registry schema and approved indexes.
+- It performs no backfill and seeds no registry identities, aliases, or backend mappings.
+- It does not enable registry authentication or authorization authority.
+- It does not modify credentials, sessions, roles, permissions, site isolation, workflows, or API contracts.
+- Current Production database objects and row counts were not re-verified during this docs-only reconciliation.
+- Deployment evidence is not direct query evidence of current Production database contents.
+- No migration-ledger evidence establishes the exact time when the registry schema was first created; that time is not claimed as precisely confirmed.
+- This implementation does not provide hot-maintenance, merge, or post-deploy reconciliation capability.
 
 # AUTH-ID-001E — Registry Schema Baseline
 
