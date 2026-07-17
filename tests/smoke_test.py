@@ -24089,6 +24089,242 @@ async function cancelCase({reasonValue, responses, expectedPosts, expectedRemove
     print(marker)
 
 
+def _assert_identity_registry_id_rejected(ids_module, candidate: object) -> None:
+    expected_message = "invalid identity registry ID"
+    try:
+        ids_module.validate_identity_registry_id(candidate)
+    except ids_module.IdentityRegistryIdValidationError as exc:
+        if str(exc) != expected_message or exc.args != (expected_message,):
+            raise AssertionError("identity registry ID validation error message changed")
+        if exc.__cause__ is not None or exc.__context__ is not None:
+            raise AssertionError("identity registry ID validation exposed exception chaining")
+        candidate_text = candidate if type(candidate) is str else repr(candidate)
+        if candidate_text and (candidate_text in str(exc) or candidate_text in repr(exc)):
+            raise AssertionError("identity registry ID validation error exposed the rejected candidate")
+    else:
+        raise AssertionError(f"identity registry ID validator accepted negative case type {type(candidate)!r}")
+
+
+def _assert_identity_registry_factory_rejected(ids_module, factory, leaked_tokens=()) -> None:
+    expected_message = "invalid identity registry ID"
+    try:
+        ids_module._generate_identity_registry_id(factory)
+    except ids_module.IdentityRegistryIdValidationError as exc:
+        if str(exc) != expected_message or exc.args != (expected_message,):
+            raise AssertionError("identity registry ID factory failure message changed")
+        if exc.__cause__ is not None or exc.__context__ is not None:
+            raise AssertionError("identity registry ID factory failure exposed exception chaining")
+        for token in leaked_tokens:
+            if token and (token in str(exc) or token in repr(exc)):
+                raise AssertionError("identity registry ID factory failure exposed candidate information")
+    else:
+        raise AssertionError("identity registry ID factory negative case did not fail closed")
+
+
+def _run_identity_registry_id_format_child() -> int:
+    root_dir = str(ROOT_DIR)
+    if root_dir not in sys.path:
+        sys.path.insert(0, root_dir)
+
+    sqlite_connect_calls = []
+    original_sqlite_connect = sqlite3.connect
+
+    def rejecting_sqlite_connect(*args, **kwargs):
+        sqlite_connect_calls.append({"args": args, "kwargs": kwargs})
+        raise AssertionError("identity registry ID module must not open SQLite")
+
+    sqlite3.connect = rejecting_sqlite_connect
+    try:
+        import services.identity_registry_ids as ids
+    finally:
+        sqlite3.connect = original_sqlite_connect
+
+    if sqlite_connect_calls:
+        raise AssertionError("identity registry ID module attempted to open SQLite during import")
+
+    expected_public_api = (
+        "IdentityRegistryIdValidationError",
+        "validate_identity_registry_id",
+        "generate_global_identity_id",
+        "generate_login_identifier_alias_id",
+        "generate_backend_principal_mapping_id",
+    )
+    if ids.__all__ != expected_public_api:
+        raise AssertionError(f"identity registry ID public API changed: {ids.__all__!r}")
+    if not issubclass(ids.IdentityRegistryIdValidationError, ValueError):
+        raise AssertionError("identity registry ID validation exception must inherit ValueError")
+
+    exact_pattern = r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+    if ids._IDENTITY_REGISTRY_ID_PATTERN.pattern != exact_pattern:
+        raise AssertionError("identity registry ID exact regex changed")
+    if not ids._IDENTITY_REGISTRY_ID_PATTERN.flags & re.ASCII:
+        raise AssertionError("identity registry ID regex must use re.ASCII")
+
+    public_generators = (
+        ids.generate_global_identity_id,
+        ids.generate_login_identifier_alias_id,
+        ids.generate_backend_principal_mapping_id,
+    )
+    for generator in public_generators:
+        if tuple(inspect.signature(generator).parameters):
+            raise AssertionError(f"identity registry ID public generator accepts parameters: {generator.__name__}")
+
+    deterministic_values = (
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-9000-000000000002",
+        "00000000-0000-4000-a000-000000000003",
+    )
+    deterministic_uuids = [ids.uuid.UUID(value) for value in deterministic_values]
+    uuid4_calls = []
+    validator_calls = []
+    original_uuid4 = ids.uuid.uuid4
+    original_validator = ids.validate_identity_registry_id
+
+    def deterministic_uuid4():
+        uuid4_calls.append(len(uuid4_calls))
+        return deterministic_uuids[len(uuid4_calls) - 1]
+
+    def recording_validator(value: object) -> str:
+        validator_calls.append(value)
+        return original_validator(value)
+
+    ids.uuid.uuid4 = deterministic_uuid4
+    ids.validate_identity_registry_id = recording_validator
+    try:
+        generated_values = tuple(generator() for generator in public_generators)
+    finally:
+        ids.validate_identity_registry_id = original_validator
+        ids.uuid.uuid4 = original_uuid4
+
+    if generated_values != deterministic_values:
+        raise AssertionError("identity registry ID generators did not use the expected uuid.uuid4 path")
+    if len(uuid4_calls) != 3:
+        raise AssertionError("identity registry ID public generators did not call uuid.uuid4 exactly once each")
+    if validator_calls != list(deterministic_values):
+        raise AssertionError("identity registry ID public generators did not share the canonical validator path")
+
+    forbidden_prefixes = ("gid_", "alias_", "map_", "internal_", "vendor_")
+    for generated in generated_values:
+        if type(generated) is not str:
+            raise AssertionError("identity registry ID generator must return exact str")
+        if len(generated) != 36:
+            raise AssertionError("identity registry ID generator returned wrong length")
+        if generated != generated.lower():
+            raise AssertionError("identity registry ID generator returned non-lowercase text")
+        if re.fullmatch(exact_pattern, generated, re.ASCII) is None:
+            raise AssertionError("identity registry ID generator returned a noncanonical lexical value")
+        parsed = ids.uuid.UUID(generated)
+        if parsed.version != 4 or parsed.variant != ids.uuid.RFC_4122:
+            raise AssertionError("identity registry ID generator returned wrong UUID version or variant")
+        if str(parsed) != generated:
+            raise AssertionError("identity registry ID parse/stringify round-trip changed the value")
+        if generated.startswith(forbidden_prefixes):
+            raise AssertionError("identity registry ID generator added a forbidden prefix")
+        if original_validator(generated) is not generated:
+            raise AssertionError("identity registry ID validator must return the original canonical string")
+
+    class StringSubclass(str):
+        pass
+
+    canonical = deterministic_values[2]
+    negative_candidates = (
+        None,
+        True,
+        False,
+        1,
+        1.5,
+        b"00000000-0000-4000-8000-000000000001",
+        bytearray(b"00000000-0000-4000-8000-000000000001"),
+        ids.uuid.UUID(canonical),
+        [canonical],
+        (canonical,),
+        {"id": canonical},
+        StringSubclass(canonical),
+        "",
+        "   ",
+        f" {canonical}",
+        f"{canonical} ",
+        canonical.upper(),
+        canonical[:-1] + "A",
+        "{" + canonical + "}",
+        "urn:uuid:" + canonical,
+        canonical.replace("-", ""),
+        "00000000-0000-0000-0000-000000000000",
+        "00000000-0000-1000-8000-000000000001",
+        "00000000-0000-3000-8000-000000000001",
+        "00000000-0000-5000-8000-000000000001",
+        "00000000-0000-6000-8000-000000000001",
+        "00000000-0000-7000-8000-000000000001",
+        "00000000-0000-8000-8000-000000000001",
+        "00000000-0000-0000-8000-000000000001",
+        "00000000-0000-4000-7000-000000000001",
+        "gid_" + canonical,
+        canonical + "_suffix",
+        canonical[:-1],
+        canonical[:-1] + "g",
+    )
+    if len(negative_candidates) != 34:
+        raise AssertionError("identity registry ID negative validation inventory changed")
+    for candidate in negative_candidates:
+        _assert_identity_registry_id_rejected(ids, candidate)
+
+    private_valid = "00000000-0000-4000-b000-000000000004"
+    if ids._generate_identity_registry_id(lambda: ids.uuid.UUID(private_valid)) != private_valid:
+        raise AssertionError("identity registry ID private deterministic injection failed")
+    _assert_identity_registry_factory_rejected(
+        ids,
+        lambda: ids.uuid.UUID("00000000-0000-1000-8000-000000000001"),
+    )
+    _assert_identity_registry_factory_rejected(
+        ids,
+        lambda: ids.uuid.UUID("00000000-0000-4000-7000-000000000001"),
+    )
+    _assert_identity_registry_factory_rejected(ids, lambda: private_valid, (private_valid,))
+    _assert_identity_registry_factory_rejected(ids, lambda: None)
+
+    factory_secret = "factory-secret-candidate"
+
+    def raising_factory():
+        raise RuntimeError(factory_secret)
+
+    _assert_identity_registry_factory_rejected(ids, raising_factory, (factory_secret,))
+
+    for generator in public_generators:
+        try:
+            generator(private_valid)
+        except TypeError as exc:
+            if private_valid in str(exc) or private_valid in repr(exc):
+                raise AssertionError("identity registry ID public signature error exposed candidate")
+        else:
+            raise AssertionError("identity registry ID public generator accepted a caller candidate")
+
+    print("identity registry ID format smoke PASS")
+    return 0
+
+
+def run_identity_registry_id_format_smoke() -> None:
+    child_env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    child_env.pop("APP_DB_PATH", None)
+    child_env.pop("DATABASE_URL", None)
+    result = subprocess.run(
+        [sys.executable, "-B", str(Path(__file__).resolve()), "--internal-identity-registry-id-format"],
+        cwd=ROOT_DIR,
+        env=child_env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    marker = "identity registry ID format smoke PASS"
+    if result.returncode != 0:
+        raise AssertionError(f"identity registry ID format child failed: {result.stderr or result.stdout}")
+    if result.stderr:
+        raise AssertionError(f"identity registry ID format child stderr was not empty: {result.stderr}")
+    if result.stdout != marker + "\n":
+        raise AssertionError("identity registry ID format child must output its marker exactly once")
+    print(marker)
+
+
 def run_identity_registry_schema_smoke(temp_root: Path) -> None:
     temp_root.mkdir(parents=True, exist_ok=True)
     child_path = temp_root / "identity-registry-schema-smoke.py"
@@ -24941,6 +25177,7 @@ def main() -> int:
         run_vendor_authenticated_submit_path_smoke(vendor_authenticated_submit_db)
         run_vendor_work_entry_requirement_confirmation_smoke(db_path)
         run_vendor_work_entry_formal_approve_smoke(db_path)
+        run_identity_registry_id_format_smoke()
         run_identity_registry_schema_smoke(Path(tmpdir) / "identity-registry-schema")
         run_schema_manifest_serializer_smoke(Path(tmpdir) / "schema-manifest-serializer")
         vendor_auth_db = Path(tmpdir) / "vendor-auth-foundation.db"
@@ -25178,6 +25415,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "--internal-identity-registry-id-format":
+        raise SystemExit(_run_identity_registry_id_format_child())
     if len(sys.argv) == 3 and sys.argv[1] == "--internal-dev-vendor-credential-rotation":
         raise SystemExit(_run_dev_vendor_credential_rotation_child(Path(sys.argv[2])))
     if len(sys.argv) == 4 and sys.argv[1] == "--internal-vendor-authenticated-submit":
