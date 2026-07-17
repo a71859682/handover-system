@@ -24325,6 +24325,146 @@ def run_identity_registry_id_format_smoke() -> None:
     print(marker)
 
 
+def run_identity_registry_lifecycle_readiness_smoke(temp_root: Path | None = None) -> None:
+    import ast
+
+    checker_path = TOOLS_DIR / "check_identity_registry_lifecycle_readiness.py"
+    source = checker_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(checker_path))
+    imported_roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_roots.add(node.module.split(".", 1)[0])
+    forbidden_imports = imported_roots & {
+        "app",
+        "flask",
+        "psycopg",
+        "sqlite3",
+        "sqlalchemy",
+        "subprocess",
+    }
+    if forbidden_imports:
+        raise AssertionError(
+            "identity registry lifecycle readiness checker has forbidden imports: "
+            + ", ".join(sorted(forbidden_imports))
+        )
+
+    def file_state(path: Path) -> tuple[bool, int | None, int | None]:
+        if not path.exists():
+            return (False, None, None)
+        stat = path.stat()
+        return (True, stat.st_size, stat.st_mtime_ns)
+
+    repository_db_paths = tuple(
+        ROOT_DIR / name
+        for name in ("site.db", "site.db-wal", "site.db-shm", "site.db-journal")
+    )
+    repository_db_before = {path.name: file_state(path) for path in repository_db_paths}
+
+    owns_temp_root = temp_root is None
+    temp_context = tempfile.TemporaryDirectory(
+        prefix="auth-id-001f-lifecycle-readiness-smoke-"
+    ) if owns_temp_root else contextlib.nullcontext(str(temp_root))
+    with temp_context as temp_value:
+        effective_temp_root = Path(temp_value)
+        effective_temp_root.mkdir(parents=True, exist_ok=True)
+        sentinel_db = effective_temp_root / "must-not-be-created.db"
+        pycache_root = effective_temp_root / "pycache"
+        import_sentinel_root = effective_temp_root / "import-sentinels"
+        import_sentinel_root.mkdir(parents=True, exist_ok=True)
+        for module_name in ("app", "psycopg", "psycopg2", "sqlalchemy"):
+            (import_sentinel_root / f"{module_name}.py").write_text(
+                f'raise AssertionError("{module_name} import attempted by lifecycle readiness checker")\n',
+                encoding="utf-8",
+                newline="\n",
+            )
+        existing_pythonpath = os.environ.get("PYTHONPATH")
+        child_env = {
+            **os.environ,
+            "APP_DB_PATH": str(sentinel_db),
+            "DATABASE_URL": "",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPYCACHEPREFIX": str(pycache_root),
+            "PYTHONPATH": (
+                str(import_sentinel_root)
+                if not existing_pythonpath
+                else str(import_sentinel_root) + os.pathsep + existing_pythonpath
+            ),
+        }
+
+        commands = (
+            (
+                [sys.executable, "-B", str(checker_path)],
+                "identity registry lifecycle readiness PASS",
+                (
+                    "issues_count: 0",
+                    "runtime_registry_dml: PASS",
+                    "forbidden_consumer_drift: PASS",
+                    "frozen_policy_boundary: PASS",
+                    "schema_lifecycle_boundary: PASS",
+                    "database_access: 0",
+                    "app_imports: 0",
+                ),
+            ),
+            (
+                [sys.executable, "-B", str(checker_path), "--self-test"],
+                "identity registry lifecycle readiness self-test PASS",
+                (
+                    "self_test_scenarios: 46",
+                    "database_access: 0",
+                    "app_imports: 0",
+                ),
+            ),
+        )
+        for command, marker, required_lines in commands:
+            result = subprocess.run(
+                command,
+                cwd=ROOT_DIR,
+                env=child_env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            if result.returncode != 0:
+                raise AssertionError(
+                    "identity registry lifecycle readiness child failed: "
+                    + (result.stderr or result.stdout)
+                )
+            if result.stderr:
+                raise AssertionError(
+                    "identity registry lifecycle readiness child stderr was not empty: "
+                    + result.stderr
+                )
+            if result.stdout.count(marker) != 1:
+                raise AssertionError(
+                    f"identity registry lifecycle readiness child marker count was not one: {marker}"
+                )
+            for required_line in required_lines:
+                if result.stdout.count(required_line) != 1:
+                    raise AssertionError(
+                        "identity registry lifecycle readiness child missing exact evidence: "
+                        + required_line
+                    )
+
+        if sentinel_db.exists() or any(
+            Path(str(sentinel_db) + suffix).exists()
+            for suffix in ("-wal", "-shm", "-journal")
+        ):
+            raise AssertionError(
+                "identity registry lifecycle readiness checker created its APP_DB_PATH sentinel"
+            )
+
+    repository_db_after = {path.name: file_state(path) for path in repository_db_paths}
+    if repository_db_after != repository_db_before:
+        raise AssertionError(
+            "identity registry lifecycle readiness smoke changed repository DB or sidecar state"
+        )
+    print("identity registry lifecycle readiness smoke PASS")
+
+
 def run_identity_registry_schema_smoke(temp_root: Path) -> None:
     temp_root.mkdir(parents=True, exist_ok=True)
     child_path = temp_root / "identity-registry-schema-smoke.py"
@@ -25178,6 +25318,9 @@ def main() -> int:
         run_vendor_work_entry_requirement_confirmation_smoke(db_path)
         run_vendor_work_entry_formal_approve_smoke(db_path)
         run_identity_registry_id_format_smoke()
+        run_identity_registry_lifecycle_readiness_smoke(
+            Path(tmpdir) / "identity-registry-lifecycle-readiness"
+        )
         run_identity_registry_schema_smoke(Path(tmpdir) / "identity-registry-schema")
         run_schema_manifest_serializer_smoke(Path(tmpdir) / "schema-manifest-serializer")
         vendor_auth_db = Path(tmpdir) / "vendor-auth-foundation.db"
@@ -25205,6 +25348,7 @@ def main() -> int:
     run_help("check_site_permission_readiness.py")
     run_help("check_site_read_isolation.py")
     run_help("check_site_write_isolation_readiness.py")
+    run_help("check_identity_registry_lifecycle_readiness.py")
     run_help("check_identity_registry_schema.py")
     run_help("capture_schema_manifest.py")
     run_help("check_admin_write_model_readiness.py")
@@ -25417,6 +25561,9 @@ def main() -> int:
 if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--internal-identity-registry-id-format":
         raise SystemExit(_run_identity_registry_id_format_child())
+    if len(sys.argv) == 2 and sys.argv[1] == "--internal-identity-registry-lifecycle-readiness":
+        run_identity_registry_lifecycle_readiness_smoke()
+        raise SystemExit(0)
     if len(sys.argv) == 3 and sys.argv[1] == "--internal-dev-vendor-credential-rotation":
         raise SystemExit(_run_dev_vendor_credential_rotation_child(Path(sys.argv[2])))
     if len(sys.argv) == 4 and sys.argv[1] == "--internal-vendor-authenticated-submit":
