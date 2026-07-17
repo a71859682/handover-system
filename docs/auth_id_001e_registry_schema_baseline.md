@@ -964,3 +964,65 @@ Future implementation must verify:
 - `DATABASE_URL` is not used
 - no dependency is added
 - authentication, authorization, session, API, lifecycle, merge, and reconciliation behavior remain unchanged
+
+### 15.10 Implementation status and evidence
+
+Generator / validator core status: implemented and Production-frozen.
+
+Implementation evidence:
+
+- Implementation commit: `8f6a46c2482a87a00eb9968832d1c18aec49b526`
+- Commit message: `Add identity registry ID generator and validator`
+- Exact changed files:
+  - `services/identity_registry_ids.py`
+  - `tests/smoke_test.py`
+- Module blob: `d3ddeb7848e188a17d9360a6c5b737a77317d526`
+- Module raw SHA-256: `8FE1707FDFF40D6D5981ABD0AC0D5FC68E72DC6CCAADB2D6182B9E3737A8F5FF`
+- DEV deploy: `dep-d9cq6ua8qa3s73ei3j60`
+- Production deploy: `dep-d9cqqf5ckfvc73cj63rg`
+- Both live commit: `8f6a46c2482a87a00eb9968832d1c18aec49b526`
+
+Completed core acceptance:
+
+- RFC 9562 UUIDv4 canonical lowercase generator
+- three no-argument entity-specific public generators
+- single canonical validator
+- exact regex, type, version, variant, and round-trip validation
+- negative canonical-form rejection
+- no trim, lowercase, or repair behavior
+- fixed generic validation error
+- parser and factory exceptions do not leak cause or context
+- private deterministic injection
+- no public candidate or factory bypass
+- stdlib-only implementation
+- no DB, Flask, session, or logging dependency
+- focused smoke and full smoke PASS
+- DEV and Production focused live smoke PASS
+- deployed module SHA-256 matches the frozen implementation evidence
+
+Pending consumer acceptance:
+
+- consumer-level target-PK collision classification: not implemented
+- maximum three-attempt collision retry: not implemented
+- noncollision `IntegrityError` immediate failure: not implemented in a real consumer
+- multi-row all-or-nothing creation: not implemented
+- savepoint / transaction rollback acceptance: not implemented
+- browser / form / API caller-supplied ID rejection: not wired because no registry creation consumer exists
+
+The current repository has no legal registry creation consumer. AUTH-ID-001E2 must not create an API, route, CLI, DML workflow, or other registry creation path merely to close this acceptance. The pending acceptance items must be completed only after a future formally approved creation consumer exists.
+
+Current AUTH-ID-001E2 status: CORE IMPLEMENTED / CONSUMER ACCEPTANCE PENDING.
+
+AUTH-ID-001E2 overall must not be marked CLOSED by this evidence alone.
+
+Preserved boundaries:
+
+- the new module currently has no runtime consumer
+- no registry `INSERT`
+- no backfill
+- no schema or index modification
+- no API, session, credential, permission, or authority switch
+- no scan or rewrite of existing IDs
+- existing noncanonical test fixtures were not changed
+- Production deploy health evidence is not direct evidence of current DB rows or objects
+- no hot-maintenance, merge, or reconciliation capability is provided
