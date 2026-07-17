@@ -582,3 +582,50 @@ Explicitly out of scope:
 
 This policy baseline must be independently reviewed before any implementation
 work is authorized.
+
+## 17. Static lifecycle readiness guardrail evidence
+
+Source / policy guardrail status: implemented and Production-frozen.
+
+Implementation evidence:
+
+- Implementation commit: `df87f1be79ad305fc20354d331f4aef5ccc825f2`
+- Commit message: `Add identity registry lifecycle readiness checker`
+- Exact changed files:
+  - `tools/check_identity_registry_lifecycle_readiness.py`
+  - `tests/smoke_test.py`
+- Checker blob: `10e8917bcb3910f4fb73e8e34b6406a24d69fffc`
+- Checker raw SHA-256: `5651BDC56222399816941D9BFF25A1BAAA7F8EEFBFC18B01B70FEFC3697466F1`
+- DEV deploy: `dep-d9d1pvok1i2s73c11ef0`
+- Production deploy: `dep-d9d23j5ckfvc73coej00`
+- Both environments verified live at commit `df87f1be79ad305fc20354d331f4aef5ccc825f2`.
+
+Completed guardrail acceptance:
+
+- static AST and controlled-string analysis
+- registry `INSERT`, `UPDATE`, `DELETE`, `REPLACE`, UPSERT, `executemany`, and `executescript` detection
+- schema-qualified and quoted SQLite registry-target detection
+- unresolved registry mutation SQL fails closed
+- exact disposable fixture fingerprinting
+- unauthorized lifecycle route, API, CLI, helper, reassignment, relationship-movement, legacy-import-write, and automatic cross-backend-link detection
+- frozen policy marker checks
+- schema lifecycle drift checks
+- 46 disposable synthetic-source scenarios
+- normal, self-test, focused smoke, and isolated full smoke passed
+- DEV and Production live normal/self-test verification passed
+- deployed checker SHA-256 matched the committed implementation
+- checker normal and self-test modes import no application module and access no database
+
+Guardrail boundary:
+
+- This guardrail analyzes repository source and frozen policy only.
+- It does not prove current DEV or Production database objects, rows, lifecycle states, or historical transitions.
+- It creates no registry identity, alias, mapping, lifecycle event, or audit event.
+- It creates no lifecycle API, route, form, UI, business CLI, runtime consumer, backend resolver, or actor authority.
+- It performs no registry DDL, DML, legacy import, backfill, merge, split, restore, reactivation, supersede, reassignment, or relationship movement.
+- It does not provide maintenance mode, write freeze, migration rollback, synchronization, conflict repair, or post-deploy reconciliation.
+- Deployment startup may execute the pre-existing application bootstrap; live deployment health is not evidence of zero SQLite contact.
+- Lifecycle mutation implementation remains not started.
+- `AUTH-ID-001E2` consumer acceptance remains open and parked.
+- `AUTH-ID-001F` overall is not closed by this guardrail evidence.
+- Merge, split, restore, and live relationship movement remain unsupported.
