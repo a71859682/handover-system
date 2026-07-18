@@ -375,3 +375,100 @@ RECONCILIATION MUTATION: NOT IMPLEMENTED
 NO DATABASE OR ENVIRONMENT ACCESSED
 AUTH-ID-001H OVERALL: OPEN — NOT CLOSED
 ```
+
+## 20. Static reconciliation readiness guardrail evidence
+
+### 20.1 Guardrail status
+
+The static source and policy guardrail is implemented and Production-frozen.
+It does not change the H runtime baseline: H runtime implementation remains not
+started; discovery/scanner is not implemented; report/plan format is not
+implemented; repair authority is not implemented or assigned; and
+reconciliation mutation is not implemented. The top-level `Implementation
+status: not started` continues to describe H runtime capability, not the static
+checker. `AUTH-ID-001H` remains OPEN / NOT CLOSED.
+
+### 20.2 Implementation evidence
+
+The guardrail was introduced by commit
+`63341c22df50029b43a6df5f7fd07502b42a2e87`, with direct parent
+`1ba5084b9205ed09604b5ab46033b82d5300694a` and message
+`Add identity registry reconciliation readiness checker`.
+
+Its exact changed files were:
+
+- `tools/check_identity_registry_reconciliation_readiness.py`; and
+- `tests/smoke_test.py`.
+
+The checker blob is `b55b61e532afdde4ff2831dde7128f919371c935`; the
+smoke blob is `7402c8f92d120b65fa2b4c2c5e0ed1686287246e`; and the
+checker raw SHA-256 is
+`F34EF75ED60B07FE33A1B5365F44B53E585B5642E22C98C2C3491EF50EC0A0F1`.
+
+### 20.3 Completed static acceptance
+
+Completed acceptance evidence covers AST/static source analysis only; normal
+checker PASS with `issues_count: 0`; self-test PASS with 100 scenarios;
+focused H readiness smoke PASS; lifecycle checker normal/self-test PASS;
+linking checker normal/self-test PASS; serializer self-test PASS; identity
+schema checker self-test and disposable normal PASS; app-compatible disposable
+bootstrap PASS; and isolated full smoke PASS. PostgreSQL attempts were zero;
+the canonical repository database and sidecars were unchanged; and temporary
+fixtures, logs, and pycache were cleaned.
+
+The checker detects forbidden route/API/form, CLI, scanner/discovery,
+reporter/evidence-generator, plan/apply-plan, repair-authority, Production
+reconciliation-access, automatic-winner-selection, hot-maintenance,
+relationship-correction, registry-repair, caller-selected-ID, public-oracle,
+unredacted-evidence, dynamic-unresolved-capability, and
+policy/owner/upstream-checker drift. It creates no runtime capability.
+
+### 20.4 DEV deployment evidence
+
+DEV service `handover-system-dev` deployed
+`dep-d9dnfie8bjmc73avkjpg` with live commit
+`63341c22df50029b43a6df5f7fd07502b42a2e87`. Deployment, logs, and HTTP
+health passed. Shell instance `wxnvr` had a disabled selector, and no Shell
+command was executed.
+
+### 20.5 Production deployment evidence
+
+Production evidence was observed browser-only for service `handover-system`.
+Deploy `dep-d9dp523bc2fs73fij00g`, triggered by `New commit via Auto-Deploy`,
+is Live for commit `63341c22df50029b43a6df5f7fd07502b42a2e87` with message
+`Add identity registry reconciliation readiness checker`. No newer deploy was
+observed. Build, logs, startup, and HTTP health passed. Shell instance `pphhj`
+had a disabled selector, and no Shell command was executed. No Render MCP,
+CLI, API, SSH, or job was used.
+
+### 20.6 Live-tool evidence limitation
+
+DEV and Production live checker commands were not executed. No deployed
+checker stdout/self-test output or deployed checker SHA-256 was obtained. A
+selector-disabled state is not a checker failure; live-tool verification must
+not be claimed PASS. The evidence substitution relies on exact live commits,
+immutable committed blobs, independent final-diff review, completed disposable
+validation, healthy DEV/Production deploys, and absence of runtime consumer or
+DB capability. Live Shell verification remains a named supplementary
+follow-up. Deployment health is not direct evidence of database contents,
+anomalies, topology, or repair needs.
+
+### 20.7 Preserved boundaries
+
+No DEV/Production persistent database query, capture, or modification occurred;
+there was no DDL, DML, or backfill; and no scanner/discovery, report/plan
+artifact, repair authority, winner selection, relationship correction, hot
+maintenance, reconciliation mutation, authentication/authorization change,
+E1/E2/F/G owner change, or Production database-content claim was introduced.
+
+```text
+AUTH-ID-001H STATIC RECONCILIATION READINESS GUARDRAIL
+SOURCE/POLICY GUARDRAIL: IMPLEMENTED AND PRODUCTION-FROZEN
+DEV LIVE TOOL VERIFICATION: NOT EXECUTED — RENDER SHELL SELECTOR DISABLED
+PRODUCTION LIVE TOOL VERIFICATION: NOT EXECUTED — RENDER SHELL SELECTOR DISABLED
+DISCOVERY / SCANNER: NOT IMPLEMENTED
+REPORT / PLAN FORMAT: NOT IMPLEMENTED
+REPAIR AUTHORITY: NOT IMPLEMENTED OR ASSIGNED
+RECONCILIATION MUTATION: NOT IMPLEMENTED
+AUTH-ID-001H OVERALL: OPEN — NOT CLOSED
+```
