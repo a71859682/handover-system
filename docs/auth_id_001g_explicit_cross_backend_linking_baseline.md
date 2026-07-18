@@ -652,3 +652,100 @@ NO LINKING CONSUMER CREATED
 No implementation work may begin until this docs-only baseline receives
 independent final-diff review and a subsequent implementation gate explicitly
 defines the allowed scope.
+
+## 19. Static linking readiness guardrail evidence
+
+The static source/policy guardrail is implemented and Production-frozen. Linking
+runtime implementation remains not started. No dedicated link authority is
+implemented or assigned, and no linking consumer, proof system, route, API,
+form, CLI, DML, or runtime write authority was created. The top-level
+implementation-status metadata continues to describe linking implementation,
+not the static checker.
+
+### Implementation evidence
+
+- commit: `ca5541f1e8ad3c61e1df73b3f10ed0b3cc3a20da`
+- parent: `e81046eae2fec6d125f3462543151c4c71484adb`
+- message: `Add identity registry linking readiness checker`
+- exact changed files:
+  - `tools/check_identity_registry_linking_readiness.py`
+  - `tests/smoke_test.py`
+- checker blob: `04977e0082c8fbfa8bb5245874abd1fc22d8114b`
+- smoke blob: `04e13cb6e5c9418178c943d76443171f5bb316e5`
+- checker raw SHA-256:
+  `BA87AABC3A5B47BBE51DB5308B509013053842B74495A29A06ED68FE5C39143A`
+
+### Acceptance evidence
+
+- AST/static source analysis only
+- normal checker PASS with zero issues
+- self-test PASS with 98 scenarios
+- focused linking smoke PASS
+- lifecycle checker normal/self-test PASS
+- isolated full smoke PASS
+- PostgreSQL attempts zero
+- canonical repository DB and sidecars unchanged
+- disposable fixtures and pycache cleaned
+- the checker detects forbidden linking routes, CLI, consumers, authority,
+  proof, caller-selected IDs, mixed-session proof, authority inheritance,
+  public oracles, policy drift, and upstream-owner drift
+- the checker does not create runtime linking capability
+
+### Deployment evidence
+
+DEV deployment evidence:
+
+- service: `handover-system-dev`
+- deploy: `dep-d9dbel61a83c73duu49g`
+- live commit: `ca5541f1e8ad3c61e1df73b3f10ed0b3cc3a20da`
+- deployment and HTTP health passed
+
+Production deployment evidence:
+
+- service: `handover-system`
+- deploy: `dep-d9devli8qa3s73e2lkt0`
+- live commit: `ca5541f1e8ad3c61e1df73b3f10ed0b3cc3a20da`
+- deployment and HTTP health passed
+
+### Live-tool evidence limitation
+
+- DEV instance `z4r8w` was visible, but the Render Shell selector remained
+  disabled.
+- Production instance `2rnjd` was visible, but the selector remained
+  disabled.
+- No Shell command executed in either environment.
+- No deployed checker normal/self-test output or deployed-file SHA-256 was
+  obtained.
+- This is not a checker failure.
+- DEV or Production live-tool verification must not be claimed as PASS.
+- Evidence substitution relies on the exact live commit, immutable committed
+  blobs, completed disposable validation, and the absence of runtime consumer
+  code.
+- Live Shell verification remains a named supplementary follow-up if the
+  selector later becomes available.
+- Deployment health is not direct evidence of Production DB contents, registry
+  topology, or linking state.
+
+### Preserved boundaries
+
+- no Production or DEV persistent DB query, capture, or modification
+- no DDL, DML, or backfill
+- no database-content or linking-state claim
+- no authority assignment
+- no proof implementation
+- no consumer implementation
+- no lifecycle mutation
+- no E2 consumer acceptance completion
+- no F/H ownership change
+- AUTH-ID-001G remains OPEN / NOT CLOSED
+
+```text
+AUTH-ID-001G STATIC LINKING READINESS GUARDRAIL
+SOURCE/POLICY GUARDRAIL: IMPLEMENTED AND PRODUCTION-FROZEN
+DEV LIVE TOOL VERIFICATION: NOT EXECUTED — RENDER SHELL SELECTOR DISABLED
+PRODUCTION LIVE TOOL VERIFICATION: NOT EXECUTED — RENDER SHELL SELECTOR DISABLED
+LINKING IMPLEMENTATION: NOT STARTED
+DEDICATED LINK AUTHORITY: NOT IMPLEMENTED OR ASSIGNED
+NO LINKING CONSUMER CREATED
+AUTH-ID-001G OVERALL: OPEN — NOT CLOSED
+```
