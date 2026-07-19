@@ -753,9 +753,23 @@ character, `#`, `?`, or `%` in a filename remains path data after the one
 
 The query suffix is exactly `?mode=ro`, with no extra parameter. The caller
 cannot influence the URI, query string, VFS, cache mode, or connection options.
-The connection call passes the constructed URI and `uri=True`; it passes no
-caller-controlled keyword arguments. Query injection, fragment injection, VFS
+The connection is constructed by the exact equivalent of:
+
+```python
+sqlite3.connect(
+    resolved_path.as_uri() + "?mode=ro",
+    uri=True,
+    cached_statements=0,
+)
+```
+
+Both keyword arguments are fixed tool-owned values. `cached_statements=0`
+prevents Python statement-cache reuse from suppressing or reusing authorizer
+callbacks across statement executions. The caller cannot influence any
+connection option, and the tool provides no connection factory, connection
+injection, or CLI option for one. Query injection, fragment injection, VFS
 selection, cache selection, parameter smuggling, and double decoding are
+forbidden. Any nonzero or caller-controlled statement-cache setting is
 forbidden. The tool does not use SQLite's immutable URI option: the
 caller-supplied fixture is not atomically bound to the connection, the tool
 must retain SQLite locking and change detection, and pre/post hashes cannot
@@ -782,13 +796,254 @@ PRAGMA query_only=ON
 
 The tool reads `PRAGMA query_only` back and requires integer `1`. It then
 installs a closed SQLite authorizer before any transaction, schema, or row
-statement. The authorizer returns `SQLITE_OK` only for the read actions required
-by the fixed statements: `SQLITE_SELECT`, `SQLITE_READ` limited to
-`sqlite_schema` and the three registry tables, `SQLITE_FUNCTION` limited to the
-fixed built-in aggregate/scalar functions transcribed with those statements,
-and read-only `SQLITE_PRAGMA` limited to `query_only`, `database_list`,
-`schema_version`, `table_list`, `table_xinfo`, `foreign_key_list`,
-`index_list`, and `index_xinfo`. Every other action code is denied.
+statement. `PRAGMA query_only=ON` setup and its first integer readback occur
+before authorizer installation. After installation, `query_only` can only be
+read back by the fixed no-argument read statement; it cannot be set again.
+
+The connection maintains one private closed statement-phase state machine with
+exactly these phases:
+
+```text
+query_only_readback
+transaction_begin
+database_list
+schema_objects
+table_list
+table_xinfo
+foreign_key_list
+index_list
+index_xinfo
+bounded_row_query
+transaction_rollback
+closed
+```
+
+Before each fixed statement, the implementation sets the exact expected phase,
+expected frozen table or validated observed index argument where applicable,
+and the exact allowed action/table/column/function/PRAGMA pairs. The statement
+executes once. A `finally` block restores `closed` after every success or
+failure. Reentrancy, callback activity while closed, phase mismatch, stale
+table or index state, a second execution, a missing required callback pair, an
+extra callback action/table/column/function/PRAGMA pair, or failure to restore
+`closed` is a private internal invariant failure and maps to exit `4` without
+an evidence bundle. Repeated callbacks for an already authorized exact
+`SQLITE_READ` pair are accepted within the active statement, but they do not
+expand the pair set.
+
+The immutable schema-object SQL is exactly equivalent to:
+
+```sql
+SELECT
+    "type",
+    "name",
+    "tbl_name",
+    "sql"
+FROM sqlite_schema
+ORDER BY
+    "type",
+    "name",
+    "tbl_name",
+    ("sql" IS NOT NULL),
+    "sql"
+```
+
+The selected columns are exactly `type`, `name`, `tbl_name`, and `sql`; the
+source written in SQL text is exactly `sqlite_schema`; and the deterministic
+order is exactly `type`, `name`, `tbl_name`, `sql IS NOT NULL`, and `sql`.
+The SQL uses no `coalesce`, function, extra selected column, dynamic filter,
+identifier interpolation, or runtime construction. Filtering names that begin
+with `sqlite_`, structural validation, and the final projection sort occur in
+memory.
+
+SQLite reports the historical callback table name `sqlite_master` for
+`SQLITE_READ` actions produced by this canonical `FROM sqlite_schema`
+statement. The two names have deliberately separate contracts:
+
+- immutable SQL text must use `sqlite_schema` and must not use
+  `sqlite_master`; and
+- during `schema_objects` only, the authorizer callback table must be
+  `sqlite_master` and must not be `sqlite_schema`.
+
+The `sqlite_master` callback name is a historical SQLite authorizer alias for
+this one canonical statement. It grants no direct SQL authority for
+`sqlite_master` and no general schema/master-table authority.
+
+The remaining metadata SQL uses the following exact selected columns, source,
+parameter provenance, and ordering:
+
+```sql
+SELECT
+    "schema",
+    "name",
+    "type",
+    "ncol",
+    "wr",
+    "strict"
+FROM pragma_table_list
+ORDER BY "schema", "name", "type"
+```
+
+The table-list statement has no caller-controlled parameter.
+
+```sql
+SELECT
+    "cid",
+    "name",
+    "type",
+    "notnull",
+    "dflt_value",
+    "pk",
+    "hidden"
+FROM pragma_table_xinfo(?)
+ORDER BY "cid", "name"
+```
+
+```sql
+SELECT
+    "id",
+    "seq",
+    "table",
+    "from",
+    "to",
+    "on_update",
+    "on_delete",
+    "match"
+FROM pragma_foreign_key_list(?)
+ORDER BY "id", "seq", "table", "from", "to", "on_update", "on_delete", "match"
+```
+
+```sql
+SELECT
+    "seq",
+    "name",
+    "unique",
+    "origin",
+    "partial"
+FROM pragma_index_list(?)
+ORDER BY "name"
+```
+
+For each of the table-xinfo, foreign-key-list, and index-list statements, the
+sole bound parameter is the current table name from the exact frozen tuple
+`("global_identities", "login_identifier_aliases",
+"backend_principal_mappings")`. Each table and each applicable statement is
+used once in tuple order. No caller, environment, metadata row, or other table
+can supply this parameter.
+
+Index column metadata uses exactly:
+
+```sql
+SELECT
+    "seqno",
+    "cid",
+    "name",
+    "desc",
+    "coll",
+    "key"
+FROM pragma_index_xinfo(?)
+ORDER BY "seqno"
+```
+
+The sole bound parameter is an observed index name obtained from the current
+fixed `pragma_index_list(?)` statement in the same transaction. Before binding,
+the value must have exact Python type `str`, be nonempty, contain no NUL, and
+come from a row whose complete selected type and shape have been validated.
+Duplicate index names or a structurally invalid index-list row make schema
+capture incomplete. Every validated observed index name is bound to the fixed
+index-xinfo SQL exactly once. It is data, never a SQL identifier; it never
+enters SQL text, stdout, stderr, an exception, or a log.
+
+The tool must not execute `PRAGMA index_xinfo(<runtime-name>)`. It must not use
+an f-string, `.format()`, concatenation, quoted-identifier construction, or any
+other dynamic SQL for metadata. Table-valued PRAGMA names, selected columns,
+keyword quoting, parameter positions, and ordering are immutable module
+constants.
+
+The authorizer returns `SQLITE_OK` only for actions belonging to the current
+statement phase. `SQLITE_SELECT` is allowed only in a phase executing its
+exact immutable SELECT statement and only with the frozen statement's expected
+callback occurrences; it is not a generic SELECT allowance. `SQLITE_READ` is
+closed to the `schema_objects` alias matrix below, exact columns of the three
+registry tables, and these metadata virtual-table pairs:
+
+```text
+schema_objects:
+database: main
+callback table: sqlite_master
+columns: type, name, tbl_name, sql
+
+pragma_table_list:
+schema, name, type, ncol, wr, strict
+
+pragma_table_xinfo:
+cid, name, type, notnull, dflt_value, pk, hidden
+
+pragma_foreign_key_list:
+id, seq, table, from, to, on_update, on_delete, match
+
+pragma_index_list:
+seq, name, unique, origin, partial
+
+pragma_index_xinfo:
+seqno, cid, name, desc, coll, key
+```
+
+The `schema_objects` statement must produce at least one exact
+`SQLITE_SELECT` callback and at least one exact `SQLITE_READ` callback for
+each of `type`, `name`, `tbl_name`, and `sql`, always with database `main` and
+callback table `sqlite_master`. Repeated exact pairs are accepted within that
+single active statement. A missing required pair, extra column or action,
+different database, callback table `sqlite_schema`, or any other callback
+table is an internal invariant failure and maps to exit `4` without an
+evidence bundle.
+
+Every `sqlite_master` column other than the exact four is denied.
+`sqlite_master` is denied outside `schema_objects`, and a caller-generated or
+second schema-object statement is denied. Direct SQL sourced from
+`sqlite_master`, `sqlite_temp_master`, or `sqlite_sequence` is forbidden.
+Callbacks for `sqlite_temp_master`, `sqlite_sequence`, an attached database's
+master table, `temp`, an attached database, or any unknown schema/master table
+or column are denied.
+
+Every other `pragma_*` virtual table, virtual-table column, registry-table
+column not required by the active fixed row statement, schema, or database
+name is denied. The SQL keyword column names above remain quoted exactly as
+shown; the implementation cannot substitute aliases or select additional
+columns.
+
+The only allowed `SQLITE_PRAGMA` name/argument pairs are:
+
+```text
+query_only / no argument, during `query_only_readback` only
+database_list / no argument
+schema_version / no argument
+table_list / no caller-controlled argument
+table_xinfo / exact current frozen table name
+foreign_key_list / exact current frozen table name
+index_list / exact current frozen table name
+index_xinfo / exact current validated observed index name
+```
+
+The callback database name, when present for an authorized read, must be
+`main`; access to `temp`, an attached schema, an unexpected database name, or
+an unexpected null/non-null argument shape is denied. The active phase must
+match both the PRAGMA name and its exact argument. A generic PRAGMA name,
+wildcard argument, caller-controlled argument, journal-mode or writable
+PRAGMA, stale table/index argument, or arbitrary index name outside the
+current index-xinfo phase is denied.
+
+Table-valued PRAGMA metadata is authorized only through the exact
+`SQLITE_READ` and `SQLITE_PRAGMA` pairs above. It is not a generic
+`SQLITE_FUNCTION` allowance. After ASCII-lowercase normalization of the
+callback function name, `SQLITE_FUNCTION` is closed to exactly `count` and
+`typeof`, and only during the immutable nine bounded-row query families in
+`bounded_row_query`. The canonical E2 registry-ID validator runs in Python and
+does not add a SQL function. User-defined, extension, unknown, and every
+`pragma_*` function name are denied. A null function name, a use of `count` or
+`typeof` outside the active fixed row statement, or a supported SQLite runtime
+that emits an action trace outside this frozen matrix fails closed; the
+implementation cannot broaden the matrix dynamically. Every other action code
+is denied.
 
 An SQLite operational failure while setting or reading back `query_only`
 returns an incomplete dictionary with `errors = ["source_read_incomplete"]`
@@ -807,13 +1062,15 @@ transaction operation.
 
 After authorizer installation, the exact statement order is:
 
-1. execute the immutable module constant `BEGIN`;
-2. execute fixed `PRAGMA database_list` and validate the sole `main` path;
-3. perform all remaining authorized schema and row reads inside that same
+1. execute the fixed no-argument `PRAGMA query_only` readback and require
+   integer `1`;
+2. execute the immutable module constant `BEGIN`;
+3. execute fixed `PRAGMA database_list` and validate the sole `main` path;
+4. perform all remaining authorized schema and row reads inside that same
    transaction;
-4. execute the immutable module constant `ROLLBACK`;
-5. close the connection; and
-6. perform the final Section 21.3 checkpoint.
+5. execute the immutable module constant `ROLLBACK`;
+6. close the connection; and
+7. perform the final Section 21.3 checkpoint.
 
 No database read occurs outside the transaction; only connection-local
 `query_only` setup/readback and authorizer installation precede it. A fixed
@@ -1697,9 +1954,33 @@ all of these independently verified conditions hold:
   Sections 21.1 and 21.3;
 - exact pre-connect 100-byte minimum, SQLite magic bytes, and byte-offset
   `18 = 1` / `19 = 1` rollback-format validation;
-- exact `mode=ro` URI construction, fixed SQL constants, closed authorizer,
-  single `BEGIN`/`ROLLBACK` transaction, and final checkpoint invariants in
-  Section 21.4;
+- exact `mode=ro` URI construction with `uri=True` and
+  `cached_statements=0`, fixed SQL constants, closed authorizer, single
+  `BEGIN`/`ROLLBACK` transaction, and final checkpoint invariants in Section
+  21.4;
+- exact fixed `pragma_table_list`, `pragma_table_xinfo(?)`,
+  `pragma_foreign_key_list(?)`, `pragma_index_list(?)`, and
+  `pragma_index_xinfo(?)` SQL constants, including selected columns, keyword
+  quoting, parameter positions, and ordering;
+- exact schema-object SQL constant with source `sqlite_schema`, the four
+  selected columns, and the five-field ordering frozen in Section 21.4;
+- exact separation between SQL source `sqlite_schema` and the
+  `schema_objects`-only `sqlite_master` authorizer callback alias, including
+  database `main` and the exact four callback columns;
+- absence of direct `sqlite_master` SQL, generic schema/master-table
+  allowance, extra master-table columns, alias allowance outside
+  `schema_objects`, or temp/attached master-table authority;
+- absence of dynamic `PRAGMA index_xinfo(...)`, f-string, `.format()`,
+  concatenation, quoted-identifier construction, or any other metadata SQL
+  interpolation;
+- exact provenance for every metadata bind: a frozen three-table tuple for
+  table metadata and a validated current index-list row for index-xinfo;
+- exact metadata virtual-table/column `SQLITE_READ` pairs, exact
+  PRAGMA-name/argument pairs, and exact closed `count`/`typeof`
+  `SQLITE_FUNCTION` boundary;
+- the statement-scoped authorizer phase machine, including active argument
+  binding, one execution, reentrancy rejection, mandatory callback-pair
+  evidence, and `finally` reset to `closed`;
 - exact separation of the observed physical fingerprint from the fully
   transcribed frozen semantic comparison projection;
 - exact JSON schema, version, reason vocabularies, state matrix, serializer,
@@ -1727,7 +2008,17 @@ Production-access, oracle, redaction, dynamic-capability, or mutation guards.
 Moving header validation after `sqlite3.connect`, removing or relaxing the
 100-byte/magic/offset gate, or adding journal-mode mutation, WAL conversion,
 checkpoint, or cleanup authority must also re-trigger the applicable
-fail-closed issue.
+fail-closed issue. A nonzero statement cache, generic PRAGMA virtual-table
+allowance, extra metadata column, wildcard PRAGMA argument, caller-controlled
+metadata bind, stale index argument, broad schema-capture phase, missing
+reentrancy/reset guard, or table-valued PRAGMA treated as a generic function
+allowance must likewise re-trigger a fail-closed issue. Using
+`sqlite_master` in SQL text, accepting callback table `sqlite_schema`, adding a
+master-table column, permitting `sqlite_master` outside `schema_objects`, or
+broadening the alias to another database/schema must also fail closed. The
+checker must freeze required scenario families, but Section 21 does not
+prescribe a future self-test scenario count; the exact count is implementation
+evidence after the reviewed cases exist.
 
 ### 21.13 Mandatory future acceptance matrix
 
@@ -1766,6 +2057,44 @@ A future implementation and checker proposal must demonstrate at least:
   classification, and exact `_main` exit mapping;
 - regular disposable SQLite acceptance with exact `mode=ro` open and proof that
   no immutable URI parameter is present;
+- exact `uri=True` and `cached_statements=0`, with nonzero, omitted,
+  caller-controlled, or otherwise changed statement-cache settings rejected;
+- positive fixed table-valued-PRAGMA metadata capture using the exact selected
+  columns, parameter sources, ordering, and statement phases;
+- canonical schema-object SQL using `FROM sqlite_schema`, exact selected
+  columns, no SQL function, and the frozen deterministic ordering;
+- the canonical schema-object statement producing positive authorizer evidence
+  with callback table `sqlite_master`, database `main`, one
+  `SQLITE_SELECT`, and all four required READ columns;
+- callback table `sqlite_schema`, direct SQL `FROM sqlite_master`, an extra
+  `sqlite_master` column, `sqlite_master` outside `schema_objects`, a
+  caller-generated or second schema query, and a missing required callback
+  pair all rejected;
+- `sqlite_temp_master`, `sqlite_sequence`, temp-schema master access, attached
+  database master access, and unknown schema/master aliases rejected;
+- schema-object SQL using `coalesce`, another function, an extra selected
+  column, dynamic filter, identifier interpolation, or runtime SQL
+  construction rejected;
+- observed SQLite-generated autoindex names with different suffixes accepted
+  as validated bound values without changing SQL text;
+- an observed index name containing spaces, quotes, `%`, `?`, or other special
+  characters used only as a bound value and never as an identifier, output, or
+  exception value;
+- dynamic `PRAGMA index_xinfo(...)`, f-string, `.format()`, concatenation,
+  quoted-identifier construction, and other runtime metadata-SQL generation
+  rejected;
+- arbitrary `pragma_*` virtual tables, extra metadata columns, generic
+  virtual-table or function allowances, wildcard PRAGMA arguments, and
+  caller-controlled table/index arguments rejected;
+- exact authorizer action-trace validation for schema objects, each metadata
+  virtual table, each PRAGMA name/argument pair, and each fixed bounded-row
+  statement, including required-pair presence and permitted duplicate READ
+  callbacks;
+- phase mismatch, callback reentrancy, callback while closed, stale
+  table/index argument, second statement execution, missing callback pair,
+  extra action, and failure to reset state in `finally` rejected as internal;
+- unknown SQLite action, function, PRAGMA, database, virtual table, or column
+  rejected without automatic allowance expansion;
 - proof that the tool never executes `PRAGMA journal_mode`, changes journal
   mode, converts or checkpoints WAL, or deletes/cleans up sidecars;
 - checker and self-test rejection of a negative source that removes, weakens,
