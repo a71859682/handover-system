@@ -2155,3 +2155,148 @@ REPAIR AUTHORITY：NOT IMPLEMENTED OR ASSIGNED
 RECONCILIATION MUTATION：NOT IMPLEMENTED
 AUTH-ID-001H OVERALL：OPEN — NOT CLOSED
 ```
+
+## 22. Read-only discovery implementation status and evidence
+
+### 22.1 Exact implementation status
+
+```text
+Windows-only disposable read-only discovery: implemented and Production-frozen
+Report implementation: not started
+Plan implementation: not started
+Repair authority: not implemented or assigned
+Reconciliation mutation: not implemented
+AUTH-ID-001H overall: OPEN — NOT CLOSED
+```
+
+The implementation does not close AUTH-ID-001H.
+
+### 22.2 Immutable implementation evidence
+
+```text
+Implementation commit:
+37cd0c9e82edaa3340175dcd985dec61b654d29f
+
+Parent:
+53fd06ebd10cc2ce60e7cdf4c16737634c270f9e
+
+Commit message:
+Add read-only identity registry anomaly discovery
+```
+
+Exact committed scope:
+
+```text
+A tools/discover_identity_registry_anomalies.py
+M tools/check_identity_registry_reconciliation_readiness.py
+M tests/smoke_test.py
+
+3 files changed, 3797 insertions(+), 2 deletions(-)
+```
+
+| File | Git blob | Committed raw SHA-256 |
+| --- | --- | --- |
+| `tools/discover_identity_registry_anomalies.py` | `29cbf7d2e67bc9293693bf85df8b350657556989` | `8078D9A000AE119548E4E422E027F2F5881A558F616B63656650060EA6A8D65F` |
+| `tools/check_identity_registry_reconciliation_readiness.py` | `dd59cab3128d160f9a03baa1d5f32e33a56e85f7` | `0DE1454882864ED2B025A15440A362574641D433D6D8B95E842E1FE181D4CC56` |
+| `tests/smoke_test.py` | `49730e79a9c49e8892de2059a654d3e142ac4e1a` | `EB26B320FCDF950508912594355CD61E728132834D7CB65F5E10E828E732292C` |
+
+### 22.3 Smoke EOL evidence reconciliation
+
+The earlier smoke hash mismatch was an evidence-labeling issue, not committed-content drift.
+
+```text
+Committed raw Git blob SHA-256:
+EB26B320FCDF950508912594355CD61E728132834D7CB65F5E10E828E732292C
+
+Pre-commit canonical working-tree SHA-256:
+6A227D0695C3C2BD78618428AD4B098A08165B190836AE3BCB5CAF190B4AC4D9
+```
+
+Committed smoke raw blob properties:
+
+```text
+bytes: 1274224
+LF bytes: 26982
+CRLF pairs: 0
+standalone CR: 0
+UTF-8 BOM: false
+final LF: true
+```
+
+Working-tree evidence:
+
+```text
+bytes: 1299932
+LF bytes: 26982
+CRLF pairs: 25708
+standalone CR: 0
+UTF-8 BOM: false
+final LF: true
+git ls-files --eol: i/lf w/mixed
+clean-filter blob: 49730e79a9c49e8892de2059a654d3e142ac4e1a
+```
+
+`6A227D…B4AC4D9` is not the committed raw-blob SHA. Git clean filtering produced the approved committed blob. Commit `37cd0c9…` required no rewrite, replacement, or re-merge.
+
+### 22.4 Completed local disposable acceptance
+
+The following is already-approved evidence; these checks were not rerun during this docs-only reconciliation.
+
+- Full repository compile passed.
+- Discovery focused smoke passed.
+- H readiness normal, focused smoke, and 130-scenario self-test passed.
+- Lifecycle 46-scenario and linking 98-scenario guardrails passed.
+- Schema checker and serializer self-tests passed.
+- Fresh disposable bootstrap and schema-normal verification passed.
+- Isolated full smoke passed.
+- PostgreSQL/backend attempts were zero.
+- Canonical `site.db` and sidecars remained unchanged.
+- Validation fixtures and bytecode artifacts were removed.
+
+### 22.5 Deployment evidence
+
+DEV:
+
+```text
+service: handover-system-dev
+deploy: dep-d9e8ed68bjmc73b9uai0
+commit: 37cd0c9e82edaa3340175dcd985dec61b654d29f
+status: Live
+```
+
+Production:
+
+```text
+service: handover-system
+service ID: srv-d8vmv2rsq97s738i5lh0
+deploy: dep-d9e8rbm1a83c73bb5bi0
+commit: 37cd0c9e82edaa3340175dcd985dec61b654d29f
+status: Live
+```
+
+For both environments, Auto-Deploy used the exact approved commit. Build and Gunicorn startup passed. Worker boot and the 302 healthcheck passed. `/` returned `302` with `Location: /login`; `/login` returned `200`; and the responses identified Gunicorn as origin. No relevant Traceback, ERROR, schema failure, or restart loop was observed. No newer deployment was observed superseding the recorded result.
+
+### 22.6 Platform and evidence boundary
+
+- The discovery implementation is Windows-only and CPython 3.14.x-only.
+- Render is Linux; DEV and Production discovery execution is not applicable.
+- No Render Shell, MCP, CLI, API, SSH, or job executed the discovery tool.
+- Deployment health proves source deployment and application startup only.
+- Deployment health does not prove discovery runtime behavior, database contents, anomaly state, schema state, provenance quality, or need for reconciliation.
+- No DEV or Production database was queried, captured, or modified.
+
+### 22.7 Preserved non-authority boundaries
+
+This implementation creates none of the following:
+
+- A report or evidence-bundle publication workflow.
+- A reconciliation plan or apply-plan workflow.
+- Repair authority or approval authority.
+- Winner selection.
+- Identity merge, split, restore, reassignment, or relationship correction.
+- Lifecycle or linking authority.
+- A route, API, form, UI, runtime consumer, scheduled job, or hot-maintenance path.
+- DDL, DML, backfill, remediation, or mutation.
+- Authentication, credential, session, role, permission, site, vendor, or backend authority movement.
+
+The callable and CLI remain disposable read-only discovery surfaces governed by the frozen Section 21 contract.
