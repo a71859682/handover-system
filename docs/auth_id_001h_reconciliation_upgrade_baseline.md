@@ -490,6 +490,37 @@ SQLite fixture located under the resolved system temporary directory. This
 location restriction is a hard boundary for the first slice; it does not grant
 present or future authority to inspect any persistent database.
 
+The first implementation platform is closed to all of these conditions:
+
+- `os.name == "nt"`;
+- `sys.implementation.name == "cpython"`;
+- `sys.version_info[:2] == (3, 14)`;
+- the SQLite runtime version tuple is `>= (3, 37, 0)` and `< (4, 0, 0)`;
+- the runtime exposes integer `st_mtime_ns` and `st_nlink` values and Windows
+  `st_file_attributes`; and
+- the caller supplies a drive-qualified absolute path on a local Windows
+  filesystem.
+
+Platform validation is ordered. The `os.name`, interpreter implementation,
+Python version, and required stat/reparse API-presence checks occur before
+`sqlite3` is imported and before any caller path is inspected. Only after those
+checks pass can the module import `sqlite3`; it then parses
+`sqlite3.sqlite_version` as a three-integer tuple and validates the frozen
+SQLite range before caller-path inspection or database open. A missing,
+malformed, or out-of-range runtime value is an internal fail-closed condition.
+
+POSIX, Linux, macOS, WSL, UNC or network paths, device namespaces, and runtimes
+without the required stat/reparse evidence are unsupported. Unsupported
+platform or runtime validation raises the fixed public
+`IdentityRegistryDiscoveryError`, privately classified as `internal`; `_main`
+maps it to exit `4` with no evidence bundle. It does not add a CLI option,
+top-level status, output key, or public exception type.
+
+Render's Linux deployment environment does not make this Windows-only
+disposable-fixture tool executable there. This slice requires no DEV or
+Production live-tool execution, and this platform limit grants no authority to
+scan a persistent, DEV, or Production database.
+
 The slice does not authorize:
 
 - DEV, Production, or canonical `site.db` discovery;
@@ -559,9 +590,9 @@ The callable behavior is exact:
 - CLI-value, lexical, path, file-type, sidecar-presence, or SQLite-format
   rejection raises `IdentityRegistryDiscoveryError` with private
   classification `input`; and
-- an unexpected implementation, serialization, redaction, or invariant failure
-  raises `IdentityRegistryDiscoveryError` with private classification
-  `internal`.
+- unsupported platform/runtime, or an unexpected implementation,
+  serialization, redaction, or invariant failure, raises
+  `IdentityRegistryDiscoveryError` with private classification `internal`.
 
 The callable never returns `capture_status = error`, never returns a partial
 dictionary, and never converts an input rejection or internal failure into an
@@ -616,27 +647,83 @@ clock. `tool_commit` must match `[0-9a-f]{40}` exactly.
 
 ### 21.3 Disposable path acceptance
 
-`db_path` and `--db` must satisfy every condition below before SQLite is
-imported or a connection is attempted:
+After the Section 21.1 runtime gate, `db_path` and `--db` must satisfy every
+condition below before a connection is attempted:
 
-- the supplied lexical path is absolute;
-- the resolved path is strictly below, and is not equal to, the resolved system
-  temporary root returned by the standard-library system-temp facility;
-- the path already exists and is a regular file;
-- the path is not in the repository and is not named `site.db`,
-  `site.db-wal`, `site.db-shm`, or `site.db-journal`;
-- no supplied or resolved path component is a symbolic link, junction, mount
-  substitution, or platform reparse point;
-- the file has exactly one hard link;
-- the path is not a directory, FIFO, socket, device, URL, URI supplied by the
-  caller, or non-SQLite input; and
-- the resolved identity remains unchanged between validation, open, capture,
-  and final no-touch verification.
+- the caller value is a filesystem `Path`, not a URL or URI;
+- its Windows lexical form has an ASCII-letter drive followed by `:` and a root
+  separator, and is therefore drive-qualified and absolute;
+- it contains no UNC prefix, network share, `\\?\` or `\\.\` device
+  namespace, alternate data-stream suffix, or embedded NUL;
+- the system temporary root returned by the standard-library system-temp
+  facility independently satisfies the same local drive-qualified rules;
+- the caller path and system-temp root are on the same drive, compared
+  case-insensitively;
+- a standard-library `ctypes` call to Win32 `GetDriveTypeW` for that drive root
+  returns exactly `DRIVE_FIXED` (`3`); `DRIVE_REMOTE`, `DRIVE_REMOVABLE`,
+  `DRIVE_CDROM`, `DRIVE_RAMDISK`, `DRIVE_NO_ROOT_DIR`, and
+  `DRIVE_UNKNOWN` are rejected;
+- `Path.resolve(strict=True)` succeeds, and the resolved path is strictly below,
+  and is not equal to, the resolved system-temp root by Windows path-component
+  comparison rather than string prefix;
+- every existing lexical component from the drive root through the source, and
+  every resolved component from the drive root through the source, is examined
+  with non-following metadata and has no
+  `FILE_ATTRIBUTE_REPARSE_POINT` bit;
+- the resolved system-temp root and each of its resolved ancestors through the
+  drive root also have no `FILE_ATTRIBUTE_REPARSE_POINT` bit;
+- the source already exists, is a regular disk file, has exactly one hard link,
+  and is not a directory, pipe, socket, device, or other special file;
+- neither lexical nor resolved containment is inside the repository;
+- the basename compared case-insensitively is not `site.db`, `site.db-wal`,
+  `site.db-shm`, or `site.db-journal`; and
+- the initial raw-byte read succeeds, has length at least 100 bytes, has exact
+  zero-based bytes `0..15` equal to the ASCII sequence `SQLite format 3`
+  followed by one NUL byte (`SQLite format 3\0`), has zero-based byte offset
+  `18` equal to integer `1`, and has zero-based byte offset `19` equal to
+  integer `1`.
 
-Containment must be checked by resolved path components, not string prefix.
-Both the lexical path and resolved path must be checked against the repository,
-canonical database names, substitutions, and link metadata. A successful
-initial check must not suppress final identity and no-touch revalidation.
+Offsets `18` and `19` are respectively SQLite's file-format write version and
+read version. The only accepted pair is rollback-journal format `1 / 1`.
+Every other pair, including WAL format `2 / 2`, mixed `1 / 2` or `2 / 1`,
+`0 / 0`, and unknown values, is rejected before any SQLite connection attempt.
+This gate validates input format only. It does not repair or rewrite the source,
+change journal mode, convert WAL to rollback format, checkpoint WAL, delete or
+clean up a sidecar, or modify the database header.
+
+A short file, wrong header magic, or disallowed write/read version pair raises
+the fixed public `IdentityRegistryDiscoveryError` privately classified as
+`input`. `_main` emits zero stdout bytes, writes only
+`AUTH-ID-001H DISCOVERY INPUT REJECTED` plus its final LF to stderr, and returns
+exit `2`. Rejection performs zero SQLite connection attempts and creates,
+deletes, modifies, or cleans up no `-wal`, `-shm`, or `-journal` sidecar.
+
+On this Windows-only platform, symbolic links, junctions, and volume mount
+points are reparse points and are rejected by the exact reparse-attribute rule.
+No non-Windows path form is accepted.
+
+The pre-open checkpoint records the lexical path, resolved path, file identity
+tuple `(st_dev, st_ino)`, `st_nlink`, `st_file_attributes`, raw SHA-256, byte
+length, `st_size`, `st_mtime_ns`, and absence of the three exact sibling paths
+formed by appending `-wal`, `-shm`, and `-journal` to the source filename. The
+raw byte length must equal `st_size`. The post-close checkpoint repeats
+resolution, all component/reparse checks, the same stat fields, raw-byte read
+and hash, and sidecar checks. Every pre/post value must be equal. A successful
+initial check never suppresses final checkpoint validation.
+
+After SQLite open and before schema or row reads, fixed
+`PRAGMA database_list` must return exactly one `main` database and no attached
+database. Its filename is converted to a strict resolved Windows `Path` and
+must equal the expected resolved source path by case-insensitive
+path-component comparison. The path is never emitted.
+
+These are checkpoint guarantees, not a continuous or atomic identity
+guarantee. Version 1 does not claim an atomic binding between an OS file handle
+and the Python `sqlite3` connection, and it does not resist a hostile local
+actor that substitutes and restores a file between every checkpoint. The read
+transaction supplies SQLite snapshot consistency and locking semantics only.
+Consequently the first slice is authorized solely for a caller-controlled,
+isolated system-temp fixture, never a persistent, DEV, or Production source.
 
 The tool must not read `APP_DB_PATH`, `DATABASE_URL`, or any other
 database-selection environment value. It must not search for, infer, probe, or
@@ -654,7 +741,7 @@ The tool constructs the SQLite URI from the resolved absolute `Path` by the
 exact expression:
 
 ```python
-resolved_path.as_uri() + "?mode=ro&immutable=1"
+resolved_path.as_uri() + "?mode=ro"
 ```
 
 `Path.as_uri()` is the sole path-to-URI conversion. Its standard-library
@@ -664,12 +751,24 @@ caller supplies a filesystem path, never a URI. A literal space, Unicode
 character, `#`, `?`, or `%` in a filename remains path data after the one
 `Path.as_uri()` conversion and cannot become a fragment or query parameter.
 
-The query suffix is exactly `?mode=ro&immutable=1`, in that order, with no
-extra parameter. The caller cannot influence the URI, query string, VFS, cache
-mode, or connection options. The connection call passes the constructed URI
-and `uri=True`; it passes no caller-controlled keyword arguments. Query
-injection, fragment injection, VFS selection, cache selection, parameter
-smuggling, and double decoding are forbidden.
+The query suffix is exactly `?mode=ro`, with no extra parameter. The caller
+cannot influence the URI, query string, VFS, cache mode, or connection options.
+The connection call passes the constructed URI and `uri=True`; it passes no
+caller-controlled keyword arguments. Query injection, fragment injection, VFS
+selection, cache selection, parameter smuggling, and double decoding are
+forbidden. The tool does not use SQLite's immutable URI option: the
+caller-supplied fixture is not atomically bound to the connection, the tool
+must retain SQLite locking and change detection, and pre/post hashes cannot
+prove that hostile substitution never occurred between checkpoints.
+
+Only a fixture that passed the exact rollback-format header gate in Section
+21.3 can reach SQLite open or the single read transaction. The tool must not
+execute `PRAGMA journal_mode`, mutate journal mode, convert a WAL-format
+database, run a WAL checkpoint, or acquire sidecar cleanup authority.
+The rollback-format gate bounds tool-generated sidecar risk; `mode=ro` retains
+SQLite locking and change detection, pre/post checkpoints detect observable
+source or sidecar drift, and `snapshot_concurrency_drift` remains
+`indeterminate`. None of these controls creates an atomic identity guarantee.
 
 Before open, the tool must reject the source if any sibling `-wal`, `-shm`, or
 `-journal` file exists.
@@ -681,11 +780,59 @@ set and verify connection-local:
 PRAGMA query_only=ON
 ```
 
-An SQLite authorizer must then fail closed for every operation outside the
-fixed read-only query contract. The only authorized SQL sources are immutable
-module constants reviewed with the tool. Runtime string interpolation,
-identifier interpolation, caller-supplied SQL, query fragments, dynamic SQL,
-and extension-defined SQL are forbidden.
+The tool reads `PRAGMA query_only` back and requires integer `1`. It then
+installs a closed SQLite authorizer before any transaction, schema, or row
+statement. The authorizer returns `SQLITE_OK` only for the read actions required
+by the fixed statements: `SQLITE_SELECT`, `SQLITE_READ` limited to
+`sqlite_schema` and the three registry tables, `SQLITE_FUNCTION` limited to the
+fixed built-in aggregate/scalar functions transcribed with those statements,
+and read-only `SQLITE_PRAGMA` limited to `query_only`, `database_list`,
+`schema_version`, `table_list`, `table_xinfo`, `foreign_key_list`,
+`index_list`, and `index_xinfo`. Every other action code is denied.
+
+An SQLite operational failure while setting or reading back `query_only`
+returns an incomplete dictionary with `errors = ["source_read_incomplete"]`
+before schema/query errors are possible. `schema_object_drift` is then
+`indeterminate`/`null`/`schema_contract_unavailable`; every other table-bounded
+category and unknown is
+`indeterminate`/`null`/`bounded_query_incomplete`. A non-integer or non-`1`
+readback, failure to install the authorizer, or an authorizer callback/state
+invariant failure is private `internal`, emits no bundle, and maps to exit `4`.
+
+For `SQLITE_TRANSACTION`, the authorizer permits only exact operation `BEGIN`
+for the single fixed opening statement and exact operation `ROLLBACK` for the
+single fixed closing statement. It denies `COMMIT`, every SAVEPOINT action,
+nested transactions, and any caller-controlled, interpolated, or dynamic
+transaction operation.
+
+After authorizer installation, the exact statement order is:
+
+1. execute the immutable module constant `BEGIN`;
+2. execute fixed `PRAGMA database_list` and validate the sole `main` path;
+3. perform all remaining authorized schema and row reads inside that same
+   transaction;
+4. execute the immutable module constant `ROLLBACK`;
+5. close the connection; and
+6. perform the final Section 21.3 checkpoint.
+
+No database read occurs outside the transaction; only connection-local
+`query_only` setup/readback and authorizer installation precede it. A fixed
+`BEGIN` or final `ROLLBACK` SQLite operational failure returns an incomplete
+dictionary with `errors` containing `source_read_incomplete`. `BEGIN` failure
+uses the exact decision-table states. `ROLLBACK` failure preserves an already
+observed schema-drift result, otherwise makes schema drift
+`indeterminate`/`null`/`schema_contract_unavailable`, and makes every other
+table-bounded category and unknown
+`indeterminate`/`null`/`bounded_query_incomplete`. An unexpected exception, a
+wrong transaction operation, a second transaction attempt, an authorizer
+invariant failure, or a transaction state inconsistent with this sequence
+raises the fixed public exception privately classified as `internal` and maps
+to exit `4`.
+
+The only authorized SQL sources are immutable module constants reviewed with
+the tool. Runtime string interpolation, identifier interpolation,
+caller-supplied SQL, query fragments, dynamic SQL, and extension-defined SQL
+are forbidden.
 
 The fixed query set is limited to:
 
@@ -705,10 +852,11 @@ The query set must not read credential tables, usernames, roles, sites,
 permissions, sessions, proof material, application business tables, or
 external backends.
 
-The authorizer must deny DML, DDL, transaction writes, savepoints, temporary
-objects, writable PRAGMAs, `ATTACH`, `DETACH`, extension loading, `VACUUM`,
-`REINDEX`, `ANALYZE`, user-defined functions, virtual-table module loading, and
-any unresolved operation. SQLite extension loading must remain disabled.
+The authorizer must deny DML, DDL, transaction writes, `COMMIT`, savepoints,
+temporary objects, writable PRAGMAs, `ATTACH`, `DETACH`, extension loading,
+`VACUUM`, `REINDEX`, `ANALYZE`, user-defined functions, virtual-table module
+loading, and any unresolved operation. SQLite extension loading must remain
+disabled.
 
 The tool must not:
 
@@ -719,9 +867,8 @@ The tool must not:
   or persistent artifact; or
 - modify source bytes or metadata.
 
-Before open and after close, the tool must compare source file identity, raw
-byte SHA-256, bytes, size, and mtime, and must verify continued absence of all
-three sidecars. Any difference makes the capture `incomplete`; it must not be
+Before open and after close, the tool applies every Section 21.3 checkpoint
+comparison. Any difference makes the capture `incomplete`; it must not be
 reported as `complete`.
 
 ### 21.5 Exact output envelope
@@ -762,6 +909,13 @@ The `tool` object contains exactly:
 | `module_sha256` | string | Lowercase SHA-256 of exact module bytes |
 | `version` | string | `AUTH_ID_001H_DISPOSABLE_DISCOVERY_V1` |
 
+Runtime support is pre-open validation only. The output does not add OS or
+filesystem version, Python path/build, SQLite build option, hostname,
+filesystem type, environment data, or any other runtime key. The declared
+commit, fixed tool version, and `tool.module_sha256` remain the complete tool
+identity boundary. Unsupported runtime never emits a complete or incomplete
+evidence bundle.
+
 The `source` object contains exactly:
 
 | Key | Type | Contract |
@@ -770,6 +924,8 @@ The `source` object contains exactly:
 | `schema_manifest_sha256` | string or null | Lowercase SHA-256 of the exact projection below; null only when schema metadata capture was incomplete |
 | `sha256` | string | Lowercase SHA-256 of source bytes before SQLite open |
 | `size_bytes` | nonnegative integer | Source size before SQLite open |
+
+#### Observed physical fingerprint projection
 
 The schema-manifest projection is an in-memory object with exactly this shape:
 
@@ -897,6 +1053,12 @@ expected table also remain in that table's `indexes`. Type, column, foreign-key,
 constraint, index, SQL, strictness, and `WITHOUT ROWID` drift are represented
 by the observed values without substitution.
 
+This observed physical projection deliberately retains SQLite-generated
+autoindex names, complete `index_xinfo` rows including auxiliary rows, foreign
+key `id`/`seq`, and physical SQL text. Its hash binds the observed source
+snapshot. It is not itself the frozen semantic schema contract and is not
+compared wholesale for `schema_object_drift`.
+
 If every projection query completes, the hash is populated even when schema
 drift exists. If any projection query fails or returns a structurally invalid
 metadata row, the hash is JSON `null`, `capture_status` is `incomplete`, and
@@ -1010,74 +1172,223 @@ and observed projection; JSON `null` is the absence sentinel. Facts are
 deduplicated by their Section 21.8 canonical JSON bytes. The fact array is used
 for deduplication only and is not emitted or separately hashed.
 
+The comparison uses a separate frozen semantic projection. It is constructed
+in memory from the observed physical projection but excludes implementation
+names and auxiliary physical rows identified below. It is not emitted and does
+not replace `source.schema_manifest_sha256`.
+
+Every expected table has `strict = true` and `without_rowid = false`. Its
+expected columns are the following exact ordered seven-element tuples:
+
+```text
+[cid, name, declared_type, not_null, default_sql, pk_position, hidden]
+```
+
+`global_identities`:
+
+```text
+[0,"global_identity_id","TEXT",true,null,1,0]
+[1,"registry_status","TEXT",true,"'disabled'",0,0]
+[2,"created_at","TEXT",true,"CURRENT_TIMESTAMP",0,0]
+[3,"updated_at","TEXT",true,"CURRENT_TIMESTAMP",0,0]
+[4,"created_provenance","TEXT",true,null,0,0]
+[5,"updated_provenance","TEXT",true,null,0,0]
+```
+
+`login_identifier_aliases`:
+
+```text
+[0,"login_identifier_alias_id","TEXT",true,null,1,0]
+[1,"global_identity_id","TEXT",true,null,0,0]
+[2,"raw_alias","TEXT",true,null,0,0]
+[3,"normalized_lookup_key","TEXT",true,null,0,0]
+[4,"normalization_algorithm_family","TEXT",true,null,0,0]
+[5,"normalization_profile","TEXT",true,null,0,0]
+[6,"unicode_data_version","TEXT",true,null,0,0]
+[7,"trim_conformance_profile","TEXT",true,null,0,0]
+[8,"alias_status","TEXT",true,"'active'",0,0]
+[9,"created_at","TEXT",true,"CURRENT_TIMESTAMP",0,0]
+[10,"updated_at","TEXT",true,"CURRENT_TIMESTAMP",0,0]
+[11,"created_provenance","TEXT",true,null,0,0]
+[12,"updated_provenance","TEXT",true,null,0,0]
+```
+
+`backend_principal_mappings`:
+
+```text
+[0,"backend_principal_mapping_id","TEXT",true,null,1,0]
+[1,"global_identity_id","TEXT",true,null,0,0]
+[2,"backend_kind","TEXT",true,null,0,0]
+[3,"backend_principal_key","ANY",true,null,0,0]
+[4,"mapping_status","TEXT",true,"'active'",0,0]
+[5,"created_at","TEXT",true,"CURRENT_TIMESTAMP",0,0]
+[6,"updated_at","TEXT",true,"CURRENT_TIMESTAMP",0,0]
+[7,"created_provenance","TEXT",true,null,0,0]
+[8,"updated_provenance","TEXT",true,null,0,0]
+```
+
+The semantic foreign-key tuple is exactly:
+
+```text
+[from, referenced_table, to, on_update, on_delete, match]
+```
+
+`global_identities` has an empty foreign-key set. Each other table has exactly:
+
+```text
+["global_identity_id","global_identities","global_identity_id","NO ACTION","RESTRICT","NONE"]
+```
+
+Observed `PRAGMA foreign_key_list` `id` and `seq` order physical rows for the
+fingerprint but are not semantic comparison fields. The semantic tuple set is
+sorted by all six elements and compared by set equality.
+
+Each expected normalized table SQL value is the following exact string:
+
+```text
+global_identities:
+create table global_identities ( global_identity_id text primary key, registry_status text not null default 'disabled', created_at text not null default current_timestamp, updated_at text not null default current_timestamp, created_provenance text not null, updated_provenance text not null, check (registry_status in ('active', 'disabled')) ) strict
+
+login_identifier_aliases:
+create table login_identifier_aliases ( login_identifier_alias_id text primary key, global_identity_id text not null, raw_alias text not null, normalized_lookup_key text not null, normalization_algorithm_family text not null, normalization_profile text not null, unicode_data_version text not null, trim_conformance_profile text not null, alias_status text not null default 'active', created_at text not null default current_timestamp, updated_at text not null default current_timestamp, created_provenance text not null, updated_provenance text not null, foreign key (global_identity_id) references global_identities(global_identity_id) on delete restrict on update no action, check (alias_status in ('active', 'disabled', 'superseded')), check (normalization_algorithm_family = 'nfkc_casefold_v1'), check (normalization_profile = 'nfkc_casefold_v1_ucd16_0_0'), check (unicode_data_version = '16.0.0'), check (trim_conformance_profile = 'py3146_ucd16_0_0_strip_v1') ) strict
+
+backend_principal_mappings:
+create table backend_principal_mappings ( backend_principal_mapping_id text primary key, global_identity_id text not null, backend_kind text not null, backend_principal_key any not null, mapping_status text not null default 'active', created_at text not null default current_timestamp, updated_at text not null default current_timestamp, created_provenance text not null, updated_provenance text not null, foreign key (global_identity_id) references global_identities(global_identity_id) on delete restrict on update no action, check (backend_kind in ('internal', 'vendor')), check (mapping_status in ('active', 'disabled')), check (typeof(backend_principal_key) = 'integer' and backend_principal_key > 0), unique (backend_kind, backend_principal_key), unique (global_identity_id, backend_kind) ) strict
+```
+
+These strings use the Section 21.5 SQL normalization recipe. They freeze the
+table and CHECK contract in addition to the column, foreign-key, and UNIQUE
+tuples; a mismatch in any character after normalization is semantic drift.
+
+An ordered semantic index-key column is exactly
+`[name, collation, descending]`. Expected key columns use collation `BINARY`
+and `descending = false`. `index_xinfo` rows with `key = false`, including
+auxiliary `cid = -1` rowid rows, are excluded from semantic comparison.
+
+An explicit-index semantic tuple is exactly:
+
+```text
+[name, origin, unique, partial, ordered_key_columns, normalized_sql]
+```
+
+The exact expected explicit-index tuples are:
+
+```text
+["idx_login_identifier_aliases_candidate_lookup","c",false,false,
+ [["normalization_algorithm_family","BINARY",false],
+  ["normalization_profile","BINARY",false],
+  ["unicode_data_version","BINARY",false],
+  ["trim_conformance_profile","BINARY",false],
+  ["normalized_lookup_key","BINARY",false],
+  ["alias_status","BINARY",false]],
+ "create index idx_login_identifier_aliases_candidate_lookup on login_identifier_aliases ( normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, normalized_lookup_key, alias_status )"]
+
+["idx_login_identifier_aliases_provenance_reconciliation","c",false,false,
+ [["normalization_algorithm_family","BINARY",false],
+  ["normalization_profile","BINARY",false],
+  ["unicode_data_version","BINARY",false],
+  ["trim_conformance_profile","BINARY",false],
+  ["global_identity_id","BINARY",false],
+  ["alias_status","BINARY",false]],
+ "create index idx_login_identifier_aliases_provenance_reconciliation on login_identifier_aliases ( normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, global_identity_id, alias_status )"]
+
+["idx_login_identifier_aliases_active_exact_alias","c",true,true,
+ [["global_identity_id","BINARY",false],
+  ["raw_alias","BINARY",false],
+  ["normalized_lookup_key","BINARY",false],
+  ["normalization_algorithm_family","BINARY",false],
+  ["normalization_profile","BINARY",false],
+  ["unicode_data_version","BINARY",false],
+  ["trim_conformance_profile","BINARY",false]],
+ "create unique index idx_login_identifier_aliases_active_exact_alias on login_identifier_aliases ( global_identity_id, raw_alias, normalized_lookup_key, normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile ) where alias_status = 'active'"]
+```
+
+`global_identities` and `backend_principal_mappings` have no expected explicit
+index tuple. The three tuples above belong to `login_identifier_aliases`.
+
+An SQLite-generated semantic index tuple is exactly:
+
+```text
+[origin, unique, partial, ordered_key_columns]
+```
+
+The expected per-table sets are:
+
+```text
+global_identities:
+["pk",true,false,[["global_identity_id","BINARY",false]]]
+
+login_identifier_aliases:
+["pk",true,false,[["login_identifier_alias_id","BINARY",false]]]
+
+backend_principal_mappings:
+["pk",true,false,[["backend_principal_mapping_id","BINARY",false]]]
+["u",true,false,[["backend_kind","BINARY",false],["backend_principal_key","BINARY",false]]]
+["u",true,false,[["global_identity_id","BINARY",false],["backend_kind","BINARY",false]]]
+```
+
+SQLite-generated autoindex name, creation order, `seqno`, and auxiliary
+`index_xinfo` rows are physical fingerprint details only. They do not form or
+label a semantic drift fact. The semantic tuple sets above are sorted by their
+Section 21.8 canonical JSON bytes and compared by set equality. A missing or
+extra primary-key/UNIQUE semantic tuple is still exact drift.
+
 Atomic facts are generated exactly as follows:
 
 - a missing expected table contributes
   `["table",table_name,table_name,"present",true,false]` and contributes no
-  child column, foreign-key, or index facts;
+  child column, foreign-key, index, or table-SQL fact;
 - a present table with incorrect `strict` or `without_rowid` contributes one
-  fact for each incorrect attribute, using the expected and observed booleans;
-- a missing expected column contributes one fact with the expected complete
-  `column_projection` and observed JSON `null`;
-- an extra column contributes one fact with expected JSON `null` and the
-  observed complete `column_projection`;
-- a present expected column contributes one fact for each mismatch in
-  `type`, `not_null`, `default_sql`, `pk_position`, or `hidden`, using the
-  exact expected and observed scalar;
-- the symmetric difference between expected and observed foreign-key tuples
-  contributes one fact per tuple, placing the tuple on its present side and
-  JSON `null` on its absent side;
-- a missing approved index contributes one fact with the expected complete
-  `index_projection` and observed JSON `null`, and contributes no child index
-  facts;
-- an extra index owned by an expected table contributes one fact with expected
-  JSON `null` and the observed complete `index_projection`;
-- a present approved index contributes one fact for each mismatch in `unique`,
-  `origin`, `partial`, or `normalized_sql`, using the exact expected and
-  observed scalar;
-- the symmetric difference between expected and observed index-column tuples
-  contributes one fact per tuple, placing the tuple on its present side and
-  JSON `null` on its absent side; and
-- a present expected table whose `normalized_sql` differs from the frozen E1
-  table SQL contributes one fact with the exact expected and observed
-  normalized strings, covering CHECK and table-constraint text not represented
-  by the other tuples.
+  fact for each incorrect attribute;
+- a missing expected column contributes one `column`/`present` fact with the
+  expected seven-element tuple and observed JSON `null`;
+- an extra column contributes one `column`/`present` fact with expected JSON
+  `null` and the observed seven-element tuple;
+- a present expected column contributes one `column` fact for each mismatch in
+  `cid`, `declared_type`, `not_null`, `default_sql`, `pk_position`, or `hidden`;
+- the symmetric difference of semantic foreign-key tuple sets contributes one
+  `foreign_key`/`tuple` fact per tuple;
+- a missing or extra approved explicit index contributes one
+  `explicit_index`/`present` fact with the complete tuple on its present side;
+- a present approved explicit index contributes one `explicit_index` fact for
+  each mismatch in `origin`, `unique`, `partial`, `ordered_key_columns`, or
+  `normalized_sql`;
+- the symmetric difference of SQLite-generated semantic index tuple sets
+  contributes one `semantic_unique`/`tuple` fact per tuple;
+- a present expected table whose normalized SQL differs contributes one
+  `table_sql`/`normalized_sql` fact; and
+- a view, trigger, or unapproved explicit index owned by an expected table
+  contributes one `owned_object`/`present` fact, except that an unapproved
+  explicit index already counted by the explicit-index rule is not counted
+  again.
 
 Fact labels are exact:
 
 | Fact | `object_kind` | `owner_name` | `subject_name` | `attribute` |
 |---|---|---|---|---|
-| Table presence or table attribute | `table` | table name | table name | `present`, `strict`, or `without_rowid` |
-| Column presence | `column` | table name | column name | `present` |
-| Column attribute | `column` | table name | column name | Exact mismatching field name |
+| Table presence or attribute | `table` | table name | table name | `present`, `strict`, or `without_rowid` |
+| Column presence or attribute | `column` | table name | column name | `present` or exact mismatching tuple-field name |
 | Foreign-key tuple difference | `foreign_key` | table name | `foreign_key` | `tuple` |
-| Index presence | `index` | owning table name | index name | `present` |
-| Index attribute | `index` | owning table name | index name | Exact mismatching field name |
-| Index-column tuple difference | `index_column` | index name | `index_column` | `tuple` |
+| Approved explicit-index presence or attribute | `explicit_index` | table name | approved index name | `present` or exact mismatching tuple-field name |
+| Generated PK/UNIQUE semantic tuple difference | `semantic_unique` | table name | `pk_or_unique` | `tuple` |
 | Table SQL difference | `table_sql` | table name | table name | `normalized_sql` |
-| Extra owned view or trigger | `owned_object` | expected table name | object name | `present` |
+| Extra owned view, trigger, or explicit index | `owned_object` | expected table name | object name | `present` |
 
-A renamed column contributes two facts: one missing expected column and one
-extra observed column. An unrelated schema object whose `name` and `tbl_name`
-are both outside the three expected table names and approved index names
-contributes zero drift facts. It remains in the schema projection and therefore
-changes the schema-manifest fingerprint. A view, trigger, or unapproved index
-whose `tbl_name` is an expected table contributes one fact with expected JSON
-`null` and the observed complete `schema_object`; an unapproved index already
-counted by the index rule is not counted again.
+A renamed column contributes two facts: missing expected and extra observed.
+An unrelated object whose `name` and `tbl_name` are both outside the three
+expected tables and approved explicit indexes contributes zero drift facts but
+remains in the observed physical fingerprint. Physical autoindex-name changes
+and auxiliary-row differences contribute zero facts when their frozen semantic
+tuple set is unchanged.
 
-The expected values are exactly the `VALID_SCHEMA_SQL`, `EXPECTED_TABLES`,
-`ALIAS_ALLOWED_EXPLICIT_INDEXES`, `ALIAS_ALLOWED_PARTIAL_UNIQUE_COLUMNS`,
-`ALIAS_ALLOWED_PARTIAL_UNIQUE_WHERE`, and `MAPPING_ALLOWED_UNIQUE_SETS`
-constants in approved schema-checker blob
-`d322d051a7b3060f4d53598a5dbfb6e65f784965`. The future module transcribes
-those immutable values and the checker verifies exact equality; it does not
-import or call `app`, the schema checker, or the serializer. SQL expected values
-use the exact Section 21.5 normalization recipe. A zero-size fact set yields
-`not_observed`, count `0`, and `bounded_violation_not_observed`. A nonzero fact
-set yields `observed`, its set size, and `bounded_violation_observed`. Metadata
-capture failure yields `indeterminate`, count `null`, and
-`schema_contract_unavailable`.
+The future module transcribes all literal semantic constants above. It does not
+import or execute `app`, the schema checker, a schema fixture, or the serializer.
+The six schema-checker constant families are provenance for review only and are
+not by themselves a complete expected physical or semantic projection. A
+zero-size fact set yields `not_observed`, count `0`, and
+`bounded_violation_not_observed`. A nonzero fact set yields `observed`, its set
+size, and `bounded_violation_observed`. Metadata capture failure yields
+`indeterminate`, count `null`, and `schema_contract_unavailable`.
 
 #### 21.7.2 Exact registry-row predicates and units
 
@@ -1142,18 +1453,28 @@ This table is the sole schema/query continuation policy:
 |---|---|---|---|---|---|
 | Exact registry schema match | `0` / `complete` | `[]` | `not_observed`, `0`, `bounded_violation_not_observed` | Apply every fixed category rule | Execute every fixed row query |
 | Extra unrelated object only | `0` / `complete` | `[]` | `not_observed`, `0`, `bounded_violation_not_observed` | Apply every fixed category rule; fingerprint reflects the object | Execute every fixed row query |
-| Missing approved index, extra owned index/object, or approved-index attribute/column/SQL drift | `3` / `incomplete` | `["schema_drift"]` | `observed`, exact fact count, `bounded_violation_observed` | Apply every fixed category rule | Execute every fixed row query; no row predicate depends on index presence |
+| Missing approved explicit index, extra owned index/object, explicit-index drift, or generated PK/UNIQUE semantic-tuple drift | `3` / `incomplete` | `["schema_drift"]` | `observed`, exact semantic fact count, `bounded_violation_observed` | Apply every fixed category rule | Execute every fixed row query; no row predicate depends on index presence |
 | Missing expected table | `3` / `incomplete` | `["schema_drift"]` | `observed`, exact fact count, `bounded_violation_observed` | All table-bounded categories are `indeterminate`/`null`/`schema_contract_unavailable`; fixed backend, ledger, concurrency, and unknown rules remain | Execute no row query |
 | Missing, extra, renamed, type-drifted, nullable-drifted, default-drifted, PK-drifted, or hidden-drifted column | `3` / `incomplete` | `["schema_drift"]` | `observed`, exact fact count, `bounded_violation_observed` | All table-bounded categories are `indeterminate`/`null`/`schema_contract_unavailable`; fixed backend, ledger, concurrency, and unknown rules remain | Execute no row query |
 | FK, CHECK, UNIQUE, strictness, `WITHOUT ROWID`, or table normalized-SQL drift with all expected tables and columns otherwise exact | `3` / `incomplete` | `["schema_drift"]` | `observed`, exact fact count, `bounded_violation_observed` | Apply every fixed category rule | Execute every fixed row query |
+| Fixed `PRAGMA database_list` raises an SQLite operational error or returns a structurally invalid row | `3` / `incomplete` | `["source_read_incomplete"]` | `indeterminate`, `null`, `schema_contract_unavailable` | All table-bounded categories and unknown are `indeterminate`/`null`/`bounded_query_incomplete`; fixed backend, ledger, and concurrency rules remain | Execute no schema or row query; execute final fixed `ROLLBACK` |
+| `PRAGMA database_list` has an attached database or its resolved sole `main` path differs from the expected source | `3` / `incomplete` | `["source_identity_changed"]` | `indeterminate`, `null`, `schema_contract_unavailable` | All table-bounded categories and unknown are `indeterminate`/`null`/`bounded_query_incomplete`; fixed backend, ledger, and concurrency rules remain | Execute no schema or row query; execute final fixed `ROLLBACK` |
+| Fixed `BEGIN` raises an SQLite operational error | `3` / `incomplete` | `["source_read_incomplete"]` | `indeterminate`, `null`, `schema_contract_unavailable` | All table-bounded categories and unknown are `indeterminate`/`null`/`bounded_query_incomplete`; fixed backend, ledger, and concurrency rules remain | Execute no schema or row query; close and perform final checkpoint |
 | Schema metadata query failure or structurally invalid metadata row | `3` / `incomplete` | `["schema_capture_incomplete"]` | `indeterminate`, `null`, `schema_contract_unavailable` | All table-bounded categories and unknown are `indeterminate`/`null`/`schema_contract_unavailable`; fixed backend, ledger, and concurrency rules remain | Execute no row query |
 | One fixed row query fails after an exact or query-compatible drifted schema | `3` / `incomplete` | `["bounded_query_incomplete"]`, plus `schema_drift` exactly when drift facts exist | Preserve the schema result already determined | The failed category and unknown are `indeterminate`/`null`/`bounded_query_incomplete`; every other category preserves its fixed result | Continue independent fixed queries; do not retry, rewrite, substitute, or broaden the failed query |
+| Final fixed `ROLLBACK` raises an SQLite operational error | `3` / `incomplete` | `["source_read_incomplete"]`, plus every already established schema/query error | Preserve an `observed` schema-drift result; otherwise set schema drift to `indeterminate`/`null`/`schema_contract_unavailable` | All table-bounded categories and unknown are `indeterminate`/`null`/`bounded_query_incomplete`; fixed backend, ledger, and concurrency rules remain | Preserve no completed row result; close and perform final checkpoint |
 
 If more than one table row in the decision table applies, the most restrictive
 row-query rule wins: `execute no row query` overrides continuation. The
 `errors` array is the sorted union of the exact listed codes. Source identity,
 bytes, size, mtime, or sidecar change is governed by Section 21.9 and cannot be
 downgraded by a schema result.
+
+A non-operational exception, wrong transaction action, nested/second
+transaction attempt, unexpected transaction state, or authorizer invariant
+failure is not a bounded read failure. It raises the fixed public exception
+privately classified as `internal`, produces no evidence bundle, and maps to
+exit `4`.
 
 Backend-dependent categories are never `not_observed` in this slice.
 Ledger/history-dependent categories never infer historical legality from
@@ -1216,8 +1537,9 @@ The exact exit codes are:
   categories are permitted;
 - `2`: CLI, path, lexical format, file-type, sidecar-presence, or SQLite-format
   input rejection;
-- `3`: source, schema, query, or final no-touch evidence is incomplete; and
-- `4`: internal fail-closed error.
+- `3`: transaction, source, schema, query, or final checkpoint evidence is
+  incomplete; and
+- `4`: unsupported platform/runtime or internal fail-closed error.
 
 `_main` performs no discovery logic outside the public callable. It parses the
 four CLI values without automatic usage, help, or exception output, invokes
@@ -1234,6 +1556,11 @@ four CLI values without automatic usage, help, or exception output, invokes
 Parser rejection, including `-h` or `--help`, occurs before callable invocation
 and maps directly to zero stdout bytes, the fixed input-rejected marker, and
 exit `2`.
+
+Unsupported OS, interpreter, Python version, SQLite version, or required
+stat/reparse capability is private classification `internal`, not rejected
+caller input. It follows the exit `4` row, emits no evidence bundle, and does
+not expose runtime details.
 
 The result is fully serialized and redaction-validated in memory before either
 stdout or stderr is written. `_main` performs at most one stdout write and one
@@ -1284,9 +1611,11 @@ Final source/no-touch failures use this exact rule:
 
 - source byte-read failure before SQLite open is an input rejection and exit
   `2`;
-- source identity, bytes, SHA-256, size, or mtime change after initial
-  validation produces exit `3`, `capture_status = incomplete`, and
-  `errors = ["source_identity_changed"]`, combined with any earlier error code;
+- lexical/resolved path, component reparse state, `(st_dev, st_ino)`,
+  `st_nlink`, `st_file_attributes`, bytes, SHA-256, raw byte length, `st_size`,
+  or `st_mtime_ns` change after initial validation produces exit `3`,
+  `capture_status = incomplete`, and `errors = ["source_identity_changed"]`,
+  combined with any earlier error code;
 - appearance or change of `-wal`, `-shm`, or `-journal` produces exit `3`,
   `capture_status = incomplete`, and `errors = ["sidecar_state_changed"]`,
   combined with any earlier error code; and
@@ -1363,13 +1692,21 @@ all of these independently verified conditions hold:
 - exact public `__all__`, public class, public callable, private `_main`, and no
   extra entrypoint or capability export;
 - exact four-option mandatory CLI with the validators in Section 21.2;
-- exact path rejection and no-environment invariants in Section 21.3;
-- exact read-only URI construction, fixed SQL constants, authorizer, and
-  no-touch invariants in Section 21.4;
+- exact Windows-only CPython/SQLite runtime gate, local-drive path rejection,
+  reparse checks, checkpoint identity, and no-environment invariants in
+  Sections 21.1 and 21.3;
+- exact pre-connect 100-byte minimum, SQLite magic bytes, and byte-offset
+  `18 = 1` / `19 = 1` rollback-format validation;
+- exact `mode=ro` URI construction, fixed SQL constants, closed authorizer,
+  single `BEGIN`/`ROLLBACK` transaction, and final checkpoint invariants in
+  Section 21.4;
+- exact separation of the observed physical fingerprint from the fully
+  transcribed frozen semantic comparison projection;
 - exact JSON schema, version, reason vocabularies, state matrix, serializer,
   evidence hash, and exit behavior in Sections 21.5–21.11; and
 - no output file, app import, bootstrap, migration, network, PostgreSQL,
-  backend connector, authority, plan, winner, repair, or mutation capability.
+  backend connector, journal-mode mutation, WAL conversion/checkpoint,
+  sidecar cleanup, authority, plan, winner, repair, or mutation capability.
 
 The checker must prove those positive structural invariants. It must not use:
 
@@ -1387,6 +1724,10 @@ report/plan expansion, winner selection, repair, relationship correction,
 authority, consumer, or Production meaning must re-trigger the applicable
 original issue code. The allowance must not weaken lifecycle, linking, E2,
 Production-access, oracle, redaction, dynamic-capability, or mutation guards.
+Moving header validation after `sqlite3.connect`, removing or relaxing the
+100-byte/magic/offset gate, or adding journal-mode mutation, WAL conversion,
+checkpoint, or cleanup authority must also re-trigger the applicable
+fail-closed issue.
 
 ### 21.13 Mandatory future acceptance matrix
 
@@ -1396,10 +1737,24 @@ A future implementation and checker proposal must demonstrate at least:
 - exact symbol/export acceptance and wrong or extra symbol rejection;
 - exact four-option CLI acceptance and omitted, repeated, positional, unknown,
   abbreviated, extra, default, and environment-fallback rejection;
+- Windows CPython 3.14.x plus SQLite `>= 3.37.0` and `< 4.0.0` acceptance;
+  fail-closed POSIX, Linux, macOS, WSL, wrong-Python, wrong-SQLite,
+  missing-stat-field, and missing-reparse-capability cases, with the platform
+  gate before SQLite import and the SQLite-version gate before path inspection;
 - canonical/repository database, `site.db`, sidecar, URL, and non-temp
   rejection;
-- symlink, junction, reparse-point, hardlink, mount, and path-substitution
-  rejection;
+- rollback-format `1 / 1` fixture with no sidecars accepted, and WAL-format
+  `2 / 2` fixture with no pre-existing sidecars rejected as input with exit `2`;
+- after WAL-format pre-connect rejection, source bytes, size, and mtime
+  unchanged, all `-wal`/`-shm`/`-journal` sidecars absent, and SQLite connection
+  attempt count exactly `0`;
+- WAL-format input with an existing sidecar still rejected by the earlier
+  sidecar-presence gate;
+- malformed magic, fewer than 100 bytes, mixed `1 / 2` and `2 / 1`, `0 / 0`,
+  and every unknown write/read-version value rejected before connection;
+- UNC/network, device-namespace, alternate-data-stream, wrong-drive, symlink,
+  junction, mapped/non-fixed drive type, Windows volume-mount reparse point,
+  generic reparse point, hardlink, and checkpoint path-substitution rejection;
 - exact one-pass `Path.as_uri()` behavior for filenames containing spaces,
   Unicode, `#`, `?`, and `%`, with query/fragment/VFS/cache injection
   rejection;
@@ -1409,7 +1764,17 @@ A future implementation and checker proposal must demonstrate at least:
 - direct callable complete return, incomplete return, fixed-message input
   exception, fixed-message internal exception, absent cause/context, private
   classification, and exact `_main` exit mapping;
-- regular disposable SQLite acceptance with immutable read-only open;
+- regular disposable SQLite acceptance with exact `mode=ro` open and proof that
+  no immutable URI parameter is present;
+- proof that the tool never executes `PRAGMA journal_mode`, changes journal
+  mode, converts or checkpoints WAL, or deletes/cleans up sidecars;
+- checker and self-test rejection of a negative source that removes, weakens,
+  or moves the header gate after `sqlite3.connect`;
+- exact verified `query_only`, closed authorizer, one fixed `BEGIN`, all reads
+  inside its snapshot, one final fixed `ROLLBACK`, and rejection of `COMMIT`,
+  SAVEPOINT, nested, second, dynamic, and caller-controlled transactions;
+- operational `BEGIN` and `ROLLBACK` failure exit-`3` cases and unexpected
+  transaction/authorizer invariant exit-`4` cases;
 - writable connection, DML, DDL, transaction write, temporary object, writable
   PRAGMA, `ATTACH`, `DETACH`, extension load, `VACUUM`, `REINDEX`, `ANALYZE`,
   user-defined-function, and dynamic-SQL rejection;
@@ -1427,8 +1792,13 @@ A future implementation and checker proposal must demonstrate at least:
   ledger, and concurrency-dependent categories;
 - missing, extra, and drifted schema; malformed/non-SQLite input; unreadable
   source; fixed-query failure; and source/sidecar mutation;
-- source bytes, identity, size, mtime, and sidecars unchanged after every
-  accepted capture;
+- observed physical fingerprints that differ only by SQLite autoindex names or
+  auxiliary `index_xinfo` rows while their semantic tuple sets remain equal;
+- missing/extra semantic primary-key or UNIQUE sets, explicit-index drift,
+  table/CHECK normalized-SQL drift, FK drift, and column `hidden` drift;
+- pre-open, `database_list`, transaction-snapshot, and post-close checkpoint
+  identity cases, including source bytes, identity tuple, stat fields, size,
+  mtime, reparse state, and sidecars unchanged after every accepted capture;
 - deterministic A/A byte equality, controlled A/B difference, evidence-hash
   reconstruction, and module-hash verification;
 - generic stderr exact-byte tests and zero stderr on exit `0`;
