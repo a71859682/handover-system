@@ -2064,3 +2064,285 @@ Deferred ownership is:
 No deferred owner may infer authorization from this document.
 
 The next permissible step is final diff review of this docs-only freeze.
+
+## 21. VENDOR-ID-002B implementation and persistent migration evidence reconciliation
+
+### 21.1 Reconciliation purpose and evidence boundary
+
+This section reconciles only the separately approved source implementation, disposable validation, Git, deployment, and public-health evidence produced after the Sections 1–20 design freeze.
+
+Sections 1–20 and the document metadata remain the byte-preserved historical pre-implementation baseline. In particular, the Section 20 statement that implementation had not started is the frozen status at that point in time; this Section 21 records the later, independently approved implementation reality without rewriting that history.
+
+The evidence boundary is:
+
+- source and Git evidence can prove the exact implementation commit and its reviewed file projection;
+- disposable validation can prove the exact schema projection, constraints, bounded failure paths, cleanup behavior, and empty-table acceptance within controlled fixtures;
+- DEV and Production deployment evidence can prove the deployed source commit, successful import-time bootstrap, absence of a surfaced bounded migration failure, and public application health;
+- deployment health is not a direct query of persistent database metadata, rows, row counts, or content; and
+- this section grants no backfill, runtime consumer, vendor workflow, authority switch, PostgreSQL projection, or new mutation authority.
+
+### 21.2 Approved implementation commit and scope
+
+The approved implementation commit is:
+
+| Field | Evidence |
+|---|---|
+| Commit | `d8850bcaf95b73d46786a762346eab205fb8559c` |
+| Direct parent | `351a42b9b14cb93df9d7a84d416abab4bb2aaf03` |
+| Message | `Add vendor organization physical schema` |
+| Single parent | Yes |
+| Stat | `4 files changed, 7985 insertions(+), 31 deletions(-)` |
+
+The committed scope is exactly:
+
+```text
+M app.py
+M tests/smoke_test.py
+M tools/capture_schema_manifest.py
+M tools/check_vendor_organization_schema.py
+```
+
+The committed blobs are:
+
+| File | Blob |
+|---|---|
+| `app.py` | `14dce7d5a83918d960fde3c4682a8895d58eaf08` |
+| `tests/smoke_test.py` | `0eee80d408e7f7524472fd9bcf123bdf5dcec1e2` |
+| `tools/capture_schema_manifest.py` | `d8b33e5988f657b6d0735adbb71f39bd7aeeb276` |
+| `tools/check_vendor_organization_schema.py` | `ae6d0362a3af271400bbf24df3d69406128b490d` |
+
+The frozen document blobs preserved by that commit are:
+
+| Document | Blob |
+|---|---|
+| VENDOR-ID-001 organization and membership design | `4c3f6c19415c5ea79c2bae0d2ff8c55f5e0f2b8e` |
+| VENDOR-ID-002 pre-reconciliation document | `c8ddd13fc3cc8b80cc7e8145ace31e6c1468afa8` |
+
+The implemented source capability is bounded to:
+
+- the exact four SQLite tables;
+- the exact 15 explicit indexes;
+- the exact four primary-key autoindexes;
+- the bounded schema helper and its 14 stable errors;
+- fixed metadata and post-create emptiness SQL;
+- the exact SAVEPOINT cleanup contract;
+- the two approved call sites in `init_schema` and `migrate_schema`;
+- the vendor schema manifest projection;
+- the structural readiness-checker allowance; and
+- disposable schema acceptance smoke.
+
+This physical representability and bootstrap integration is not a vendor runtime reader, writer, workflow consumer, or authority path.
+
+### 21.3 Disposable implementation validation
+
+The approved disposable validation evidence is:
+
+| Check | Result |
+|---|---|
+| `git diff --check` | PASS |
+| Isolated `compileall` | PASS |
+| Vendor checker normal mode | PASS; issues `0` |
+| Vendor checker self-test | PASS; `250` scenarios |
+| Manifest serializer self-test | PASS |
+| Focused physical-schema smoke | PASS |
+| Lifecycle checker | PASS; `46` scenarios |
+| Linking checker | PASS; `98` scenarios |
+| Reconciliation checker | PASS; `130` scenarios |
+| Identity schema checker | PASS |
+| Authoritative isolated full smoke | PASS |
+| Full-smoke duration | Approximately `759` seconds |
+| Full-smoke stderr | `0` bytes |
+| Required markers | `25`; each observed exactly once |
+| PostgreSQL/backend attempts | `0` |
+| Remaining validation temp roots | `0` |
+| Repository bytecode residue | `0` |
+
+The disposable acceptance covered:
+
+- fresh creation and `all_exact` idempotence;
+- caller commit and caller rollback behavior;
+- exact constraints and partial indexes;
+- metadata shape, type, and ordering;
+- controlled failure injection for all four table statements and all 15 explicit index statements;
+- SAVEPOINT failure and cleanup branches;
+- TEMP, attached, wrong-type, partial, and drift classification;
+- an absent-to-exact vendor-only manifest delta; and
+- absence of row creation, backfill, and runtime-consumer wiring.
+
+The canonical repository database no-touch evidence was:
+
+| Artifact or property | Before/after evidence |
+|---|---|
+| `site.db` size | `765952` bytes |
+| `site.db` mtime ticks | `639197703328686588` |
+| `site.db` SHA-256 | `E530ABDB4775B35CE30895785A05880C1483B527BCCE9D49A519ED973FBC65C2` |
+| `site.db-wal` | Absent before and after |
+| `site.db-shm` | Absent before and after |
+| `site.db-journal` | Absent before and after |
+
+These results apply to the controlled disposable validation boundary. They are not persistent DEV or Production database-content evidence.
+
+### 21.4 DEV persistent migration evidence
+
+The approved DEV source movement and deployment evidence is:
+
+| Field | Evidence |
+|---|---|
+| Push | `351a42b..d8850bc develop -> develop` |
+| Service | `handover-system-dev` |
+| Service ID | `srv-d8vqk58k1i2s73f1v7sg` |
+| Deploy | `dep-d9el3dcm0tmc738prrl0` |
+| Trigger | `New commit via Auto-Deploy` |
+| Commit | `d8850bcaf95b73d46786a762346eab205fb8559c` |
+| Status | `Live` |
+
+The exact-deploy logs showed:
+
+- `Build successful`;
+- `gunicorn app:app`;
+- Gunicorn started and listened;
+- a worker booted;
+- `HEAD /` returned `302`;
+- `Your service is live`; and
+- no `Traceback`, `ERROR`, schema failure, restart loop, or `VENDOR-ID-002 schema migration failed`.
+
+At the recorded observation time, this exact deploy was Live, no newer deploy superseded it, and the stated negative findings were limited to its visible exact-deploy log range.
+
+The final public HTTP evidence was:
+
+```text
+GET / -> 302
+Location: /login
+x-render-origin-server: gunicorn
+
+GET /login -> 200
+x-render-origin-server: gunicorn
+```
+
+The DEV import-time bootstrap completed and the helper did not surface a bounded migration failure. No direct DEV database query was performed, so no DEV row count or complete database-content claim is made. The DEV deployment remained Live through the approved soak check before the Production preflight began.
+
+### 21.5 Production preflight and recovery evidence
+
+The Production pre-push baseline was:
+
+| Field | Evidence |
+|---|---|
+| Commit | `351a42b9b14cb93df9d7a84d416abab4bb2aaf03` |
+| Deploy | `dep-d9edp867r5hc73da0dtg` |
+| Status | `Live` |
+
+The browser-only Production recovery inspection established:
+
+- an existing persistent disk was normally attached;
+- seven existing restore points were visible;
+- the latest identified pre-migration snapshot was `July 19, 2026 at 7:56 AM`;
+- no disk or snapshot was created, restored, deleted, resized, remounted, or otherwise modified; and
+- no mount path, database path, or environment secret was read or copied.
+
+The snapshot timestamp is recorded exactly as displayed by the Dashboard; no additional timezone interpretation is inferred. The restore point was identified but was not restored or independently restore-tested.
+
+The preflight explicitly retained the risk boundary that source rollback cannot automatically remove additive DDL already committed to persistent SQLite. Any snapshot restore remains a separately authorized operation.
+
+### 21.6 Production persistent migration evidence
+
+The approved Production source movement and deployment evidence is:
+
+| Field | Evidence |
+|---|---|
+| Push | `351a42b..d8850bc main -> main` |
+| Service | `handover-system` |
+| Service ID | `srv-d8vmv2rsq97s738i5lh0` |
+| Deploy | `dep-d9elcjvaqgkc73de4ln0` |
+| Trigger | `New commit via Auto-Deploy` |
+| Commit | `d8850bcaf95b73d46786a762346eab205fb8559c` |
+| Message | `Add vendor organization physical schema` |
+| Status | `Live` |
+
+This subsection records deployed source, import-time bootstrap, startup, and public-health evidence. It is not direct persistent-database metadata or content verification.
+
+The exact-deploy logs showed:
+
+- `Build successful`;
+- `Running 'gunicorn app:app'`;
+- Gunicorn `23.0.0` started;
+- Gunicorn listened on `0.0.0.0:10000`;
+- a worker booted;
+- `HEAD /` returned `302`;
+- `Your service is live`; and
+- no `Traceback`, `ERROR`, schema failure, restart loop, or `VENDOR-ID-002 schema migration failed`.
+
+At the recorded observation time, this exact deploy was the latest effective deploy, no newer deploy superseded it, and the stated negative findings were limited to its visible exact-deploy log range.
+
+The final public HTTP evidence was:
+
+```text
+GET / -> 302
+Location: /login
+x-render-origin-server: gunicorn
+
+GET /login -> 200
+x-render-origin-server: gunicorn
+```
+
+After the push:
+
+```text
+main = origin/main = develop = origin/develop =
+d8850bcaf95b73d46786a762346eab205fb8559c
+```
+
+The pre-migration recovery point remained visible and was not operated. Production reached Live without a surfaced bounded migration failure, but no direct Production database query was performed.
+
+### 21.7 Proven, inferred, and unknown facts
+
+| Evidence class | Fact | Required interpretation |
+|---|---|---|
+| Proven | The exact source commit is `d8850bcaf95b73d46786a762346eab205fb8559c`, with the four committed blobs recorded in Section 21.2. | Git object evidence. |
+| Proven | Disposable fixtures accepted the exact four-table, 15-explicit-index, four-PK-autoindex projection, its constraints, bounded failure paths, cleanup behavior, and empty-table requirement. | Controlled disposable evidence only. |
+| Proven | DEV and Production deployed source commit `d8850bcaf95b73d46786a762346eab205fb8559c`. | Exact deploy metadata. |
+| Proven | DEV and Production import-time bootstrap completed without a surfaced bounded helper error, and both public applications were healthy. | Deployment and HTTP evidence, not a database query. |
+| Proven | The approved source slice added no backfill, vendor runtime consumer, or authority switch. | Source-scope and disposable-validation evidence. |
+| Reasonable inference | Each deployed persistent SQLite database accepted either an `all_absent` state that the helper created or a pre-existing `all_exact` state. | This follows from successful fail-closed bootstrap; it is not direct database-query evidence. |
+| Reasonable inference | The helper did not observe a partial, drifted, wrong-type, parent-incompatible, or unsupported topology during either successful bootstrap. | A bounded startup inference only; it does not reveal the actual schema rows returned to the helper. |
+| Unknown / not queried | Actual persistent table and index metadata. | No direct DEV or Production database inspection was performed. |
+| Unknown / not queried | Persistent row counts and whether the helper returned `created` or `all_exact`. | Deployment health cannot distinguish these states. |
+| Unknown / not queried | Existing or manual schema history. | Not inspected. |
+| Unknown / not queried | Vendor data quality and real organization, member, assignment, or binding rows. | No row-content evidence exists. |
+| Unknown / not queried | The runtime foreign-key enforcement setting in the persistent environments. | Not queried. |
+| Unknown / not queried | Other Production database contents and any actual backfill demand. | Outside this evidence gate. |
+
+No unknown fact is classified as PASS.
+
+### 21.8 Preserved authority boundaries and reconciled status
+
+The reconciled state is:
+
+- Exact physical SQLite source implementation: implemented.
+- Static structural allowance: implemented.
+- Manifest projection: implemented.
+- Disposable validation: PASS.
+- DEV source, deployment, and bootstrap health: PASS.
+- Production source, deployment, and bootstrap health: PASS.
+- Direct persistent database verification: not performed.
+- Vendor rows and backfill: not implemented or authorized.
+- Vendor runtime consumer: not implemented.
+- Authority switch: not implemented or authorized.
+- PostgreSQL schema: not implemented or authorized.
+- Existing legacy `vendor_name` authority: preserved.
+
+The frozen status after reconciliation is:
+
+```text
+VENDOR-ID-002B EXACT PHYSICAL SQLITE SCHEMA IMPLEMENTATION: COMPLETE
+EXACT FOUR-TABLE / FIFTEEN-INDEX SOURCE PROJECTION: IMPLEMENTED AND PRODUCTION-FROZEN
+STATIC STRUCTURAL ALLOWANCE: IMPLEMENTED AND PRODUCTION-FROZEN
+DISPOSABLE VALIDATION: PASS
+DEV / PRODUCTION BOOTSTRAP HEALTH: PASS
+DIRECT PERSISTENT DATABASE CONTENT VERIFICATION: NOT PERFORMED
+BACKFILL / RUNTIME CONSUMER / AUTHORITY SWITCH: NOT IMPLEMENTED OR AUTHORIZED
+POSTGRESQL PROJECTION: NOT IMPLEMENTED OR AUTHORIZED
+VENDOR-ID-002 PHYSICAL SCHEMA SLICE: COMPLETE / FROZEN
+READY FOR VENDOR-ID-003 READ-ONLY VENDOR DISCOVERY BASELINE REVIEW
+```
+
+This status completes and freezes only the VENDOR-ID-002 physical-schema slice. It does not declare the full VENDOR series complete.
