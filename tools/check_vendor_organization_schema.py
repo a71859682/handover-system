@@ -9,7 +9,7 @@ import re
 import shutil
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +58,227 @@ TARGET_AUTOINDEXES = tuple(
     f"sqlite_autoindex_{table}_1" for table in TARGET_TABLES
 )
 TARGET_TOKENS = TARGET_TABLES + TARGET_INDEXES + TARGET_AUTOINDEXES
+
+APP_SCHEMA_STATEMENT_NODE_NAMES = (
+    "_VENDOR_ORGANIZATIONS_TABLE_SQL",
+    "_VENDOR_ORGANIZATION_MEMBERSHIPS_TABLE_SQL",
+    "_VENDOR_SITE_ASSIGNMENTS_TABLE_SQL",
+    "_SHEET_VENDOR_BINDINGS_TABLE_SQL",
+    "_IDX_VENDOR_ORGANIZATIONS_STATUS_SQL",
+    "_UQ_VENDOR_ORGANIZATION_MEMBERSHIPS_ACTIVE_ACCOUNT_SQL",
+    "_UQ_VENDOR_ORGANIZATION_MEMBERSHIPS_CURRENT_PAIR_SQL",
+    "_IDX_VENDOR_ORGANIZATION_MEMBERSHIPS_VENDOR_STATUS_SQL",
+    "_IDX_VENDOR_ORGANIZATION_MEMBERSHIPS_ACCOUNT_STATUS_SQL",
+    "_UQ_VENDOR_ORGANIZATION_MEMBERSHIPS_PREDECESSOR_SQL",
+    "_UQ_VENDOR_SITE_ASSIGNMENTS_ACTIVE_PAIR_SQL",
+    "_IDX_VENDOR_SITE_ASSIGNMENTS_VENDOR_STATUS_SQL",
+    "_IDX_VENDOR_SITE_ASSIGNMENTS_SITE_STATUS_SQL",
+    "_UQ_VENDOR_SITE_ASSIGNMENTS_PREDECESSOR_SQL",
+    "_UQ_SHEET_VENDOR_BINDINGS_ACTIVE_PAIR_SQL",
+    "_IDX_SHEET_VENDOR_BINDINGS_VENDOR_STATUS_SQL",
+    "_IDX_SHEET_VENDOR_BINDINGS_SHEET_STATUS_SQL",
+    "_IDX_SHEET_VENDOR_BINDINGS_ASSIGNMENT_SQL",
+    "_UQ_SHEET_VENDOR_BINDINGS_PREDECESSOR_SQL",
+)
+APP_IMPLEMENTATION_NODE_NAMES = (
+    *APP_SCHEMA_STATEMENT_NODE_NAMES,
+    "VENDOR_ORGANIZATION_SCHEMA_STATEMENTS",
+    "VENDOR_ORGANIZATION_MAIN_SCHEMA_SQL",
+    "VENDOR_ORGANIZATION_TEMP_SCHEMA_SQL",
+    "VENDOR_ORGANIZATION_TABLE_LIST_SQL",
+    "VENDOR_ORGANIZATION_TABLE_XINFO_SQL",
+    "VENDOR_ORGANIZATION_FOREIGN_KEY_LIST_SQL",
+    "VENDOR_ORGANIZATION_INDEX_LIST_SQL",
+    "VENDOR_ORGANIZATION_INDEX_XINFO_SQL",
+    "VENDOR_ORGANIZATION_DATABASE_LIST_SQL",
+    "VENDOR_ORGANIZATIONS_ROW_COUNT_SQL",
+    "VENDOR_ORGANIZATION_MEMBERSHIPS_ROW_COUNT_SQL",
+    "VENDOR_SITE_ASSIGNMENTS_ROW_COUNT_SQL",
+    "SHEET_VENDOR_BINDINGS_ROW_COUNT_SQL",
+    "_VENDOR_ORGANIZATION_REQUIRED_TABLES",
+    "_VENDOR_ORGANIZATION_PARENT_TABLES",
+    "_VENDOR_ORGANIZATION_AUTO_INDEXES",
+    "_VENDOR_ORGANIZATION_EXPLICIT_INDEXES",
+    "_VENDOR_ORGANIZATION_ERROR_CODES",
+    "_VENDOR_ORGANIZATION_SAVEPOINT_SQL",
+    "_VENDOR_ORGANIZATION_ROLLBACK_TO_SQL",
+    "_VENDOR_ORGANIZATION_RELEASE_SQL",
+    "_VENDOR_ORGANIZATION_ENTRY_BEGIN_SQL",
+    "_VENDOR_ORGANIZATION_ROW_COUNT_SQL",
+    "_VENDOR_ORGANIZATION_RESERVED_PREFIXES",
+    "_VENDOR_ORGANIZATION_PARTIAL_PREDICATES",
+    "_VENDOR_ORGANIZATION_TABLE_COLUMNS",
+    "_VENDOR_ORGANIZATION_FOREIGN_KEYS",
+    "VendorOrganizationSchemaMigrationError",
+    "_VendorOrganizationMetadataError",
+    "_raise_vendor_organization_schema_error",
+    "_normalize_vendor_organization_schema_sql",
+    "_vendor_organization_table_elements",
+    "_vendor_organization_parent_sql_is_compatible",
+    "_vendor_metadata_rows",
+    "_vendor_rows_are_ordered",
+    "_require_vendor_metadata_domain",
+    "_validate_vendor_schema_rows",
+    "_validate_vendor_table_list_rows",
+    "_validate_vendor_table_xinfo_rows",
+    "_validate_vendor_foreign_key_rows",
+    "_validate_vendor_index_list_rows",
+    "_validate_vendor_index_xinfo_rows",
+    "_vendor_organization_is_reserved_name",
+    "_vendor_organization_expected_index_rows",
+    "_vendor_organization_expected_index_xinfo",
+    "_classify_vendor_organization_schema",
+    "_vendor_organization_schema_state",
+    "_vendor_organization_row_count_is_zero",
+    "ensure_vendor_organization_schema",
+)
+MANIFEST_EXTENSION_NODE_NAMES = (
+    "VENDOR_SCHEMA_TABLES",
+    "VENDOR_SCHEMA_EXPLICIT_INDEXES",
+    "VENDOR_SCHEMA_AUTO_INDEXES",
+    "VENDOR_SCHEMA_INDEX_TABLES",
+    "VENDOR_SCHEMA_RESERVED_PREFIXES",
+    "VENDOR_SCHEMA_EXPECTED_TABLE_PROJECTION",
+    "VENDOR_SCHEMA_EXPECTED_INDEX_PROJECTION",
+    "VENDOR_SCHEMA_EXPECTED_INDEX_MAPPING",
+    "BUSINESS_TABLES",
+    "normalize_vendor_schema_sql",
+    "validate_manifest_inventory_contract",
+    "vendor_schema_projection",
+    "vendor_schema_projection_state",
+    "build_capture_payload",
+    "classify_compare",
+    "_exercise_vendor_projection_contract",
+    "run_self_test",
+)
+APP_IMPLEMENTATION_AST_SHA256 = (
+    "BD502BCCFCC0B4D3469D0319A82763691463D62CF0609439BF71968B96F11595"
+)
+MANIFEST_EXTENSION_AST_SHA256 = (
+    "32813A42CB3FBE3FA3071FF85C414EFF611E2BF4CBD9CCF5E50B5DC1BB11288F"
+)
+APP_ALLOWED_ISSUE_CODES = frozenset(
+    {
+        "forbidden_vendor_schema_table",
+        "forbidden_vendor_schema_index",
+        "forbidden_vendor_schema_migration",
+        "forbidden_vendor_schema_consumer",
+    }
+)
+MANIFEST_ALLOWED_ISSUE_CODES = frozenset(
+    {
+        "forbidden_vendor_schema_index",
+        "forbidden_vendor_schema_migration",
+        "forbidden_vendor_schema_consumer",
+    }
+)
+VENDOR_SCHEMA_ERROR_CODES = (
+    "invalid_connection",
+    "inactive_transaction",
+    "metadata_unreadable",
+    "unsupported_database_topology",
+    "parent_incompatible",
+    "schema_partial",
+    "schema_drifted",
+    "extra_owned_object",
+    "wrong_object_type",
+    "savepoint_create_failed",
+    "ddl_or_postcheck_failed",
+    "rollback_to_failed",
+    "cleanup_release_failed",
+    "success_release_failed",
+)
+EXPECTED_METADATA_SQL = {
+    "VENDOR_ORGANIZATION_MAIN_SCHEMA_SQL": """SELECT type, name, tbl_name, sql
+FROM main.sqlite_schema
+ORDER BY
+    type COLLATE BINARY,
+    name COLLATE BINARY,
+    tbl_name COLLATE BINARY;""",
+    "VENDOR_ORGANIZATION_TEMP_SCHEMA_SQL": """SELECT type, name, tbl_name, sql
+FROM temp.sqlite_schema
+ORDER BY
+    type COLLATE BINARY,
+    name COLLATE BINARY,
+    tbl_name COLLATE BINARY;""",
+    "VENDOR_ORGANIZATION_TABLE_LIST_SQL": """SELECT schema, name, type, ncol, wr, strict
+FROM pragma_table_list
+ORDER BY
+    schema COLLATE BINARY,
+    name COLLATE BINARY,
+    type COLLATE BINARY;""",
+    "VENDOR_ORGANIZATION_TABLE_XINFO_SQL": """SELECT cid, name, type, "notnull", dflt_value, pk, hidden
+FROM pragma_table_xinfo(?1, 'main')
+ORDER BY cid;""",
+    "VENDOR_ORGANIZATION_FOREIGN_KEY_LIST_SQL": """SELECT "from", "table", "to", on_update, on_delete, match, seq
+FROM pragma_foreign_key_list(?1, 'main')
+ORDER BY
+    "from" COLLATE BINARY,
+    "table" COLLATE BINARY,
+    "to" COLLATE BINARY,
+    seq;""",
+    "VENDOR_ORGANIZATION_INDEX_LIST_SQL": """SELECT name, "unique", origin, partial
+FROM pragma_index_list(?1, 'main')
+ORDER BY name COLLATE BINARY;""",
+    "VENDOR_ORGANIZATION_INDEX_XINFO_SQL": """SELECT seqno, cid, name, "desc", coll, key
+FROM pragma_index_xinfo(?1, 'main')
+ORDER BY seqno;""",
+    "VENDOR_ORGANIZATION_DATABASE_LIST_SQL": """SELECT seq, name, file
+FROM pragma_database_list
+ORDER BY seq;""",
+}
+EXPECTED_ROW_COUNT_SQL = {
+    "VENDOR_ORGANIZATIONS_ROW_COUNT_SQL": """SELECT COUNT(*) AS row_count
+FROM main.vendor_organizations;""",
+    "VENDOR_ORGANIZATION_MEMBERSHIPS_ROW_COUNT_SQL": """SELECT COUNT(*) AS row_count
+FROM main.vendor_organization_memberships;""",
+    "VENDOR_SITE_ASSIGNMENTS_ROW_COUNT_SQL": """SELECT COUNT(*) AS row_count
+FROM main.vendor_site_assignments;""",
+    "SHEET_VENDOR_BINDINGS_ROW_COUNT_SQL": """SELECT COUNT(*) AS row_count
+FROM main.sheet_vendor_bindings;""",
+}
+EXPECTED_MANIFEST_INDEX_TABLES = (
+    ("idx_vendor_organizations_status", "vendor_organizations"),
+    (
+        "uq_vendor_organization_memberships_active_account",
+        "vendor_organization_memberships",
+    ),
+    (
+        "uq_vendor_organization_memberships_current_pair",
+        "vendor_organization_memberships",
+    ),
+    (
+        "idx_vendor_organization_memberships_vendor_status",
+        "vendor_organization_memberships",
+    ),
+    (
+        "idx_vendor_organization_memberships_account_status",
+        "vendor_organization_memberships",
+    ),
+    (
+        "uq_vendor_organization_memberships_predecessor",
+        "vendor_organization_memberships",
+    ),
+    ("uq_vendor_site_assignments_active_pair", "vendor_site_assignments"),
+    ("idx_vendor_site_assignments_vendor_status", "vendor_site_assignments"),
+    ("idx_vendor_site_assignments_site_status", "vendor_site_assignments"),
+    ("uq_vendor_site_assignments_predecessor", "vendor_site_assignments"),
+    ("uq_sheet_vendor_bindings_active_pair", "sheet_vendor_bindings"),
+    ("idx_sheet_vendor_bindings_vendor_status", "sheet_vendor_bindings"),
+    ("idx_sheet_vendor_bindings_sheet_status", "sheet_vendor_bindings"),
+    ("idx_sheet_vendor_bindings_assignment", "sheet_vendor_bindings"),
+    ("uq_sheet_vendor_bindings_predecessor", "sheet_vendor_bindings"),
+    ("sqlite_autoindex_vendor_organizations_1", "vendor_organizations"),
+    (
+        "sqlite_autoindex_vendor_organization_memberships_1",
+        "vendor_organization_memberships",
+    ),
+    (
+        "sqlite_autoindex_vendor_site_assignments_1",
+        "vendor_site_assignments",
+    ),
+    ("sqlite_autoindex_sheet_vendor_bindings_1", "sheet_vendor_bindings"),
+)
 
 VENDOR_POLICY_MARKERS = (
     "Status: design baseline",
@@ -237,16 +458,60 @@ class CallableInfo:
 
 
 @dataclass
+class StructuralAllowance:
+    consumable_issues: frozenset[tuple[str, int, str]] = frozenset()
+    approved_target_nodes: frozenset[tuple[str, int]] = frozenset()
+    required_consumptions: frozenset[tuple[str, int, str]] = frozenset()
+    consumed_issues: set[tuple[str, int, str]] = field(default_factory=set)
+
+
+@dataclass
+class StructuralAllowanceCandidate:
+    consumable_issues: set[tuple[str, int, str]] = field(
+        default_factory=set
+    )
+    approved_target_nodes: set[tuple[str, int]] = field(
+        default_factory=set
+    )
+    required_consumptions: set[tuple[str, int, str]] = field(
+        default_factory=set
+    )
+
+    def approve_issue(
+        self,
+        path: str,
+        node: ast.AST,
+        code: str,
+        *,
+        required: bool = True,
+    ) -> None:
+        key = (path, id(node), code)
+        self.consumable_issues.add(key)
+        if required:
+            self.required_consumptions.add(key)
+
+    def approve_target_evidence_node(
+        self,
+        path: str,
+        node: ast.AST,
+    ) -> None:
+        self.approved_target_nodes.add((path, id(node)))
+
+
+@dataclass
 class RepositoryContext:
     callables: dict[str, CallableInfo]
     module_scopes: dict[str, dict[str, Value]]
     analyzers: dict[str, PythonSourceAnalyzer]
     active_calls: list[str]
+    allowance: StructuralAllowance = field(default_factory=StructuralAllowance)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Check that VENDOR-ID-002 physical schema capability is absent.",
+        description=(
+            "Check the exact frozen VENDOR-ID-002 SQLite schema implementation."
+        ),
         allow_abbrev=False,
     )
     parser.add_argument(
@@ -752,9 +1017,60 @@ class PythonSourceAnalyzer:
         return changed
 
     def add(self, code: str, node: ast.AST, symbol: str = "") -> None:
+        if self.context is not None:
+            allowance_key = (self.path, id(node), code)
+            if allowance_key in self.context.allowance.consumable_issues:
+                self.context.allowance.consumed_issues.add(allowance_key)
+                return
         self.issues.append(
             Issue(code, self.path, getattr(node, "lineno", 1), symbol or "-")
         )
+
+    def is_structurally_allowed(
+        self,
+        code: str,
+        node: ast.AST,
+    ) -> bool:
+        return (
+            self.context is not None
+            and (
+                self.path,
+                id(node),
+                code,
+            )
+            in self.context.allowance.consumable_issues
+        )
+
+    def _has_residual_target_evidence(self) -> bool:
+        allowance = (
+            self.context.allowance
+            if self.context is not None
+            else StructuralAllowance()
+        )
+        for node in ast.walk(self.tree):
+            evidence = ""
+            if isinstance(node, ast.Name):
+                evidence = node.id
+            elif isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                evidence = node.name
+            elif isinstance(node, ast.arg):
+                evidence = node.arg
+            elif isinstance(node, ast.Attribute):
+                evidence = node.attr
+            elif isinstance(node, ast.Constant) and isinstance(
+                node.value, str
+            ):
+                evidence = node.value
+            if (
+                evidence
+                and has_target(evidence)
+                and (self.path, id(node))
+                not in allowance.approved_target_nodes
+            ):
+                return True
+        return False
 
     def _record_assignment(
         self,
@@ -822,7 +1138,11 @@ class PythonSourceAnalyzer:
 
             if table_statement and target_tables:
                 found_specific = True
-                self.created_tables.update(target_tables)
+                if not self.is_structurally_allowed(
+                    "forbidden_vendor_schema_table",
+                    node,
+                ):
+                    self.created_tables.update(target_tables)
                 self.add("forbidden_vendor_schema_table", node, symbol)
             if index_statement and (
                 any(index in normalized for index in TARGET_INDEXES)
@@ -869,7 +1189,9 @@ class PythonSourceAnalyzer:
             found_specific or has_schema_verb(combined)
         ):
             self.add("forbidden_vendor_schema_executescript", node, symbol)
-        if value.dynamic and (found_specific or has_schema_verb(combined)):
+        if value.dynamic and (
+            has_schema_verb(combined) or (sink is not None and found_specific)
+        ):
             self.add("forbidden_vendor_schema_dynamic_sql", node, symbol)
         if sink and not found_specific and (
             value.dynamic or any(word in combined for word in MIGRATION_WORDS)
@@ -1620,7 +1942,7 @@ class PythonSourceAnalyzer:
                 )
             )
 
-        if has_target(self.module_evidence):
+        if self._has_residual_target_evidence():
             if self.import_roots & BACKEND_ROOTS:
                 self.issues.append(
                     Issue(
@@ -1855,6 +2177,874 @@ def collect_callable_infos(
     return collected
 
 
+def _top_level_named_nodes(
+    tree: ast.Module,
+) -> dict[str, list[ast.AST]]:
+    collected: dict[str, list[ast.AST]] = {}
+    for node in tree.body:
+        name = ""
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name = node.name
+        elif (
+            isinstance(node, (ast.Assign, ast.AnnAssign))
+            and isinstance(
+                node.targets[0] if isinstance(node, ast.Assign) else node.target,
+                ast.Name,
+            )
+            and (
+                not isinstance(node, ast.Assign)
+                or len(node.targets) == 1
+            )
+        ):
+            target = (
+                node.targets[0]
+                if isinstance(node, ast.Assign)
+                else node.target
+            )
+            name = target.id
+        if name:
+            collected.setdefault(name, []).append(node)
+    return collected
+
+
+def _selected_top_level_nodes(
+    tree: ast.Module,
+    names: tuple[str, ...],
+    path: str,
+    issue_code: str,
+) -> tuple[list[ast.AST], list[Issue]]:
+    by_name = _top_level_named_nodes(tree)
+    nodes: list[ast.AST] = []
+    issues: list[Issue] = []
+    for name in names:
+        matches = by_name.get(name, [])
+        if len(matches) != 1:
+            issues.append(
+                Issue(issue_code, path, 1, f"{name}:count={len(matches)}")
+            )
+            continue
+        nodes.append(matches[0])
+    return nodes, issues
+
+
+def _ast_bundle_sha256(nodes: list[ast.AST]) -> str:
+    payload = "\n".join(
+        ast.dump(
+            node,
+            annotate_fields=True,
+            include_attributes=False,
+        )
+        for node in nodes
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest().upper()
+
+
+def _assignment_value(node: ast.AST) -> ast.AST | None:
+    if isinstance(node, ast.Assign):
+        return node.value
+    if isinstance(node, ast.AnnAssign):
+        return node.value
+    return None
+
+
+def _literal_assignment(
+    selected: dict[str, ast.AST],
+    name: str,
+) -> object:
+    node = selected[name]
+    value = _assignment_value(node)
+    if value is None:
+        raise ValueError(name)
+    return ast.literal_eval(value)
+
+
+def _policy_schema_statements(root: Path) -> tuple[str, ...]:
+    text = (root / SCHEMA_POLICY_PATH).read_text(encoding="utf-8")
+    blocks = re.findall(r"```sql\n(.*?)\n```", text, flags=re.DOTALL)
+    statements = tuple(
+        f"\n{block}\n"
+        for block in blocks
+        if re.match(r"CREATE (?:TABLE|(?:UNIQUE )?INDEX)\s+", block)
+    )
+    return statements
+
+
+def _normalize_policy_schema_sql(value: str) -> str:
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.strip(" \t\n\v\f")
+    if normalized.endswith(";"):
+        normalized = normalized[:-1]
+    return normalized.rstrip(" \t\n\v\f")
+
+
+def _policy_manifest_projections(
+    root: Path,
+) -> tuple[
+    tuple[tuple[object, ...], ...],
+    tuple[tuple[object, ...], ...],
+    tuple[tuple[str, str], ...],
+]:
+    tables: list[tuple[object, ...]] = []
+    indexes: list[tuple[object, ...]] = []
+    statements = _policy_schema_statements(root)
+    for statement in statements:
+        normalized = _normalize_policy_schema_sql(statement)
+        fingerprint = hashlib.sha256(
+            normalized.encode("utf-8")
+        ).hexdigest().upper()
+        table_match = re.match(
+            r"CREATE TABLE ([a-z0-9_]+)\s*\(",
+            normalized,
+        )
+        if table_match is not None:
+            name = table_match.group(1)
+            tables.append(("table", name, name, fingerprint))
+            continue
+        index_match = re.match(
+            r"CREATE (UNIQUE )?INDEX ([a-z0-9_]+)\s+"
+            r"ON ([a-z0-9_]+)\s*\(",
+            normalized,
+        )
+        if index_match is None:
+            raise ValueError("unrecognized frozen schema statement")
+        indexes.append(
+            (
+                "index",
+                index_match.group(2),
+                index_match.group(3),
+                fingerprint,
+                int(index_match.group(1) is not None),
+                "c",
+                int("\nWHERE " in normalized),
+            )
+        )
+    autoindexes = [
+        (
+            "index",
+            name,
+            owner,
+            None,
+            1,
+            "pk",
+            0,
+        )
+        for name, owner in zip(
+            TARGET_AUTOINDEXES,
+            TARGET_TABLES,
+            strict=True,
+        )
+    ]
+    ordered_tables = tuple(sorted(tables, key=lambda row: row[1]))
+    ordered_indexes = tuple(
+        sorted((*indexes, *autoindexes), key=lambda row: (row[1], row[2]))
+    )
+    mapping = tuple((str(row[1]), str(row[2])) for row in ordered_indexes)
+    return ordered_tables, ordered_indexes, mapping
+
+
+def _is_exact_public_helper_signature(node: ast.AST) -> bool:
+    if not isinstance(node, ast.FunctionDef):
+        return False
+    args = node.args
+    return (
+        len(args.posonlyargs) == 1
+        and args.posonlyargs[0].arg == "conn"
+        and dotted_name(args.posonlyargs[0].annotation)
+        == "sqlite3.Connection"
+        and not args.args
+        and args.vararg is None
+        and not args.kwonlyargs
+        and args.kwarg is None
+        and not args.defaults
+        and not args.kw_defaults
+        and dotted_name(node.returns) == "str"
+        and not node.decorator_list
+    )
+
+
+def _expected_entrypoint_tail() -> tuple[str, ...]:
+    nodes = ast.parse(
+        "vendor_schema_transaction_started = conn.in_transaction is not True\n"
+        "if vendor_schema_transaction_started:\n"
+        "    conn.execute(_VENDOR_ORGANIZATION_ENTRY_BEGIN_SQL)\n"
+        "try:\n"
+        "    ensure_vendor_organization_schema(conn)\n"
+        "except VendorOrganizationSchemaMigrationError:\n"
+        "    conn.rollback()\n"
+        "    raise\n"
+    ).body
+    return tuple(
+        ast.dump(
+            node,
+            annotate_fields=True,
+            include_attributes=False,
+        )
+        for node in nodes
+    )
+
+
+def validate_exact_app_implementation(
+    root: Path,
+    tree: ast.Module,
+) -> tuple[list[Issue], StructuralAllowanceCandidate]:
+    path = "app.py"
+    issues: list[Issue] = []
+    candidate = StructuralAllowanceCandidate()
+    nodes, node_issues = _selected_top_level_nodes(
+        tree,
+        APP_IMPLEMENTATION_NODE_NAMES,
+        path,
+        "vendor_schema_implementation_missing",
+    )
+    issues.extend(node_issues)
+    if node_issues:
+        return issues, candidate
+    selected = dict(zip(APP_IMPLEMENTATION_NODE_NAMES, nodes, strict=True))
+
+    try:
+        frozen_statements = _policy_schema_statements(root)
+        observed_statements = tuple(
+            _literal_assignment(selected, name)
+            for name in APP_SCHEMA_STATEMENT_NODE_NAMES
+        )
+    except (OSError, UnicodeError, ValueError, SyntaxError):
+        frozen_statements = ()
+        observed_statements = ()
+    statement_collection = _assignment_value(
+        selected["VENDOR_ORGANIZATION_SCHEMA_STATEMENTS"]
+    )
+    statement_collection_names = (
+        tuple(
+            element.id
+            for element in statement_collection.elts
+            if isinstance(element, ast.Name)
+        )
+        if isinstance(statement_collection, ast.Tuple)
+        else ()
+    )
+    if (
+        type(observed_statements) is not tuple
+        or len(frozen_statements) != 19
+        or observed_statements != frozen_statements
+        or statement_collection_names
+        != APP_SCHEMA_STATEMENT_NODE_NAMES
+        or not isinstance(statement_collection, ast.Tuple)
+        or len(statement_collection.elts)
+        != len(APP_SCHEMA_STATEMENT_NODE_NAMES)
+        or sum(
+            statement.lstrip().startswith("CREATE TABLE ")
+            for statement in observed_statements
+            if isinstance(statement, str)
+        )
+        != 4
+        or sum(
+            statement.lstrip().startswith(
+                ("CREATE INDEX ", "CREATE UNIQUE INDEX ")
+            )
+            for statement in observed_statements
+            if isinstance(statement, str)
+        )
+        != 15
+    ):
+        issues.append(
+            Issue(
+                "vendor_schema_ddl_contract_drift",
+                path,
+                getattr(
+                    selected["VENDOR_ORGANIZATION_SCHEMA_STATEMENTS"],
+                    "lineno",
+                    1,
+                ),
+                "four_tables_fifteen_indexes",
+            )
+        )
+    elif any(
+        "IF NOT EXISTS" in statement.upper()
+        or re.search(
+            r"(?im)^[ \t]*(?:ATTACH|DETACH|PRAGMA|INSERT|UPDATE|DELETE|REPLACE)\b",
+            statement,
+        )
+        is not None
+        for statement in observed_statements
+    ):
+        issues.append(
+            Issue(
+                "vendor_schema_authority_boundary_violation",
+                path,
+                getattr(
+                    selected["VENDOR_ORGANIZATION_SCHEMA_STATEMENTS"],
+                    "lineno",
+                    1,
+                ),
+                "forbidden_ddl_token",
+            )
+        )
+
+    for name, expected in {
+        **EXPECTED_METADATA_SQL,
+        **EXPECTED_ROW_COUNT_SQL,
+    }.items():
+        try:
+            observed = _literal_assignment(selected, name)
+        except (ValueError, SyntaxError):
+            observed = None
+        if (
+            type(observed) is not str
+            or observed.strip("\n") != expected
+        ):
+            issues.append(
+                Issue(
+                    "vendor_schema_metadata_contract_drift",
+                    path,
+                    getattr(selected[name], "lineno", 1),
+                    name,
+                )
+            )
+
+    expected_literals = {
+        "_VENDOR_ORGANIZATION_REQUIRED_TABLES": TARGET_TABLES,
+        "_VENDOR_ORGANIZATION_ERROR_CODES": VENDOR_SCHEMA_ERROR_CODES,
+        "_VENDOR_ORGANIZATION_SAVEPOINT_SQL": (
+            "SAVEPOINT vendor_id_002_schema_v1"
+        ),
+        "_VENDOR_ORGANIZATION_ROLLBACK_TO_SQL": (
+            "ROLLBACK TO SAVEPOINT vendor_id_002_schema_v1"
+        ),
+        "_VENDOR_ORGANIZATION_RELEASE_SQL": (
+            "RELEASE SAVEPOINT vendor_id_002_schema_v1"
+        ),
+        "_VENDOR_ORGANIZATION_ENTRY_BEGIN_SQL": "BEGIN IMMEDIATE",
+    }
+    for name, expected in expected_literals.items():
+        try:
+            observed = _literal_assignment(selected, name)
+        except (ValueError, SyntaxError):
+            observed = None
+        if observed != expected:
+            issues.append(
+                Issue(
+                    "vendor_schema_helper_contract_drift",
+                    path,
+                    getattr(selected[name], "lineno", 1),
+                    name,
+                )
+            )
+
+    try:
+        explicit_indexes = _literal_assignment(
+            selected, "_VENDOR_ORGANIZATION_EXPLICIT_INDEXES"
+        )
+        autoindexes = _literal_assignment(
+            selected, "_VENDOR_ORGANIZATION_AUTO_INDEXES"
+        )
+    except (ValueError, SyntaxError):
+        explicit_indexes = ()
+        autoindexes = ()
+    if (
+        type(explicit_indexes) is not tuple
+        or len(explicit_indexes) != 15
+        or tuple(item[0] for item in explicit_indexes) != TARGET_INDEXES
+        or type(autoindexes) is not tuple
+        or len(autoindexes) != 4
+        or tuple(item[0] for item in autoindexes) != TARGET_AUTOINDEXES
+    ):
+        issues.append(
+            Issue(
+                "vendor_schema_ddl_contract_drift",
+                path,
+                getattr(
+                    selected["_VENDOR_ORGANIZATION_EXPLICIT_INDEXES"],
+                    "lineno",
+                    1,
+                ),
+                "index_inventory",
+            )
+        )
+
+    public_helper = selected["ensure_vendor_organization_schema"]
+    if not _is_exact_public_helper_signature(public_helper):
+        issues.append(
+            Issue(
+                "vendor_schema_helper_contract_drift",
+                path,
+                getattr(public_helper, "lineno", 1),
+                "public_signature",
+            )
+        )
+    elif isinstance(public_helper, ast.FunctionDef):
+        success_values = {
+            returned.value.value
+            for returned in ast.walk(public_helper)
+            if isinstance(returned, ast.Return)
+            and isinstance(returned.value, ast.Constant)
+            and type(returned.value.value) is str
+        }
+        if success_values != {"created", "all_exact"}:
+            issues.append(
+                Issue(
+                    "vendor_schema_helper_contract_drift",
+                    path,
+                    public_helper.lineno,
+                    "success_values",
+                )
+            )
+
+    error_class = selected["VendorOrganizationSchemaMigrationError"]
+    if (
+        not isinstance(error_class, ast.ClassDef)
+        or tuple(dotted_name(base) for base in error_class.bases)
+        != ("RuntimeError",)
+    ):
+        issues.append(
+            Issue(
+                "vendor_schema_helper_contract_drift",
+                path,
+                getattr(error_class, "lineno", 1),
+                "exception_signature",
+            )
+        )
+
+    imports_re = sum(
+        1
+        for node in tree.body
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == "re" and alias.asname is None
+    )
+    if imports_re != 1:
+        issues.append(
+            Issue(
+                "vendor_schema_helper_contract_drift",
+                path,
+                1,
+                "re_import",
+            )
+        )
+
+    expected_tail = _expected_entrypoint_tail()
+    entrypoint_tail_nodes: list[ast.AST] = []
+    for entrypoint in ("init_schema", "migrate_schema"):
+        matches = _top_level_named_nodes(tree).get(entrypoint, [])
+        valid = False
+        if len(matches) == 1 and isinstance(matches[0], ast.FunctionDef):
+            body = matches[0].body
+            if len(body) >= len(expected_tail):
+                observed_tail = tuple(
+                    ast.dump(
+                        node,
+                        annotate_fields=True,
+                        include_attributes=False,
+                    )
+                    for node in body[-len(expected_tail) :]
+                )
+                valid = observed_tail == expected_tail
+                if valid:
+                    entrypoint_tail_nodes.extend(
+                        body[-len(expected_tail) :]
+                    )
+        if not valid:
+            issues.append(
+                Issue(
+                    "vendor_schema_transaction_contract_drift",
+                    path,
+                    getattr(matches[0], "lineno", 1) if matches else 1,
+                    entrypoint,
+                )
+            )
+    helper_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and dotted_name(node.func) == "ensure_vendor_organization_schema"
+    ]
+    helper_load_references = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+        and node.id == "ensure_vendor_organization_schema"
+        and isinstance(node.ctx, ast.Load)
+    ]
+    helper_indirect_references = [
+        node
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "ensure_vendor_organization_schema"
+        )
+        or (
+            isinstance(node, ast.Constant)
+            and node.value == "ensure_vendor_organization_schema"
+        )
+        or (
+            isinstance(node, ast.ImportFrom)
+            and any(
+                alias.name == "ensure_vendor_organization_schema"
+                for alias in node.names
+            )
+        )
+    ]
+    if (
+        len(helper_calls) != 2
+        or len(helper_load_references) != 2
+        or helper_indirect_references
+        or {id(node.func) for node in helper_calls}
+        != {id(node) for node in helper_load_references}
+    ):
+        issues.append(
+            Issue(
+                "vendor_schema_transaction_contract_drift",
+                path,
+                1,
+                (
+                    f"helper_calls={len(helper_calls)};"
+                    f"loads={len(helper_load_references)};"
+                    f"indirect={len(helper_indirect_references)}"
+                ),
+            )
+        )
+
+    bundle_hash = _ast_bundle_sha256(nodes)
+    if bundle_hash != APP_IMPLEMENTATION_AST_SHA256:
+        issues.append(
+            Issue(
+                "vendor_schema_helper_contract_drift",
+                path,
+                1,
+                f"ast={bundle_hash}",
+            )
+        )
+
+    for node in (*nodes, *entrypoint_tail_nodes):
+        for child in ast.walk(node):
+            evidence = ""
+            if isinstance(child, ast.Name):
+                evidence = child.id
+            elif isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                evidence = child.name
+            elif isinstance(child, ast.arg):
+                evidence = child.arg
+            elif isinstance(child, ast.Attribute):
+                evidence = child.attr
+            elif isinstance(child, ast.Constant) and type(child.value) is str:
+                evidence = child.value
+            if evidence and has_target(evidence):
+                candidate.approve_target_evidence_node(path, child)
+            if isinstance(
+                child,
+                (
+                    ast.Assign,
+                    ast.AnnAssign,
+                    ast.Call,
+                    ast.ClassDef,
+                    ast.FunctionDef,
+                ),
+            ):
+                for code in APP_ALLOWED_ISSUE_CODES:
+                    candidate.approve_issue(
+                        path,
+                        child,
+                        code,
+                        required=False,
+                    )
+            if (
+                isinstance(child, ast.Call)
+                and dotted_name(child.func) in {"dict", "set"}
+            ):
+                candidate.approve_issue(
+                    path,
+                    child,
+                    "unresolved_vendor_schema_capability",
+                    required=False,
+                )
+    return issues, candidate
+
+
+def validate_exact_manifest_extension(
+    root: Path,
+    tree: ast.Module,
+) -> tuple[list[Issue], StructuralAllowanceCandidate]:
+    path = "tools/capture_schema_manifest.py"
+    issues: list[Issue] = []
+    candidate = StructuralAllowanceCandidate()
+    nodes, node_issues = _selected_top_level_nodes(
+        tree,
+        MANIFEST_EXTENSION_NODE_NAMES,
+        path,
+        "vendor_schema_manifest_contract_drift",
+    )
+    issues.extend(node_issues)
+    if node_issues:
+        return issues, candidate
+    selected = dict(zip(MANIFEST_EXTENSION_NODE_NAMES, nodes, strict=True))
+    selected_node_ids = {
+        id(child) for node in nodes for child in ast.walk(node)
+    }
+
+    try:
+        (
+            expected_table_projection,
+            expected_index_projection,
+            expected_index_mapping,
+        ) = _policy_manifest_projections(root)
+    except (OSError, UnicodeError, ValueError):
+        expected_table_projection = ()
+        expected_index_projection = ()
+        expected_index_mapping = ()
+    expected_values = {
+        "VENDOR_SCHEMA_TABLES": TARGET_TABLES,
+        "VENDOR_SCHEMA_EXPLICIT_INDEXES": TARGET_INDEXES,
+        "VENDOR_SCHEMA_AUTO_INDEXES": TARGET_AUTOINDEXES,
+        "VENDOR_SCHEMA_INDEX_TABLES": EXPECTED_MANIFEST_INDEX_TABLES,
+        "VENDOR_SCHEMA_RESERVED_PREFIXES": (
+            "vendor_organization_",
+            "vendor_organizations_",
+            "vendor_site_assignment_",
+            "vendor_site_assignments_",
+            "sheet_vendor_binding_",
+            "sheet_vendor_bindings_",
+            "idx_vendor_organizations_",
+            "uq_vendor_organizations_",
+            "idx_vendor_organization_memberships_",
+            "uq_vendor_organization_memberships_",
+            "idx_vendor_site_assignments_",
+            "uq_vendor_site_assignments_",
+            "idx_sheet_vendor_bindings_",
+            "uq_sheet_vendor_bindings_",
+        ),
+        "VENDOR_SCHEMA_EXPECTED_TABLE_PROJECTION": (
+            expected_table_projection
+        ),
+        "VENDOR_SCHEMA_EXPECTED_INDEX_PROJECTION": (
+            expected_index_projection
+        ),
+        "VENDOR_SCHEMA_EXPECTED_INDEX_MAPPING": expected_index_mapping,
+    }
+    for name, expected in expected_values.items():
+        try:
+            observed = _literal_assignment(selected, name)
+        except (ValueError, SyntaxError):
+            observed = None
+        if observed != expected:
+            issues.append(
+                Issue(
+                    "vendor_schema_manifest_contract_drift",
+                    path,
+                    getattr(selected[name], "lineno", 1),
+                    name,
+                )
+            )
+
+    build_node = selected["build_capture_payload"]
+    expected_count_query = ast.parse(
+        'f\'SELECT COUNT(*) FROM "{table}"\'',
+        mode="eval",
+    ).body
+    expected_count_dump = ast.dump(
+        expected_count_query,
+        annotate_fields=True,
+        include_attributes=False,
+    )
+    count_queries = [
+        node
+        for node in ast.walk(build_node)
+        if isinstance(node, ast.JoinedStr)
+        and ast.dump(
+            node,
+            annotate_fields=True,
+            include_attributes=False,
+        )
+        == expected_count_dump
+    ]
+    if (
+        len(count_queries) != 2
+    ):
+        issues.append(
+            Issue(
+                "vendor_schema_manifest_contract_drift",
+                path,
+                getattr(build_node, "lineno", 1),
+                "aggregate_count_query",
+            )
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            imported = (
+                tuple(alias.name for alias in node.names)
+                if isinstance(node, ast.Import)
+                else (node.module or "",)
+            )
+            if any(
+                name == "app"
+                or name.startswith("app.")
+                or name.split(".", 1)[0] in BACKEND_ROOTS
+                for name in imported
+            ):
+                issues.append(
+                    Issue(
+                        "vendor_schema_manifest_contract_drift",
+                        path,
+                        getattr(node, "lineno", 1),
+                        "forbidden_import",
+                    )
+                )
+        if isinstance(node, ast.Constant) and type(node.value) is str:
+            normalized = normalized_identifier_text(node.value)
+            if has_target(normalized) and (
+                has_schema_verb(normalized)
+                or re.search(
+                    r"\b(?:insert|update|delete|replace)\b",
+                    normalized,
+                )
+                or (
+                    re.search(r"\b(?:select|with)\b", normalized)
+                    and "count(*)" not in normalized
+                )
+            ):
+                issues.append(
+                    Issue(
+                        "vendor_schema_manifest_contract_drift",
+                        path,
+                        getattr(node, "lineno", 1),
+                        "target_write_sql",
+                    )
+                )
+        evidence = ""
+        if isinstance(node, ast.Name):
+            evidence = node.id
+        elif isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            evidence = node.name
+        elif isinstance(node, ast.Constant) and type(node.value) is str:
+            evidence = node.value
+        if (
+            id(node) not in selected_node_ids
+            and evidence
+            and has_target(evidence)
+        ):
+            issues.append(
+                Issue(
+                    "vendor_schema_manifest_contract_drift",
+                    path,
+                    getattr(node, "lineno", 1),
+                    "unapproved_target_node",
+                )
+            )
+
+    bundle_hash = _ast_bundle_sha256(nodes)
+    if bundle_hash != MANIFEST_EXTENSION_AST_SHA256:
+        issues.append(
+            Issue(
+                "vendor_schema_manifest_contract_drift",
+                path,
+                1,
+                f"ast={bundle_hash}",
+            )
+        )
+    for node in nodes:
+        for child in ast.walk(node):
+            evidence = ""
+            if isinstance(child, ast.Name):
+                evidence = child.id
+            elif isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                evidence = child.name
+            elif isinstance(child, ast.arg):
+                evidence = child.arg
+            elif isinstance(child, ast.Attribute):
+                evidence = child.attr
+            elif isinstance(child, ast.Constant) and type(child.value) is str:
+                evidence = child.value
+            if evidence and has_target(evidence):
+                candidate.approve_target_evidence_node(path, child)
+            if isinstance(
+                child,
+                (
+                    ast.Assign,
+                    ast.AnnAssign,
+                    ast.Call,
+                    ast.ClassDef,
+                    ast.FunctionDef,
+                ),
+            ):
+                for code in MANIFEST_ALLOWED_ISSUE_CODES:
+                    candidate.approve_issue(
+                        path,
+                        child,
+                        code,
+                        required=False,
+                    )
+    return issues, candidate
+
+
+def validate_exact_helper_reference_inventory(
+    parsed: dict[Path, ast.Module],
+) -> list[Issue]:
+    issues: list[Issue] = []
+    helper_name = "ensure_vendor_organization_schema"
+    for relative, tree in parsed.items():
+        if relative == Path("app.py"):
+            continue
+        for node in ast.walk(tree):
+            observed = False
+            if isinstance(node, ast.Name) and node.id == helper_name:
+                observed = True
+            elif isinstance(node, ast.Attribute) and node.attr == helper_name:
+                observed = True
+            elif (
+                isinstance(node, ast.Constant)
+                and node.value == helper_name
+            ):
+                observed = True
+            elif (
+                isinstance(node, ast.Call)
+                and dotted_name(node.func) == "getattr"
+                and len(node.args) >= 2
+                and helper_name
+                in resolve_value(
+                    node.args[1],
+                    [{}],
+                    {},
+                ).strings
+            ):
+                observed = True
+            elif isinstance(node, ast.ImportFrom) and any(
+                alias.name == helper_name for alias in node.names
+            ):
+                observed = True
+            if observed:
+                issues.append(
+                    Issue(
+                        "vendor_schema_transaction_contract_drift",
+                        relative.as_posix(),
+                        getattr(node, "lineno", 1),
+                        "unauthorized_helper_reference",
+                    )
+                )
+    return issues
+
+
+def _combine_allowance_candidates(
+    candidates: tuple[StructuralAllowanceCandidate, ...],
+) -> StructuralAllowance:
+    consumable: set[tuple[str, int, str]] = set()
+    approved: set[tuple[str, int]] = set()
+    required: set[tuple[str, int, str]] = set()
+    for candidate in candidates:
+        consumable.update(candidate.consumable_issues)
+        approved.update(candidate.approved_target_nodes)
+        required.update(candidate.required_consumptions)
+    return StructuralAllowance(
+        frozenset(consumable),
+        frozenset(approved),
+        frozenset(required),
+    )
+
+
 def analyze_repository(root: Path) -> list[Issue]:
     issues = check_policy_document(
         root,
@@ -1872,6 +3062,7 @@ def analyze_repository(root: Path) -> list[Issue]:
             SCHEMA_POLICY_MARKERS,
         )
     )
+    policy_clean = not issues
     for relative in FIXED_RUNTIME_FILES:
         if not (root / relative).is_file():
             issues.append(
@@ -1887,7 +3078,49 @@ def analyze_repository(root: Path) -> list[Issue]:
     callables: dict[str, CallableInfo] = {}
     for relative, tree in parsed.items():
         callables.update(collect_callable_infos(relative, tree))
-    context = RepositoryContext(callables, {}, {}, [])
+    structural_issues: list[Issue] = []
+    structural_issues.extend(validate_exact_helper_reference_inventory(parsed))
+    candidates: list[StructuralAllowanceCandidate] = []
+    app_tree = parsed.get(Path("app.py"))
+    if app_tree is None:
+        structural_issues.append(
+            Issue(
+                "vendor_schema_implementation_missing",
+                "app.py",
+                1,
+                "unparsed",
+            )
+        )
+    else:
+        app_issues, app_candidate = validate_exact_app_implementation(
+            root, app_tree
+        )
+        structural_issues.extend(app_issues)
+        candidates.append(app_candidate)
+    manifest_path = Path("tools/capture_schema_manifest.py")
+    manifest_tree = parsed.get(manifest_path)
+    if manifest_tree is None:
+        structural_issues.append(
+            Issue(
+                "vendor_schema_manifest_contract_drift",
+                manifest_path.as_posix(),
+                1,
+                "unparsed",
+            )
+        )
+    else:
+        manifest_issues, manifest_candidate = (
+            validate_exact_manifest_extension(root, manifest_tree)
+        )
+        structural_issues.extend(manifest_issues)
+        candidates.append(manifest_candidate)
+    issues.extend(structural_issues)
+    allowance = (
+        _combine_allowance_candidates(tuple(candidates))
+        if policy_clean and not structural_issues
+        else StructuralAllowance()
+    )
+    context = RepositoryContext(callables, {}, {}, [], allowance)
     for relative, tree in parsed.items():
         analyzer = PythonSourceAnalyzer(relative, tree, context)
         context.analyzers[analyzer.module_name] = analyzer
@@ -1906,12 +3139,28 @@ def analyze_repository(root: Path) -> list[Issue]:
         analyzer.analyze()
     for analyzer in context.analyzers.values():
         issues.extend(analyzer.issues)
+    missing_consumptions = (
+        context.allowance.required_consumptions
+        - context.allowance.consumed_issues
+    )
+    for path, _node_id, code in sorted(missing_consumptions):
+        issues.append(
+            Issue(
+                "vendor_schema_allowance_invariant",
+                path,
+                1,
+                code,
+            )
+        )
     return sorted(set(issues))
 
 
 def render_normal(issues: list[Issue]) -> tuple[int, str]:
     lines = [
-        "vendor_schema_readiness_scope: static_source_and_frozen_policy_only",
+        (
+            "vendor_schema_readiness_scope: "
+            "static_exact_physical_schema_implementation_and_frozen_policy"
+        ),
         f"issues_count: {len(issues)}",
         "database_access: 0",
         "app_imports: 0",
@@ -1933,7 +3182,13 @@ def write_base_tree(root: Path) -> None:
     for relative in FIXED_RUNTIME_FILES:
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text("", encoding="utf-8", newline="\n")
+        shutil.copyfile(ROOT_DIR / relative, destination)
+    manifest = root / "tools/capture_schema_manifest.py"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        ROOT_DIR / "tools/capture_schema_manifest.py",
+        manifest,
+    )
     checker = root / CHECKER_PATH
     checker.parent.mkdir(parents=True, exist_ok=True)
     checker.write_text(
@@ -1946,7 +3201,678 @@ def write_base_tree(root: Path) -> None:
 def add_source(root: Path, relative: str, source: str) -> None:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
+    if relative == "app.py" and path.exists():
+        source = path.read_text(encoding="utf-8") + "\n" + source
     path.write_text(source, encoding="utf-8", newline="\n")
+
+
+def _replace_exact_fragment(
+    source: str,
+    old: str,
+    new: str,
+    *,
+    occurrence: int = 0,
+) -> str:
+    positions: list[int] = []
+    start = 0
+    while True:
+        found = source.find(old, start)
+        if found < 0:
+            break
+        positions.append(found)
+        start = found + len(old)
+    if occurrence < 0 or occurrence >= len(positions):
+        raise AssertionError(
+            f"mutation fragment occurrence missing: {old!r}"
+        )
+    position = positions[occurrence]
+    return source[:position] + new + source[position + len(old) :]
+
+
+def _mutate_literal_tuple(
+    source: str,
+    assignment_name: str,
+    action: str,
+    first: int,
+    second: int | None = None,
+) -> str:
+    tree = ast.parse(source)
+    assignment = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == assignment_name
+        ),
+        None,
+    )
+    if assignment is None or not isinstance(assignment.value, ast.Tuple):
+        raise AssertionError(
+            f"tuple mutation target missing: {assignment_name}"
+        )
+    elements = assignment.value.elts
+    if action == "remove":
+        elements.pop(first)
+    elif action == "swap":
+        if second is None:
+            raise AssertionError("tuple swap missing second index")
+        elements[first], elements[second] = elements[second], elements[first]
+    elif action == "append":
+        elements.append(
+            ast.Constant(
+                value=(
+                    "CREATE TABLE vendor_organizations_extra "
+                    "(vendor_id TEXT)"
+                    if assignment_name
+                    == "VENDOR_ORGANIZATION_SCHEMA_STATEMENTS"
+                    and first < 4
+                    else (
+                        "CREATE INDEX idx_vendor_organizations_extra "
+                        "ON vendor_organizations(vendor_id)"
+                        if assignment_name
+                        == "VENDOR_ORGANIZATION_SCHEMA_STATEMENTS"
+                        else "unexpected_error_code"
+                    )
+                )
+            )
+        )
+    else:
+        raise AssertionError(f"unsupported tuple mutation: {action}")
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree) + "\n"
+
+
+def implementation_mutation_cases() -> list[
+    tuple[str, str, Any, str]
+]:
+    helper_loop = (
+        "        for statement in VENDOR_ORGANIZATION_SCHEMA_STATEMENTS:\n"
+        "            conn.execute(statement)\n"
+    )
+    entry_tail = (
+        "    vendor_schema_transaction_started = "
+        "conn.in_transaction is not True\n"
+        "    if vendor_schema_transaction_started:\n"
+        "        conn.execute(_VENDOR_ORGANIZATION_ENTRY_BEGIN_SQL)\n"
+        "    try:\n"
+        "        ensure_vendor_organization_schema(conn)\n"
+        "    except VendorOrganizationSchemaMigrationError:\n"
+        "        conn.rollback()\n"
+        "        raise\n"
+    )
+    entry_failure_tail = (
+        "    except VendorOrganizationSchemaMigrationError:\n"
+        "        conn.rollback()\n"
+        "        raise\n"
+    )
+    created_tail = '    return "created"\n\ndef env_flag'
+    return [
+        (
+            "implementation_missing_table_ddl",
+            "app.py",
+            lambda source: _mutate_literal_tuple(
+                source,
+                "VENDOR_ORGANIZATION_SCHEMA_STATEMENTS",
+                "remove",
+                0,
+            ),
+            "vendor_schema_ddl_contract_drift",
+        ),
+        (
+            "implementation_extra_table_ddl",
+            "app.py",
+            lambda source: _mutate_literal_tuple(
+                source,
+                "VENDOR_ORGANIZATION_SCHEMA_STATEMENTS",
+                "append",
+                0,
+            ),
+            "vendor_schema_ddl_contract_drift",
+        ),
+        (
+            "implementation_reordered_table_ddl",
+            "app.py",
+            lambda source: _mutate_literal_tuple(
+                source,
+                "VENDOR_ORGANIZATION_SCHEMA_STATEMENTS",
+                "swap",
+                0,
+                1,
+            ),
+            "vendor_schema_ddl_contract_drift",
+        ),
+        (
+            "implementation_missing_index_ddl",
+            "app.py",
+            lambda source: _mutate_literal_tuple(
+                source,
+                "VENDOR_ORGANIZATION_SCHEMA_STATEMENTS",
+                "remove",
+                4,
+            ),
+            "vendor_schema_ddl_contract_drift",
+        ),
+        (
+            "implementation_extra_index_ddl",
+            "app.py",
+            lambda source: _mutate_literal_tuple(
+                source,
+                "VENDOR_ORGANIZATION_SCHEMA_STATEMENTS",
+                "append",
+                4,
+            ),
+            "vendor_schema_ddl_contract_drift",
+        ),
+        (
+            "implementation_reordered_index_ddl",
+            "app.py",
+            lambda source: _mutate_literal_tuple(
+                source,
+                "VENDOR_ORGANIZATION_SCHEMA_STATEMENTS",
+                "swap",
+                4,
+                5,
+            ),
+            "vendor_schema_ddl_contract_drift",
+        ),
+        (
+            "implementation_altered_fk",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                "REFERENCES vendor_organizations(vendor_id)\n"
+                "        ON DELETE RESTRICT",
+                "REFERENCES vendor_organizations(vendor_id)\n"
+                "        ON DELETE CASCADE",
+            ),
+            "vendor_schema_ddl_contract_drift",
+        ),
+        (
+            "implementation_altered_check",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                "organization_status IN ('active', 'disabled', 'retired')",
+                "organization_status IN ('active', 'disabled')",
+            ),
+            "vendor_schema_ddl_contract_drift",
+        ),
+        (
+            "implementation_altered_predicate",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                "WHERE membership_status = 'active';",
+                "WHERE membership_status = 'revoked';",
+            ),
+            "vendor_schema_ddl_contract_drift",
+        ),
+        (
+            "implementation_altered_whitespace_set",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source, "E38080", "E38081"
+            ),
+            "vendor_schema_ddl_contract_drift",
+        ),
+        (
+            "implementation_dynamic_sql",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                helper_loop,
+                helper_loop.replace(
+                    "conn.execute(statement)",
+                    'conn.execute(statement + "")',
+                ),
+            ),
+            "vendor_schema_helper_contract_drift",
+        ),
+        (
+            "implementation_if_not_exists",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                "CREATE TABLE vendor_organizations (",
+                "CREATE TABLE IF NOT EXISTS vendor_organizations (",
+            ),
+            "vendor_schema_ddl_contract_drift",
+        ),
+        (
+            "implementation_executescript",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                helper_loop,
+                helper_loop.replace(
+                    "conn.execute(statement)",
+                    "conn.executescript(statement)",
+                ),
+            ),
+            "vendor_schema_helper_contract_drift",
+        ),
+        (
+            "implementation_missing_init_call",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source, entry_tail, "", occurrence=0
+            ),
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
+            "implementation_missing_migrate_call",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source, entry_tail, "", occurrence=1
+            ),
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
+            "implementation_bootstrap_third_call",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                "        init_schema(conn)\n",
+                "        init_schema(conn)\n"
+                "        ensure_vendor_organization_schema(conn)\n",
+            ),
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
+            "implementation_init_skips_caller_owned_failure_rollback",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                entry_failure_tail,
+                "    except VendorOrganizationSchemaMigrationError:\n"
+                "        if vendor_schema_transaction_started:\n"
+                "            conn.rollback()\n"
+                "        raise\n",
+                occurrence=0,
+            ),
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
+            "implementation_migrate_skips_caller_owned_failure_rollback",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                entry_failure_tail,
+                "    except VendorOrganizationSchemaMigrationError:\n"
+                "        if vendor_schema_transaction_started:\n"
+                "            conn.rollback()\n"
+                "        raise\n",
+                occurrence=1,
+            ),
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
+            "implementation_init_failure_commit",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                entry_failure_tail,
+                "    except VendorOrganizationSchemaMigrationError:\n"
+                "        conn.commit()\n"
+                "        raise\n",
+                occurrence=0,
+            ),
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
+            "implementation_migrate_swallow_failure",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                entry_failure_tail,
+                "    except VendorOrganizationSchemaMigrationError:\n"
+                "        conn.rollback()\n"
+                "        return\n",
+                occurrence=1,
+            ),
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
+            "implementation_third_call_via_local_alias",
+            "app.py",
+            lambda source: source
+            + "\n_vendor_schema_alias = "
+            + "ensure_vendor_organization_schema\n"
+            + "def rogue_vendor_schema_call(conn):\n"
+            + "    return _vendor_schema_alias(conn)\n",
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
+            "implementation_wrong_helper_signature",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                "def ensure_vendor_organization_schema(\n"
+                "    conn: sqlite3.Connection,\n"
+                "    /,\n",
+                "def ensure_vendor_organization_schema(\n"
+                "    conn: object,\n"
+                "    /,\n",
+            ),
+            "vendor_schema_helper_contract_drift",
+        ),
+        (
+            "implementation_extra_success_value",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                created_tail,
+                '    return "unexpected"\n\ndef env_flag',
+            ),
+            "vendor_schema_helper_contract_drift",
+        ),
+        (
+            "implementation_missing_error_code",
+            "app.py",
+            lambda source: _mutate_literal_tuple(
+                source,
+                "_VENDOR_ORGANIZATION_ERROR_CODES",
+                "remove",
+                0,
+            ),
+            "vendor_schema_helper_contract_drift",
+        ),
+        (
+            "implementation_extra_error_code",
+            "app.py",
+            lambda source: _mutate_literal_tuple(
+                source,
+                "_VENDOR_ORGANIZATION_ERROR_CODES",
+                "append",
+                0,
+            ),
+            "vendor_schema_helper_contract_drift",
+        ),
+        *[
+            (
+                f"implementation_helper_{name}",
+                "app.py",
+                lambda source, statement=statement: _replace_exact_fragment(
+                    source,
+                    created_tail,
+                    f"    {statement}\n" + created_tail,
+                ),
+                "vendor_schema_helper_contract_drift",
+            )
+            for name, statement in (
+                ("commit", "conn.commit()"),
+                ("whole_rollback", "conn.rollback()"),
+                ("begin", 'conn.execute("BEGIN IMMEDIATE")'),
+                ("pragma_mutation", 'conn.execute("PRAGMA foreign_keys=ON")'),
+            )
+        ],
+        (
+            "implementation_missing_cleanup_branch",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                "        if not cleanup_release_succeeded:\n",
+                "        if False:\n",
+            ),
+            "vendor_schema_helper_contract_drift",
+        ),
+        (
+            "implementation_all_exact_reads_rows",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                '    if state == "all_exact":\n'
+                '        return "all_exact"\n',
+                '    if state == "all_exact":\n'
+                "        conn.execute(VENDOR_ORGANIZATIONS_ROW_COUNT_SQL)\n"
+                '        return "all_exact"\n',
+            ),
+            "vendor_schema_helper_contract_drift",
+        ),
+        (
+            "implementation_rejected_path_write",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                '    if state != "all_absent":\n'
+                "        _raise_vendor_organization_schema_error(state)\n",
+                '    if state != "all_absent":\n'
+                '        conn.execute("CREATE TABLE vendor_organizations_bad '
+                '(id INTEGER)")\n'
+                "        _raise_vendor_organization_schema_error(state)\n",
+            ),
+            "vendor_schema_helper_contract_drift",
+        ),
+        (
+            "implementation_backfill",
+            "app.py",
+            lambda source: source
+            + "\ndef backfill_vendor_organizations(conn):\n"
+            + "    conn.execute(\"INSERT INTO vendor_organizations "
+            + "(vendor_id) VALUES ('x')\")\n",
+            "forbidden_vendor_schema_backfill",
+        ),
+        (
+            "implementation_consumer",
+            "app.py",
+            lambda source: source
+            + "\ndef read_vendor_organizations(conn):\n"
+            + '    return conn.execute("SELECT * FROM vendor_organizations")\n',
+            "forbidden_vendor_schema_consumer",
+        ),
+        (
+            "implementation_authority_switch",
+            "app.py",
+            lambda source: source
+            + "\ndef switch_vendor_organizations_authority():\n"
+            + "    return True\n",
+            "forbidden_vendor_authority_switch",
+        ),
+        (
+            "implementation_backend_leakage",
+            "app.py",
+            lambda source: source
+            + '\nROGUE_VENDOR_TARGET = "vendor_organizations"\n'
+            + "ROGUE_POSTGRES_BACKEND = psycopg\n",
+            "forbidden_vendor_schema_backend",
+        ),
+        (
+            "implementation_cross_type_prefix_broadened",
+            "app.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                'name[:20] == "vendor_organization_"',
+                'name[:20] == "idx_vendor_organizations_"',
+            ),
+            "vendor_schema_helper_contract_drift",
+        ),
+        (
+            "manifest_table_projection_fingerprint_drift",
+            "tools/capture_schema_manifest.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                "3716D0C12B6B3840F7201B1BC21A8587AA4B7F8D8AE0156CD6AD61E51BB4C3F9",
+                "0" * 64,
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_index_projection_fingerprint_drift",
+            "tools/capture_schema_manifest.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                "B0B8EA08E4F1FB1F2A63286105F31EBABB6448E2F4EAA980C4E302F0DFAE988C",
+                "1" * 64,
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_index_projection_metadata_drift",
+            "tools/capture_schema_manifest.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                '"B0B8EA08E4F1FB1F2A63286105F31EBABB6448E2F4EAA980C4E302F0DFAE988C",\n'
+                "        0,\n"
+                '        "c",\n'
+                "        0,\n",
+                '"B0B8EA08E4F1FB1F2A63286105F31EBABB6448E2F4EAA980C4E302F0DFAE988C",\n'
+                "        1,\n"
+                '        "c",\n'
+                "        0,\n",
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_autoindex_projection_origin_drift",
+            "tools/capture_schema_manifest.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                '        "sqlite_autoindex_sheet_vendor_bindings_1",\n'
+                '        "sheet_vendor_bindings",\n'
+                "        None,\n"
+                "        1,\n"
+                '        "pk",\n'
+                "        0,\n",
+                '        "sqlite_autoindex_sheet_vendor_bindings_1",\n'
+                '        "sheet_vendor_bindings",\n'
+                "        None,\n"
+                "        1,\n"
+                '        "c",\n'
+                "        0,\n",
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_table_projection_order_drift",
+            "tools/capture_schema_manifest.py",
+            lambda source: _mutate_literal_tuple(
+                source,
+                "VENDOR_SCHEMA_EXPECTED_TABLE_PROJECTION",
+                "swap",
+                0,
+                1,
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_index_projection_order_drift",
+            "tools/capture_schema_manifest.py",
+            lambda source: _mutate_literal_tuple(
+                source,
+                "VENDOR_SCHEMA_EXPECTED_INDEX_PROJECTION",
+                "swap",
+                0,
+                1,
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_index_mapping_order_drift",
+            "tools/capture_schema_manifest.py",
+            lambda source: _mutate_literal_tuple(
+                source,
+                "VENDOR_SCHEMA_EXPECTED_INDEX_MAPPING",
+                "swap",
+                0,
+                1,
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_projection_filter_broadened",
+            "tools/capture_schema_manifest.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                '        if owned_name(item["type"], item["name"])\n',
+                "        if True\n",
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_cross_type_prefix_broadened",
+            "tools/capture_schema_manifest.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                'name[:20] == "vendor_organization_"',
+                'name[:20] == "idx_vendor_organizations_"',
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_vendor_count_presence_removed",
+            "tools/capture_schema_manifest.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                "    if vendor_count_tables != present_vendor_tables:\n",
+                "    if False:\n",
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_projection_state_accepts_drift",
+            "tools/capture_schema_manifest.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                '    return "drifted"\n\n\ndef build_index_inventory',
+                '    return "exact"\n\n\ndef build_index_inventory',
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_compare_suppresses_vendor_drift",
+            "tools/capture_schema_manifest.py",
+            lambda source: _replace_exact_fragment(
+                source,
+                '        if vendor_schema_drift:\n'
+                '            classifications.append("vendor schema drift")\n',
+                '        if vendor_schema_drift:\n'
+                "            pass\n",
+            ),
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_raw_row_read",
+            "tools/capture_schema_manifest.py",
+            lambda source: source
+            + "\ndef read_vendor_rows(conn):\n"
+            + '    return conn.execute("SELECT vendor_id FROM '
+            + 'vendor_organizations")\n',
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_target_dml",
+            "tools/capture_schema_manifest.py",
+            lambda source: source
+            + "\ndef mutate_vendor_rows(conn):\n"
+            + '    conn.execute("DELETE FROM vendor_organizations")\n',
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_app_import",
+            "tools/capture_schema_manifest.py",
+            lambda source: source + "\nimport app\n",
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_dynamic_identifier",
+            "tools/capture_schema_manifest.py",
+            lambda source: source
+            + "\ndef dynamic_vendor_read(conn, table):\n"
+            + '    target = "vendor_organizations"\n'
+            + '    return conn.execute(f"SELECT * FROM {table or target}")\n',
+            "vendor_schema_manifest_contract_drift",
+        ),
+        (
+            "manifest_output_authority",
+            "tools/capture_schema_manifest.py",
+            lambda source: source
+            + "\ndef write_vendor_organizations_artifact(path):\n"
+            + "    path.write_text('authority')\n",
+            "vendor_schema_manifest_contract_drift",
+        ),
+    ]
 
 
 def positive_cases() -> list[tuple[str, str, str]]:
@@ -3050,6 +4976,58 @@ def cross_file_cases() -> list[
     )
     return [
         (
+            "cross_file_third_call_via_from_import_alias",
+            (
+                (
+                    "services/rogue_vendor_schema.py",
+                    "from app import ensure_vendor_organization_schema "
+                    "as migrate_vendor_schema\n"
+                    "def run(conn):\n"
+                    "    return migrate_vendor_schema(conn)\n",
+                ),
+            ),
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
+            "cross_file_third_call_via_module_attribute",
+            (
+                (
+                    "services/rogue_vendor_schema.py",
+                    "import app as application\n"
+                    "def run(conn):\n"
+                    "    return application."
+                    "ensure_vendor_organization_schema(conn)\n",
+                ),
+            ),
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
+            "cross_file_third_call_via_getattr",
+            (
+                (
+                    "services/rogue_vendor_schema.py",
+                    "import app\n"
+                    "def run(conn):\n"
+                    "    return getattr("
+                    'app, "ensure_vendor_organization_schema")(conn)\n',
+                ),
+            ),
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
+            "cross_file_third_call_via_computed_getattr",
+            (
+                (
+                    "services/rogue_vendor_schema.py",
+                    "import app\n"
+                    "def run(conn):\n"
+                    "    return getattr("
+                    'app, "ensure_vendor_organization_" + "schema")(conn)\n',
+                ),
+            ),
+            "vendor_schema_transaction_contract_drift",
+        ),
+        (
             "cross_from_import_ddl",
             (
                 ("package/helpers.py", generic_create),
@@ -3432,6 +5410,24 @@ def run_self_test() -> int:
             shutil.copytree(baseline, root)
             for relative, source in sources:
                 add_source(root, relative, source)
+            assert_scenario(root, expected_code, name)
+            scenario_count += 1
+
+        for name, relative, mutate, expected_code in (
+            implementation_mutation_cases()
+        ):
+            root = temp_root / f"negative-{name}"
+            shutil.copytree(baseline, root)
+            path = root / relative
+            source = path.read_text(encoding="utf-8")
+            mutated = mutate(source)
+            if mutated == source:
+                raise AssertionError(f"mutation scenario made no change: {name}")
+            path.write_text(
+                mutated,
+                encoding="utf-8",
+                newline="\n",
+            )
             assert_scenario(root, expected_code, name)
             scenario_count += 1
 

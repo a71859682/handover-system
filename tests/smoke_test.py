@@ -11595,8 +11595,8 @@ def full_manifest():
                 "WHERE type IN ('table', 'index') ORDER BY type, name"
             )
         )
-    if len(table_names) != 21:
-        raise SystemExit(f"unit-extra auth-order manifest expected 21 application tables, got {table_names}")
+    if len(table_names) != 25:
+        raise SystemExit(f"unit-extra auth-order manifest expected 25 application tables, got {table_names}")
     return table_rows, sequences, schema
 
 def set_session(values):
@@ -12332,8 +12332,8 @@ def full_manifest():
                 "WHERE type IN ('table', 'index') ORDER BY type, name"
             )
         )
-    if len(table_names) != 21:
-        raise SystemExit(f"vendor-contact auth-order manifest expected 21 application tables, got {table_names}")
+    if len(table_names) != 25:
+        raise SystemExit(f"vendor-contact auth-order manifest expected 25 application tables, got {table_names}")
     return table_rows, sequences, schema
 
 def canonical_contact(row):
@@ -24881,7 +24881,7 @@ def run_vendor_organization_schema_readiness_smoke(
                 + normal.stderr
             )
         for required_line in (
-            "vendor_schema_readiness_scope: static_source_and_frozen_policy_only",
+            "vendor_schema_readiness_scope: static_exact_physical_schema_implementation_and_frozen_policy",
             "issues_count: 0",
             "database_access: 0",
             "app_imports: 0",
@@ -26030,6 +26030,3482 @@ _HEADER_BYTES_FOR_DISCOVERY_SMOKE = (
 )
 
 
+def _run_vendor_organization_physical_schema_child(
+    temp_root: Path,
+) -> int:
+    temp_root = temp_root.resolve()
+    system_temp_root = Path(tempfile.gettempdir()).resolve()
+    repository_root = ROOT_DIR.resolve()
+    if (
+        not temp_root.is_relative_to(system_temp_root)
+        or temp_root == repository_root
+        or temp_root.is_relative_to(repository_root)
+        or not temp_root.is_dir()
+    ):
+        raise AssertionError(
+            "vendor physical schema child root was not an existing "
+            "system-temp directory outside the repository"
+        )
+    bootstrap_family = tuple(
+        temp_root / name
+        for name in (
+            "bootstrap.db",
+            "bootstrap.db-wal",
+            "bootstrap.db-shm",
+            "bootstrap.db-journal",
+        )
+    )
+    if any(path.exists() for path in bootstrap_family):
+        raise AssertionError(
+            "vendor physical schema child bootstrap DB family was not fresh"
+        )
+    root_text = str(ROOT_DIR)
+    if root_text not in sys.path:
+        sys.path.insert(0, root_text)
+    os.environ["APP_DB_PATH"] = str(temp_root / "bootstrap.db")
+    os.environ.pop("DATABASE_URL", None)
+    os.environ["PYTHONPYCACHEPREFIX"] = str(temp_root / "pycache")
+
+    import psycopg
+
+    postgres_connect_calls: list[tuple[object, ...]] = []
+    original_postgres_connect = psycopg.connect
+
+    def blocked_postgres_connect(*args, **kwargs):
+        postgres_connect_calls.append((args, kwargs))
+        raise AssertionError(
+            "PostgreSQL connect attempted during vendor schema smoke"
+        )
+
+    psycopg.connect = blocked_postgres_connect
+
+    target_tables = (
+        "vendor_organizations",
+        "vendor_organization_memberships",
+        "vendor_site_assignments",
+        "sheet_vendor_bindings",
+    )
+    target_indexes = (
+        "idx_vendor_organizations_status",
+        "uq_vendor_organization_memberships_active_account",
+        "uq_vendor_organization_memberships_current_pair",
+        "idx_vendor_organization_memberships_vendor_status",
+        "idx_vendor_organization_memberships_account_status",
+        "uq_vendor_organization_memberships_predecessor",
+        "uq_vendor_site_assignments_active_pair",
+        "idx_vendor_site_assignments_vendor_status",
+        "idx_vendor_site_assignments_site_status",
+        "uq_vendor_site_assignments_predecessor",
+        "uq_sheet_vendor_bindings_active_pair",
+        "idx_sheet_vendor_bindings_vendor_status",
+        "idx_sheet_vendor_bindings_sheet_status",
+        "idx_sheet_vendor_bindings_assignment",
+        "uq_sheet_vendor_bindings_predecessor",
+    )
+    target_autoindexes = (
+        "sqlite_autoindex_vendor_organizations_1",
+        "sqlite_autoindex_vendor_organization_memberships_1",
+        "sqlite_autoindex_vendor_site_assignments_1",
+        "sqlite_autoindex_sheet_vendor_bindings_1",
+    )
+
+    class FakeCursor:
+        def __init__(
+            self,
+            description: tuple[tuple[object, ...], ...] | None,
+            rows: tuple[tuple[object, ...], ...],
+        ) -> None:
+            self.description = description
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+    class InjectedConnection(sqlite3.Connection):
+        failures: set[str]
+        fake_results: dict[str, FakeCursor]
+        failure_occurrences: set[tuple[str, int]]
+        fake_result_occurrences: dict[tuple[str, int], FakeCursor]
+        execution_counts: dict[str, int]
+        trace: list[str]
+        commit_calls: int
+        rollback_calls: int
+
+        def configure(self) -> None:
+            self.failures = set()
+            self.fake_results = {}
+            self.failure_occurrences = set()
+            self.fake_result_occurrences = {}
+            self.execution_counts = {}
+            self.trace = []
+            self.commit_calls = 0
+            self.rollback_calls = 0
+
+        def execute(self, sql, parameters=()):
+            self.trace.append(sql)
+            occurrence = self.execution_counts.get(sql, 0) + 1
+            self.execution_counts[sql] = occurrence
+            if (sql, occurrence) in self.failure_occurrences:
+                raise sqlite3.OperationalError("controlled occurrence failure")
+            if (sql, occurrence) in self.fake_result_occurrences:
+                return self.fake_result_occurrences[(sql, occurrence)]
+            if sql in self.failures:
+                raise sqlite3.OperationalError("controlled failure")
+            if sql in self.fake_results:
+                return self.fake_results[sql]
+            return super().execute(sql, parameters)
+
+        def commit(self) -> None:
+            self.commit_calls += 1
+            super().commit()
+
+        def rollback(self) -> None:
+            self.rollback_calls += 1
+            super().rollback()
+
+    def connect(
+        path: Path,
+        *,
+        injected: bool = False,
+    ) -> sqlite3.Connection:
+        if injected:
+            conn = sqlite3.connect(path, factory=InjectedConnection)
+            conn.configure()
+        else:
+            conn = sqlite3.connect(path)
+        return conn
+
+    def create_parent_fixture(
+        path: Path,
+        *,
+        missing: str | None = None,
+        incompatible: str | None = None,
+        injected: bool = False,
+    ) -> sqlite3.Connection:
+        conn = connect(path, injected=injected)
+        parent_sql = {
+            "vendor_accounts": (
+                "CREATE TABLE vendor_accounts "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_name TEXT)"
+            ),
+            "sites": (
+                "CREATE TABLE sites "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"
+            ),
+            "sheets": (
+                "CREATE TABLE sheets "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)"
+            ),
+        }
+        if incompatible is not None:
+            parent_sql[incompatible] = (
+                f"CREATE TABLE {incompatible} "
+                "(id INTEGER NOT NULL PRIMARY KEY, name TEXT)"
+            )
+        for name, sql in parent_sql.items():
+            if name != missing:
+                conn.execute(sql)
+        conn.execute(
+            "CREATE TABLE legacy_probe "
+            "(probe_id INTEGER PRIMARY KEY, note TEXT NOT NULL)"
+        )
+        conn.commit()
+        if isinstance(conn, InjectedConnection):
+            conn.trace.clear()
+            conn.commit_calls = 0
+            conn.rollback_calls = 0
+        return conn
+
+    def object_names(
+        conn: sqlite3.Connection,
+    ) -> tuple[tuple[str, str, str], ...]:
+        placeholders = ",".join("?" for _ in target_tables)
+        return tuple(
+            conn.execute(
+                "SELECT type, name, tbl_name FROM main.sqlite_schema "
+                f"WHERE name IN ({placeholders}) "
+                f"OR tbl_name IN ({placeholders}) "
+                "ORDER BY type, name, tbl_name",
+                (*target_tables, *target_tables),
+            ).fetchall()
+        )
+
+    def assert_no_target_objects(
+        conn: sqlite3.Connection,
+        label: str,
+    ) -> None:
+        if object_names(conn):
+            raise AssertionError(f"{label}: target object residue found")
+
+    def assert_exact_objects(
+        conn: sqlite3.Connection,
+        module,
+        label: str,
+    ) -> None:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM main.sqlite_schema "
+                "WHERE type = 'table' AND name IN "
+                "('vendor_organizations',"
+                "'vendor_organization_memberships',"
+                "'vendor_site_assignments',"
+                "'sheet_vendor_bindings')"
+            )
+        }
+        indexes = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM main.sqlite_schema "
+                "WHERE type = 'index' AND tbl_name IN "
+                "('vendor_organizations',"
+                "'vendor_organization_memberships',"
+                "'vendor_site_assignments',"
+                "'sheet_vendor_bindings')"
+            )
+        }
+        if tables != set(target_tables):
+            raise AssertionError(f"{label}: four-table projection mismatch")
+        if indexes != set((*target_indexes, *target_autoindexes)):
+            raise AssertionError(f"{label}: nineteen-index projection mismatch")
+        if module._classify_vendor_organization_schema(conn) != "all_exact":
+            raise AssertionError(f"{label}: exact classifier did not converge")
+        for table in target_tables:
+            count = conn.execute(
+                f'SELECT COUNT(*) FROM "{table}"'
+            ).fetchone()[0]
+            if type(count) is not int or count != 0:
+                raise AssertionError(f"{label}: {table} was not empty")
+
+    def nonvendor_schema_snapshot(conn: sqlite3.Connection):
+        return tuple(
+            tuple(row)
+            for row in conn.execute(
+                "SELECT type, name, tbl_name, sql "
+                "FROM main.sqlite_schema "
+                "ORDER BY type, name, tbl_name"
+            ).fetchall()
+            if row[1] not in {
+                *target_tables,
+                *target_indexes,
+                *target_autoindexes,
+            }
+            and row[2] not in target_tables
+        )
+
+    def assert_error(module, callable_value, code: str):
+        try:
+            callable_value()
+        except module.VendorOrganizationSchemaMigrationError as exc:
+            if exc.code != code:
+                raise AssertionError(
+                    f"expected {code}, observed {exc.code}"
+                )
+            if str(exc) != (
+                f"VENDOR-ID-002 schema migration failed [{code}]"
+            ):
+                raise AssertionError(f"{code}: unbounded error message")
+            if exc.__cause__ is not None or exc.__context__ is not None:
+                raise AssertionError(f"{code}: exception chaining leaked")
+            if set(vars(exc)) != {"code"}:
+                raise AssertionError(f"{code}: public detail surface drifted")
+            return exc
+        except BaseException as exc:
+            raise AssertionError(
+                f"expected bounded {code}, observed {type(exc).__name__}"
+            ) from exc
+        raise AssertionError(f"expected bounded {code}")
+
+    def begin(conn: sqlite3.Connection) -> None:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.in_transaction is not True:
+            raise AssertionError("caller transaction did not become active")
+
+    def assert_rejected_no_write(
+        module,
+        trace: list[str],
+        label: str,
+    ) -> None:
+        forbidden = {
+            module._VENDOR_ORGANIZATION_SAVEPOINT_SQL,
+            module._VENDOR_ORGANIZATION_ROLLBACK_TO_SQL,
+            module._VENDOR_ORGANIZATION_RELEASE_SQL,
+            *module.VENDOR_ORGANIZATION_SCHEMA_STATEMENTS,
+            *module._VENDOR_ORGANIZATION_ROW_COUNT_SQL,
+        }
+        if any(
+            sql in forbidden
+            or re.match(
+                r"(?is)^[ \t\r\n]*(?:INSERT|UPDATE|DELETE|REPLACE)\b",
+                sql,
+            )
+            and any(table in sql for table in target_tables)
+            or re.match(
+                r"(?is)^[ \t\r\n]*(?:COMMIT|ROLLBACK)\b",
+                sql,
+            )
+            for sql in trace
+        ):
+            raise AssertionError(f"{label}: rejected path performed a write")
+
+    def reopen_no_residue(path: Path, label: str) -> None:
+        verify = sqlite3.connect(path)
+        try:
+            assert_no_target_objects(verify, label)
+        finally:
+            verify.close()
+
+    def file_family(path: Path):
+        state = {}
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            candidate = Path(str(path) + suffix)
+            if candidate.exists():
+                info = candidate.stat()
+                state[suffix] = (
+                    True,
+                    info.st_size,
+                    info.st_mtime_ns,
+                    hashlib.sha256(candidate.read_bytes()).hexdigest(),
+                )
+            else:
+                state[suffix] = (False, None, None, None)
+        return state
+
+    try:
+        app_spec = importlib.util.spec_from_file_location(
+            "vendor_id_002b_app",
+            ROOT_DIR / "app.py",
+        )
+        if app_spec is None or app_spec.loader is None:
+            raise AssertionError("app import spec unavailable")
+        module = importlib.util.module_from_spec(app_spec)
+        app_spec.loader.exec_module(module)
+
+        error_signature = inspect.signature(
+            module.VendorOrganizationSchemaMigrationError
+        )
+        helper_signature = inspect.signature(
+            module.ensure_vendor_organization_schema
+        )
+        if (
+            list(error_signature.parameters) != ["code"]
+            or error_signature.parameters["code"].kind
+            is not inspect.Parameter.POSITIONAL_ONLY
+            or list(helper_signature.parameters) != ["conn"]
+            or helper_signature.parameters["conn"].kind
+            is not inspect.Parameter.POSITIONAL_ONLY
+        ):
+            raise AssertionError("public schema helper signatures drifted")
+
+        bootstrap_conn = sqlite3.connect(temp_root / "bootstrap.db")
+        try:
+            assert_exact_objects(
+                bootstrap_conn, module, "fresh bootstrap"
+            )
+            bootstrap_before = object_names(bootstrap_conn)
+            legacy_before = tuple(
+                bootstrap_conn.execute(
+                    "SELECT name, type, tbl_name, sql "
+                    "FROM main.sqlite_schema "
+                    "WHERE name NOT LIKE 'vendor_organization%' "
+                    "AND name NOT LIKE 'vendor_site_assignment%' "
+                    "AND name NOT LIKE 'sheet_vendor_binding%' "
+                    "AND name NOT LIKE 'idx_vendor_organization%' "
+                    "AND name NOT LIKE 'uq_vendor_organization%' "
+                    "AND name NOT LIKE 'idx_vendor_site_assignment%' "
+                    "AND name NOT LIKE 'uq_vendor_site_assignment%' "
+                    "AND name NOT LIKE 'idx_sheet_vendor_binding%' "
+                    "AND name NOT LIKE 'uq_sheet_vendor_binding%' "
+                    "ORDER BY type, name, tbl_name"
+                ).fetchall()
+            )
+        finally:
+            bootstrap_conn.close()
+        module.bootstrap()
+        bootstrap_conn = sqlite3.connect(temp_root / "bootstrap.db")
+        try:
+            assert_exact_objects(
+                bootstrap_conn, module, "repeated bootstrap"
+            )
+            if object_names(bootstrap_conn) != bootstrap_before:
+                raise AssertionError("repeated bootstrap changed vendor schema")
+            legacy_after = tuple(
+                bootstrap_conn.execute(
+                    "SELECT name, type, tbl_name, sql "
+                    "FROM main.sqlite_schema "
+                    "WHERE name NOT LIKE 'vendor_organization%' "
+                    "AND name NOT LIKE 'vendor_site_assignment%' "
+                    "AND name NOT LIKE 'sheet_vendor_binding%' "
+                    "AND name NOT LIKE 'idx_vendor_organization%' "
+                    "AND name NOT LIKE 'uq_vendor_organization%' "
+                    "AND name NOT LIKE 'idx_vendor_site_assignment%' "
+                    "AND name NOT LIKE 'uq_vendor_site_assignment%' "
+                    "AND name NOT LIKE 'idx_sheet_vendor_binding%' "
+                    "AND name NOT LIKE 'uq_sheet_vendor_binding%' "
+                    "ORDER BY type, name, tbl_name"
+                ).fetchall()
+            )
+            if legacy_after != legacy_before:
+                raise AssertionError("repeated bootstrap changed legacy schema")
+        finally:
+            bootstrap_conn.close()
+
+        helper_path = temp_root / "helper-success.db"
+        conn = create_parent_fixture(helper_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            begin(conn)
+            trace_start = len(conn.trace)
+            if module.ensure_vendor_organization_schema(conn) != "created":
+                raise AssertionError("all-absent helper did not return created")
+            if conn.in_transaction is not True:
+                raise AssertionError("helper success resolved caller transaction")
+            if conn.commit_calls or conn.rollback_calls:
+                raise AssertionError("helper called whole transaction resolution")
+            assert_exact_objects(conn, module, "helper create")
+            creation_trace = conn.trace[trace_start:]
+            if sum(
+                sql == module._VENDOR_ORGANIZATION_SAVEPOINT_SQL
+                for sql in creation_trace
+            ) != 1:
+                raise AssertionError("create path savepoint trace mismatch")
+            if sum(
+                sql in module.VENDOR_ORGANIZATION_SCHEMA_STATEMENTS
+                for sql in creation_trace
+            ) != 19:
+                raise AssertionError("create path DDL trace mismatch")
+            if sum(
+                sql in module._VENDOR_ORGANIZATION_ROW_COUNT_SQL
+                for sql in creation_trace
+            ) != 4:
+                raise AssertionError("create path emptiness trace mismatch")
+            if any(
+                re.match(
+                    r"(?is)^[ \t\r\n]*(?:INSERT|UPDATE|DELETE|REPLACE)\b",
+                    sql,
+                )
+                and any(table in sql for table in target_tables)
+                for sql in creation_trace
+            ):
+                raise AssertionError("helper trace contained target row mutation")
+            conn.trace.clear()
+            if module.ensure_vendor_organization_schema(conn) != "all_exact":
+                raise AssertionError("exact rerun did not return all_exact")
+            if any(
+                sql in module.VENDOR_ORGANIZATION_SCHEMA_STATEMENTS
+                or sql in module._VENDOR_ORGANIZATION_ROW_COUNT_SQL
+                or sql == module._VENDOR_ORGANIZATION_SAVEPOINT_SQL
+                for sql in conn.trace
+            ):
+                raise AssertionError("all_exact path performed write/count work")
+            conn.commit()
+        finally:
+            conn.close()
+
+        populated_path = temp_root / "populated-all-exact.db"
+        conn = create_parent_fixture(populated_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            begin(conn)
+            module.ensure_vendor_organization_schema(conn)
+            conn.execute(
+                "INSERT INTO vendor_organizations "
+                "(vendor_id, display_name, organization_status, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "10101010-1010-4010-8010-101010101010",
+                    "Populated",
+                    "system",
+                    "smoke",
+                    "populated exact proof",
+                    "smoke",
+                    "populated",
+                    "system",
+                    "smoke",
+                    "populated exact proof",
+                    "smoke",
+                    "populated",
+                ),
+            )
+            conn.trace.clear()
+            if module.ensure_vendor_organization_schema(conn) != "all_exact":
+                raise AssertionError("populated exact schema was not a no-op")
+            if any(
+                sql in module.VENDOR_ORGANIZATION_SCHEMA_STATEMENTS
+                or sql in module._VENDOR_ORGANIZATION_ROW_COUNT_SQL
+                or sql == module._VENDOR_ORGANIZATION_SAVEPOINT_SQL
+                for sql in conn.trace
+            ):
+                raise AssertionError(
+                    "populated all_exact path performed DDL, count, or savepoint"
+                )
+            if (
+                conn.execute(
+                    "SELECT COUNT(*) FROM vendor_organizations"
+                ).fetchone()[0]
+                != 1
+            ):
+                raise AssertionError("populated all_exact path changed rows")
+            conn.rollback()
+        finally:
+            conn.close()
+
+        nested_savepoint_path = temp_root / "same-name-savepoint.db"
+        conn = create_parent_fixture(nested_savepoint_path)
+        try:
+            begin(conn)
+            conn.execute(module._VENDOR_ORGANIZATION_SAVEPOINT_SQL)
+            conn.execute(
+                "INSERT INTO legacy_probe (probe_id, note) "
+                "VALUES (7, 'outer-frame')"
+            )
+            if module.ensure_vendor_organization_schema(conn) != "created":
+                raise AssertionError("nested same-name savepoint create failed")
+            conn.execute(module._VENDOR_ORGANIZATION_ROLLBACK_TO_SQL)
+            conn.execute(module._VENDOR_ORGANIZATION_RELEASE_SQL)
+            assert_no_target_objects(conn, "same-name outer rollback")
+            if (
+                conn.execute(
+                    "SELECT COUNT(*) FROM legacy_probe WHERE probe_id = 7"
+                ).fetchone()[0]
+                != 0
+            ):
+                raise AssertionError(
+                    "same-name outer savepoint did not retain ownership"
+                )
+            conn.rollback()
+        finally:
+            conn.close()
+
+        rollback_path = temp_root / "caller-rollback.db"
+        conn = create_parent_fixture(rollback_path)
+        try:
+            begin(conn)
+            conn.execute(
+                "INSERT INTO legacy_probe (probe_id, note) VALUES (1, 'x')"
+            )
+            if module.ensure_vendor_organization_schema(conn) != "created":
+                raise AssertionError("rollback probe creation failed")
+            conn.rollback()
+        finally:
+            conn.close()
+        verify = sqlite3.connect(rollback_path)
+        try:
+            assert_no_target_objects(verify, "caller rollback")
+            if (
+                verify.execute(
+                    "SELECT COUNT(*) FROM legacy_probe"
+                ).fetchone()[0]
+                != 0
+            ):
+                raise AssertionError("caller rollback retained probe row")
+        finally:
+            verify.close()
+
+        original_schema_helper = module.ensure_vendor_organization_schema
+
+        def rejected_entrypoint_helper(conn):
+            raise module.VendorOrganizationSchemaMigrationError(
+                "schema_drifted"
+            )
+
+        init_failure_path = temp_root / "init-entrypoint-failure.db"
+        conn = connect(init_failure_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            conn.row_factory = sqlite3.Row
+            module.ensure_vendor_organization_schema = (
+                rejected_entrypoint_helper
+            )
+            assert_error(
+                module,
+                lambda: module.init_schema(conn),
+                "schema_drifted",
+            )
+            if conn.rollback_calls != 1 or conn.in_transaction:
+                raise AssertionError(
+                    "init_schema did not resolve its failed transaction"
+                )
+            assert_no_target_objects(conn, "init entrypoint failure")
+        finally:
+            module.ensure_vendor_organization_schema = original_schema_helper
+            conn.close()
+
+        migrate_failure_path = temp_root / "migrate-entrypoint-failure.db"
+        conn = connect(migrate_failure_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            conn.row_factory = sqlite3.Row
+            module.init_schema(conn)
+            conn.commit()
+            conn.rollback_calls = 0
+            module.ensure_vendor_organization_schema = (
+                rejected_entrypoint_helper
+            )
+            assert_error(
+                module,
+                lambda: module.migrate_schema(conn),
+                "schema_drifted",
+            )
+            if conn.rollback_calls != 1 or conn.in_transaction:
+                raise AssertionError(
+                    "migrate_schema did not resolve its failed transaction"
+                )
+        finally:
+            module.ensure_vendor_organization_schema = original_schema_helper
+            conn.close()
+
+        migrate_success_path = temp_root / "migrate-entrypoint-success.db"
+        conn = connect(migrate_success_path)
+        try:
+            conn.row_factory = sqlite3.Row
+            module.init_schema(conn)
+            conn.commit()
+            module.migrate_schema(conn)
+            conn.commit()
+            for table in (
+                "sheet_vendor_bindings",
+                "vendor_site_assignments",
+                "vendor_organization_memberships",
+                "vendor_organizations",
+            ):
+                conn.execute(f"DROP TABLE {table}")
+            conn.execute(
+                "INSERT INTO meta (key, value) "
+                "VALUES ('vendor_id_002b_probe', 'preserved')"
+            )
+            conn.commit()
+            before_schema = nonvendor_schema_snapshot(conn)
+            before_probe = tuple(
+                conn.execute(
+                    "SELECT key, value FROM meta "
+                    "WHERE key = 'vendor_id_002b_probe'"
+                ).fetchall()
+            )
+            module.migrate_schema(conn)
+            if conn.in_transaction is not True:
+                raise AssertionError(
+                    "migrate_schema success resolved its transaction"
+                )
+            assert_exact_objects(
+                conn,
+                module,
+                "existing legacy migrate create",
+            )
+            after_schema = nonvendor_schema_snapshot(conn)
+            if after_schema != before_schema:
+                raise AssertionError(
+                    "migrate_schema changed legacy schema: "
+                    f"before_only={tuple(row for row in before_schema if row not in after_schema)!r} "
+                    f"after_only={tuple(row for row in after_schema if row not in before_schema)!r}"
+                )
+            if tuple(
+                conn.execute(
+                    "SELECT key, value FROM meta "
+                    "WHERE key = 'vendor_id_002b_probe'"
+                ).fetchall()
+            ) != before_probe:
+                raise AssertionError(
+                    "migrate_schema changed legacy rows"
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        conn = connect(migrate_success_path)
+        try:
+            conn.row_factory = sqlite3.Row
+            before_repeat = object_names(conn)
+            module.migrate_schema(conn)
+            if object_names(conn) != before_repeat:
+                raise AssertionError(
+                    "repeated migrate_schema changed vendor schema"
+                )
+            assert_exact_objects(
+                conn,
+                module,
+                "existing legacy migrate rerun",
+            )
+            if tuple(
+                conn.execute(
+                    "SELECT key, value FROM meta "
+                    "WHERE key = 'vendor_id_002b_probe'"
+                ).fetchall()
+            ) != before_probe:
+                raise AssertionError(
+                    "repeated migrate_schema changed legacy rows"
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        harmless_path = temp_root / "harmless-temp.db"
+        conn = create_parent_fixture(harmless_path)
+        try:
+            begin(conn)
+            module.ensure_vendor_organization_schema(conn)
+            conn.commit()
+            conn.execute("CREATE TEMP TABLE unrelated_temp (id INTEGER)")
+            begin(conn)
+            if module.ensure_vendor_organization_schema(conn) != "all_exact":
+                raise AssertionError("harmless TEMP object affected exact state")
+            conn.rollback()
+        finally:
+            conn.close()
+
+        cross_type_path = temp_root / "harmless-cross-type-names.db"
+        conn = create_parent_fixture(cross_type_path)
+        try:
+            begin(conn)
+            module.ensure_vendor_organization_schema(conn)
+            conn.commit()
+            conn.execute(
+                "CREATE TABLE idx_vendor_organizations_archive "
+                "(archive_id INTEGER PRIMARY KEY)"
+            )
+            conn.execute(
+                "CREATE INDEX vendor_organization_audit "
+                "ON legacy_probe(note)"
+            )
+            conn.commit()
+            begin(conn)
+            if module.ensure_vendor_organization_schema(conn) != "all_exact":
+                raise AssertionError(
+                    "type-specific harmless owned-prefix lookalikes "
+                    "affected exact state"
+                )
+            conn.rollback()
+        finally:
+            conn.close()
+
+        assert_error(
+            module,
+            lambda: module.ensure_vendor_organization_schema(object()),
+            "invalid_connection",
+        )
+
+        inactive_path = temp_root / "inactive.db"
+        conn = create_parent_fixture(inactive_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "inactive_transaction",
+            )
+            if conn.trace:
+                raise AssertionError("inactive path inspected metadata")
+        finally:
+            conn.close()
+
+        for parent in ("vendor_accounts", "sites", "sheets"):
+            path = temp_root / f"missing-{parent}.db"
+            conn = create_parent_fixture(path, missing=parent, injected=True)
+            try:
+                assert isinstance(conn, InjectedConnection)
+                begin(conn)
+                conn.trace.clear()
+                assert_error(
+                    module,
+                    lambda conn=conn: module.ensure_vendor_organization_schema(
+                        conn
+                    ),
+                    "parent_incompatible",
+                )
+                if any(
+                    sql.startswith(("SAVEPOINT ", "CREATE "))
+                    or sql in module._VENDOR_ORGANIZATION_ROW_COUNT_SQL
+                    for sql in conn.trace
+                ):
+                    raise AssertionError(
+                        f"missing {parent}: rejected path wrote/read rows"
+                    )
+                conn.rollback()
+            finally:
+                conn.close()
+
+        for parent in ("vendor_accounts", "sites", "sheets"):
+            path = temp_root / f"incompatible-{parent}.db"
+            conn = create_parent_fixture(
+                path, incompatible=parent, injected=True
+            )
+            try:
+                assert isinstance(conn, InjectedConnection)
+                begin(conn)
+                conn.trace.clear()
+                assert_error(
+                    module,
+                    lambda conn=conn: module.ensure_vendor_organization_schema(
+                        conn
+                    ),
+                    "parent_incompatible",
+                )
+                if any(
+                    sql.startswith(("SAVEPOINT ", "CREATE "))
+                    for sql in conn.trace
+                ):
+                    raise AssertionError(
+                        f"incompatible {parent}: rejected path wrote"
+                    )
+                conn.rollback()
+            finally:
+                conn.close()
+
+        parent_variants = (
+            ("view", "CREATE VIEW {name} AS SELECT 1 AS id"),
+            ("text_pk", "CREATE TABLE {name} (id TEXT PRIMARY KEY)"),
+            ("non_pk", "CREATE TABLE {name} (id INTEGER)"),
+            (
+                "composite_pk",
+                "CREATE TABLE {name} "
+                "(id INTEGER, other INTEGER, PRIMARY KEY(id, other))",
+            ),
+            (
+                "unique_substitute",
+                "CREATE TABLE {name} (id INTEGER UNIQUE)",
+            ),
+            (
+                "collation",
+                "CREATE TABLE {name} "
+                "(id INTEGER PRIMARY KEY COLLATE NOCASE)",
+            ),
+            (
+                "generated",
+                "CREATE TABLE {name} "
+                "(source INTEGER, id INTEGER "
+                "GENERATED ALWAYS AS (source) STORED)",
+            ),
+            (
+                "without_rowid",
+                "CREATE TABLE {name} "
+                "(id INTEGER PRIMARY KEY) WITHOUT ROWID",
+            ),
+            (
+                "quoted_id",
+                'CREATE TABLE {name} ("id" INTEGER PRIMARY KEY)',
+            ),
+        )
+        exact_parent_sql = {
+            "vendor_accounts": (
+                "CREATE TABLE vendor_accounts "
+                "(id INTEGER PRIMARY KEY, vendor_name TEXT)"
+            ),
+            "sites": (
+                "CREATE TABLE sites "
+                "(id INTEGER PRIMARY KEY, name TEXT)"
+            ),
+            "sheets": (
+                "CREATE TABLE sheets "
+                "(id INTEGER PRIMARY KEY, name TEXT)"
+            ),
+        }
+        for parent in ("vendor_accounts", "sites", "sheets"):
+            for variant, sql_template in parent_variants:
+                path = temp_root / f"parent-{parent}-{variant}.db"
+                conn = connect(path, injected=True)
+                try:
+                    assert isinstance(conn, InjectedConnection)
+                    for name, sql in exact_parent_sql.items():
+                        conn.execute(
+                            sql_template.format(name=name)
+                            if name == parent
+                            else sql
+                        )
+                    conn.execute(
+                        "CREATE TABLE legacy_probe "
+                        "(probe_id INTEGER PRIMARY KEY, note TEXT NOT NULL)"
+                    )
+                    conn.commit()
+                    conn.trace.clear()
+                    begin(conn)
+                    conn.trace.clear()
+                    assert_error(
+                        module,
+                        lambda conn=conn: (
+                            module.ensure_vendor_organization_schema(conn)
+                        ),
+                        "parent_incompatible",
+                    )
+                    assert_rejected_no_write(
+                        module,
+                        conn.trace,
+                        f"parent {parent} {variant}",
+                    )
+                    conn.rollback()
+                finally:
+                    conn.close()
+
+        plain_parent_path = temp_root / "plain-parent-positive.db"
+        conn = connect(plain_parent_path)
+        try:
+            for sql in exact_parent_sql.values():
+                conn.execute(sql)
+            conn.execute(
+                "CREATE TABLE legacy_probe "
+                "(probe_id INTEGER PRIMARY KEY, note TEXT NOT NULL)"
+            )
+            conn.commit()
+            begin(conn)
+            if module.ensure_vendor_organization_schema(conn) != "created":
+                raise AssertionError(
+                    "plain INTEGER PRIMARY KEY parents were rejected"
+                )
+            conn.rollback()
+        finally:
+            conn.close()
+
+        partial_path = temp_root / "partial.db"
+        conn = create_parent_fixture(partial_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            conn.execute(module.VENDOR_ORGANIZATION_SCHEMA_STATEMENTS[0])
+            conn.commit()
+            begin(conn)
+            conn.trace.clear()
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "schema_partial",
+            )
+            assert_rejected_no_write(module, conn.trace, "partial")
+            conn.rollback()
+        finally:
+            conn.close()
+
+        drift_path = temp_root / "drift.db"
+        conn = create_parent_fixture(drift_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            begin(conn)
+            module.ensure_vendor_organization_schema(conn)
+            conn.commit()
+            conn.execute("DROP INDEX idx_vendor_organizations_status")
+            conn.execute(
+                "CREATE INDEX idx_vendor_organizations_status "
+                "ON vendor_organizations(display_name)"
+            )
+            conn.commit()
+            begin(conn)
+            conn.trace.clear()
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "schema_drifted",
+            )
+            assert_rejected_no_write(module, conn.trace, "drifted")
+            conn.rollback()
+        finally:
+            conn.close()
+
+        index_column_by_table = {
+            "vendor_organizations": "display_name",
+            "vendor_organization_memberships": "vendor_id",
+            "vendor_site_assignments": "vendor_id",
+            "sheet_vendor_bindings": "vendor_id",
+        }
+        for table in target_tables:
+            for object_kind in ("index", "unique_index", "trigger"):
+                path = temp_root / f"extra-{table}-{object_kind}.db"
+                conn = create_parent_fixture(path, injected=True)
+                try:
+                    assert isinstance(conn, InjectedConnection)
+                    begin(conn)
+                    module.ensure_vendor_organization_schema(conn)
+                    conn.commit()
+                    suffix = target_tables.index(table)
+                    if object_kind in ("index", "unique_index"):
+                        unique = (
+                            "UNIQUE " if object_kind == "unique_index" else ""
+                        )
+                        conn.execute(
+                            f"CREATE {unique}INDEX arbitrary_owned_{suffix} "
+                            f"ON {table}({index_column_by_table[table]})"
+                        )
+                    else:
+                        conn.execute(
+                            f"CREATE TRIGGER arbitrary_owned_{suffix} "
+                            f"AFTER INSERT ON {table} "
+                            "BEGIN SELECT 1; END"
+                        )
+                    conn.commit()
+                    begin(conn)
+                    conn.trace.clear()
+                    assert_error(
+                        module,
+                        lambda conn=conn: (
+                            module.ensure_vendor_organization_schema(conn)
+                        ),
+                        "extra_owned_object",
+                    )
+                    assert_rejected_no_write(
+                        module,
+                        conn.trace,
+                        f"extra {table} {object_kind}",
+                    )
+                    conn.rollback()
+                finally:
+                    conn.close()
+
+        for table in target_tables:
+            for reserved, expected_code in (
+                (False, "extra_owned_object"),
+                (True, "wrong_object_type"),
+            ):
+                path = temp_root / f"temp-trigger-{table}-{reserved}.db"
+                conn = create_parent_fixture(path, injected=True)
+                try:
+                    assert isinstance(conn, InjectedConnection)
+                    begin(conn)
+                    module.ensure_vendor_organization_schema(conn)
+                    conn.commit()
+                    suffix = target_tables.index(table)
+                    trigger_name = (
+                        f"vendor_organization_temp_guard_{suffix}"
+                        if reserved
+                        else f"arbitrary_temp_guard_{suffix}"
+                    )
+                    conn.execute(
+                        f"CREATE TEMP TRIGGER {trigger_name} "
+                        f"AFTER INSERT ON main.{table} "
+                        "BEGIN SELECT 1; END"
+                    )
+                    begin(conn)
+                    conn.trace.clear()
+                    assert_error(
+                        module,
+                        lambda conn=conn: (
+                            module.ensure_vendor_organization_schema(conn)
+                        ),
+                        expected_code,
+                    )
+                    assert_rejected_no_write(
+                        module,
+                        conn.trace,
+                        f"temp trigger {table} {reserved}",
+                    )
+                    conn.rollback()
+                finally:
+                    conn.close()
+
+        table_list_shadow_path = temp_root / "temp-table-list-shadow.db"
+        conn = create_parent_fixture(table_list_shadow_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            begin(conn)
+            module.ensure_vendor_organization_schema(conn)
+            conn.commit()
+            begin(conn)
+            table_list_rows = tuple(
+                sqlite3.Connection.execute(
+                    conn,
+                    module.VENDOR_ORGANIZATION_TABLE_LIST_SQL,
+                ).fetchall()
+            )
+            injected_rows = tuple(
+                sorted(
+                    (
+                        *table_list_rows,
+                        (
+                            "temp",
+                            "vendor_organization_table_shadow",
+                            "table",
+                            1,
+                            0,
+                            0,
+                        ),
+                    ),
+                    key=lambda row: row[:3],
+                )
+            )
+            conn.fake_results[module.VENDOR_ORGANIZATION_TABLE_LIST_SQL] = (
+                FakeCursor(
+                    (
+                        ("schema", None, None, None, None, None, None),
+                        ("name", None, None, None, None, None, None),
+                        ("type", None, None, None, None, None, None),
+                        ("ncol", None, None, None, None, None, None),
+                        ("wr", None, None, None, None, None, None),
+                        ("strict", None, None, None, None, None, None),
+                    ),
+                    injected_rows,
+                )
+            )
+            conn.trace.clear()
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "wrong_object_type",
+            )
+            assert_rejected_no_write(
+                module,
+                conn.trace,
+                "temp table-list shadow",
+            )
+            conn.rollback()
+        finally:
+            conn.close()
+
+        temp_autoindex_shadow_path = (
+            temp_root / "temp-autoindex-shadow.db"
+        )
+        conn = create_parent_fixture(
+            temp_autoindex_shadow_path,
+            injected=True,
+        )
+        try:
+            assert isinstance(conn, InjectedConnection)
+            begin(conn)
+            module.ensure_vendor_organization_schema(conn)
+            conn.commit()
+            begin(conn)
+            temp_schema_rows = tuple(
+                sqlite3.Connection.execute(
+                    conn,
+                    module.VENDOR_ORGANIZATION_TEMP_SCHEMA_SQL,
+                ).fetchall()
+            )
+            injected_rows = tuple(
+                sorted(
+                    (
+                        *temp_schema_rows,
+                        (
+                            "index",
+                            "sqlite_autoindex_vendor_organizations_1",
+                            "legacy_probe",
+                            None,
+                        ),
+                    ),
+                    key=lambda row: row[:3],
+                )
+            )
+            conn.fake_results[
+                module.VENDOR_ORGANIZATION_TEMP_SCHEMA_SQL
+            ] = FakeCursor(
+                (
+                    ("type", None, None, None, None, None, None),
+                    ("name", None, None, None, None, None, None),
+                    ("tbl_name", None, None, None, None, None, None),
+                    ("sql", None, None, None, None, None, None),
+                ),
+                injected_rows,
+            )
+            conn.trace.clear()
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "wrong_object_type",
+            )
+            assert_rejected_no_write(
+                module,
+                conn.trace,
+                "temp autoindex shadow",
+            )
+            conn.rollback()
+        finally:
+            conn.close()
+
+        wrong_type_path = temp_root / "wrong-type.db"
+        conn = create_parent_fixture(wrong_type_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            conn.execute(
+                "CREATE VIEW vendor_organizations AS SELECT 1 AS vendor_id"
+            )
+            conn.commit()
+            begin(conn)
+            conn.trace.clear()
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "wrong_object_type",
+            )
+            assert_rejected_no_write(module, conn.trace, "wrong type")
+            conn.rollback()
+        finally:
+            conn.close()
+
+        attached_path = temp_root / "attached.db"
+        conn = create_parent_fixture(attached_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            conn.execute(
+                "ATTACH DATABASE ? AS auxiliary",
+                (str(temp_root / "auxiliary.db"),),
+            )
+            conn.execute(
+                "CREATE TABLE auxiliary.vendor_organizations "
+                "(vendor_id TEXT PRIMARY KEY)"
+            )
+            begin(conn)
+            conn.trace.clear()
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "unsupported_database_topology",
+            )
+            assert_rejected_no_write(
+                module,
+                conn.trace,
+                "attached topology",
+            )
+            conn.rollback()
+            conn.execute("DETACH DATABASE auxiliary")
+        finally:
+            conn.close()
+
+        attached_precedence_path = (
+            temp_root / "attached-topology-precedence.db"
+        )
+        conn = create_parent_fixture(
+            attached_precedence_path,
+            injected=True,
+        )
+        try:
+            assert isinstance(conn, InjectedConnection)
+            conn.execute(
+                "ATTACH DATABASE ? AS auxiliary",
+                (str(temp_root / "auxiliary-precedence.db"),),
+            )
+            conn.failures.add(
+                module.VENDOR_ORGANIZATION_MAIN_SCHEMA_SQL
+            )
+            begin(conn)
+            conn.trace.clear()
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "unsupported_database_topology",
+            )
+            assert_rejected_no_write(
+                module,
+                conn.trace,
+                "attached topology precedence",
+            )
+            if (
+                conn.execution_counts.get(
+                    module.VENDOR_ORGANIZATION_MAIN_SCHEMA_SQL,
+                    0,
+                )
+                != 0
+                or conn.execution_counts.get(
+                    module.VENDOR_ORGANIZATION_TABLE_XINFO_SQL,
+                    0,
+                )
+                != 0
+            ):
+                raise AssertionError(
+                    "unsupported topology did not preempt metadata reads"
+                )
+            conn.rollback()
+            conn.execute("DETACH DATABASE auxiliary")
+        finally:
+            conn.close()
+
+        metadata_sql = (
+            module.VENDOR_ORGANIZATION_MAIN_SCHEMA_SQL,
+            module.VENDOR_ORGANIZATION_TEMP_SCHEMA_SQL,
+            module.VENDOR_ORGANIZATION_TABLE_LIST_SQL,
+            module.VENDOR_ORGANIZATION_TABLE_XINFO_SQL,
+            module.VENDOR_ORGANIZATION_FOREIGN_KEY_LIST_SQL,
+            module.VENDOR_ORGANIZATION_INDEX_LIST_SQL,
+            module.VENDOR_ORGANIZATION_INDEX_XINFO_SQL,
+            module.VENDOR_ORGANIZATION_DATABASE_LIST_SQL,
+        )
+        metadata_columns = (
+            ("type", "name", "tbl_name", "sql"),
+            ("type", "name", "tbl_name", "sql"),
+            ("schema", "name", "type", "ncol", "wr", "strict"),
+            (
+                "cid",
+                "name",
+                "type",
+                "notnull",
+                "dflt_value",
+                "pk",
+                "hidden",
+            ),
+            (
+                "from",
+                "table",
+                "to",
+                "on_update",
+                "on_delete",
+                "match",
+                "seq",
+            ),
+            ("name", "unique", "origin", "partial"),
+            ("seqno", "cid", "name", "desc", "coll", "key"),
+            ("seq", "name", "file"),
+        )
+        metadata_valid_rows = (
+            ("table", "a", "a", "CREATE TABLE a(id INTEGER)"),
+            ("table", "a", "a", "CREATE TABLE a(id INTEGER)"),
+            ("main", "a", "table", 1, 0, 0),
+            (0, "id", "INTEGER", 0, None, 1, 0),
+            ("a", "parent", "id", "NO ACTION", "RESTRICT", "NONE", 0),
+            ("a", 0, "c", 0),
+            (0, 0, "id", 0, "BINARY", 1),
+            (0, "main", ""),
+        )
+        metadata_out_of_order_rows = (
+            (
+                ("table", "z", "z", "CREATE TABLE z(id INTEGER)"),
+                ("table", "a", "a", "CREATE TABLE a(id INTEGER)"),
+            ),
+            (
+                ("table", "z", "z", "CREATE TABLE z(id INTEGER)"),
+                ("table", "a", "a", "CREATE TABLE a(id INTEGER)"),
+            ),
+            (
+                ("temp", "z", "table", 1, 0, 0),
+                ("main", "a", "table", 1, 0, 0),
+            ),
+            (
+                (1, "z", "TEXT", 0, None, 0, 0),
+                (0, "a", "INTEGER", 0, None, 1, 0),
+            ),
+            (
+                ("z", "parent", "id", "NO ACTION", "RESTRICT", "NONE", 0),
+                ("a", "parent", "id", "NO ACTION", "RESTRICT", "NONE", 0),
+            ),
+            (("z", 0, "c", 0), ("a", 0, "c", 0)),
+            (
+                (1, -1, None, 0, "BINARY", 0),
+                (0, 0, "id", 0, "BINARY", 1),
+            ),
+            ((1, "temp", ""), (0, "main", "")),
+        )
+        metadata_impossible_rows = (
+            ("impossible", "a", "a", "CREATE TABLE a(id INTEGER)"),
+            ("impossible", "a", "a", "CREATE TABLE a(id INTEGER)"),
+            ("main", "a", "table", -1, 0, 0),
+            (0, "id", "INTEGER", 2, None, 1, 0),
+            ("a", "parent", "id", "NO ACTION", "RESTRICT", "NONE", -1),
+            ("a", 2, "c", 0),
+            (-1, -3, "id", 0, "BINARY", 1),
+            (-1, "main", ""),
+        )
+
+        def cursor_description(columns: tuple[str, ...]):
+            return tuple(
+                (column, None, None, None, None, None, None)
+                for column in columns
+            )
+
+        autoindex_name = target_autoindexes[0]
+        autoindex_metadata_mutations = (
+            (
+                "missing-schema-record",
+                "main",
+                lambda rows: tuple(
+                    row for row in rows if row[1] != autoindex_name
+                ),
+            ),
+            (
+                "nonnull-schema-sql",
+                "main",
+                lambda rows: tuple(
+                    (
+                        *row[:3],
+                        "CREATE UNIQUE INDEX unexpected_autoindex_sql "
+                        "ON vendor_organizations(vendor_id)",
+                    )
+                    if row[1] == autoindex_name
+                    else row
+                    for row in rows
+                ),
+            ),
+            (
+                "wrong-origin",
+                "index_list",
+                lambda rows: tuple(
+                    (row[0], row[1], "c", row[3])
+                    if row[0] == autoindex_name
+                    else row
+                    for row in rows
+                ),
+            ),
+            (
+                "wrong-unique",
+                "index_list",
+                lambda rows: tuple(
+                    (row[0], 0, row[2], row[3])
+                    if row[0] == autoindex_name
+                    else row
+                    for row in rows
+                ),
+            ),
+            (
+                "wrong-partial",
+                "index_list",
+                lambda rows: tuple(
+                    (row[0], row[1], row[2], 1)
+                    if row[0] == autoindex_name
+                    else row
+                    for row in rows
+                ),
+            ),
+            (
+                "wrong-column",
+                "index_xinfo",
+                lambda rows: (
+                    (0, 1, "display_name", 0, "BINARY", 1),
+                    *rows[1:],
+                ),
+            ),
+            (
+                "expression-column",
+                "index_xinfo",
+                lambda rows: (
+                    (0, -2, None, 0, "BINARY", 1),
+                    *rows[1:],
+                ),
+            ),
+            (
+                "wrong-collation",
+                "index_xinfo",
+                lambda rows: (
+                    (*rows[0][:4], "NOCASE", rows[0][5]),
+                    *rows[1:],
+                ),
+            ),
+            (
+                "descending",
+                "index_xinfo",
+                lambda rows: (
+                    (*rows[0][:3], 1, *rows[0][4:]),
+                    *rows[1:],
+                ),
+            ),
+        )
+        for name, source, mutate in autoindex_metadata_mutations:
+            path = temp_root / f"autoindex-{name}.db"
+            conn = create_parent_fixture(path, injected=True)
+            try:
+                assert isinstance(conn, InjectedConnection)
+                begin(conn)
+                module.ensure_vendor_organization_schema(conn)
+                conn.commit()
+                begin(conn)
+                conn.execution_counts = {}
+                conn.trace.clear()
+                if source == "main":
+                    sql = module.VENDOR_ORGANIZATION_MAIN_SCHEMA_SQL
+                    params = ()
+                    occurrence = 1
+                    columns = metadata_columns[0]
+                elif source == "index_list":
+                    sql = module.VENDOR_ORGANIZATION_INDEX_LIST_SQL
+                    params = ("vendor_organizations",)
+                    occurrence = 1
+                    columns = metadata_columns[5]
+                else:
+                    sql = module.VENDOR_ORGANIZATION_INDEX_XINFO_SQL
+                    params = (autoindex_name,)
+                    occurrence = 16
+                    columns = metadata_columns[6]
+                rows = tuple(
+                    sqlite3.Connection.execute(
+                        conn,
+                        sql,
+                        params,
+                    ).fetchall()
+                )
+                conn.fake_result_occurrences[(sql, occurrence)] = (
+                    FakeCursor(
+                        cursor_description(columns),
+                        tuple(mutate(rows)),
+                    )
+                )
+                assert_error(
+                    module,
+                    lambda conn=conn: (
+                        module.ensure_vendor_organization_schema(conn)
+                    ),
+                    "schema_drifted",
+                )
+                assert_rejected_no_write(
+                    module,
+                    conn.trace,
+                    f"autoindex {name}",
+                )
+                conn.rollback()
+            finally:
+                conn.close()
+
+        schema_sql_drift_mutations = (
+            (
+                "case",
+                "idx_vendor_organizations_status",
+                lambda sql: sql.replace(
+                    "CREATE INDEX",
+                    "create index",
+                    1,
+                ),
+            ),
+            (
+                "internal-whitespace",
+                "idx_vendor_organizations_status",
+                lambda sql: sql.replace("CREATE INDEX", "CREATE  INDEX", 1),
+            ),
+            (
+                "quoted-identifier",
+                "idx_vendor_organizations_status",
+                lambda sql: sql.replace(
+                    "ON vendor_organizations",
+                    'ON "vendor_organizations"',
+                    1,
+                ),
+            ),
+            (
+                "comment",
+                "idx_vendor_organizations_status",
+                lambda sql: sql + " -- noncanonical",
+            ),
+            (
+                "second-semicolon",
+                "idx_vendor_organizations_status",
+                lambda sql: sql + ";;",
+            ),
+            (
+                "redundant-parentheses",
+                "idx_vendor_organizations_status",
+                lambda sql: sql.replace(
+                    "(organization_status)",
+                    "((organization_status))",
+                    1,
+                ),
+            ),
+            (
+                "predicate-order",
+                "uq_vendor_organization_memberships_current_pair",
+                lambda sql: sql.replace(
+                    "('pending', 'active')",
+                    "('active', 'pending')",
+                    1,
+                ),
+            ),
+        )
+        for name, index_name, mutate_sql in schema_sql_drift_mutations:
+            path = temp_root / f"observed-sql-{name}.db"
+            conn = create_parent_fixture(path, injected=True)
+            try:
+                assert isinstance(conn, InjectedConnection)
+                begin(conn)
+                module.ensure_vendor_organization_schema(conn)
+                conn.commit()
+                begin(conn)
+                conn.execution_counts = {}
+                conn.trace.clear()
+                rows = tuple(
+                    sqlite3.Connection.execute(
+                        conn,
+                        module.VENDOR_ORGANIZATION_MAIN_SCHEMA_SQL,
+                    ).fetchall()
+                )
+                mutated_rows = tuple(
+                    (
+                        row[0],
+                        row[1],
+                        row[2],
+                        mutate_sql(row[3]),
+                    )
+                    if row[1] == index_name
+                    else row
+                    for row in rows
+                )
+                if mutated_rows == rows:
+                    raise AssertionError(
+                        f"observed SQL mutation {name} made no change"
+                    )
+                conn.fake_result_occurrences[
+                    (module.VENDOR_ORGANIZATION_MAIN_SCHEMA_SQL, 1)
+                ] = FakeCursor(
+                    cursor_description(metadata_columns[0]),
+                    mutated_rows,
+                )
+                assert_error(
+                    module,
+                    lambda conn=conn: (
+                        module.ensure_vendor_organization_schema(conn)
+                    ),
+                    "schema_drifted",
+                )
+                assert_rejected_no_write(
+                    module,
+                    conn.trace,
+                    f"observed SQL {name}",
+                )
+                conn.rollback()
+            finally:
+                conn.close()
+
+        for index, sql in enumerate(metadata_sql):
+            for mode in (
+                "exception",
+                "shape",
+                "ill_typed",
+                "duplicate",
+                "out_of_order",
+                "impossible",
+            ):
+                path = temp_root / f"metadata-{index}-{mode}.db"
+                conn = create_parent_fixture(path, injected=True)
+                try:
+                    assert isinstance(conn, InjectedConnection)
+                    begin(conn)
+                    conn.trace.clear()
+                    if mode == "exception":
+                        conn.failures.add(sql)
+                    elif mode == "shape":
+                        conn.fake_results[sql] = FakeCursor(
+                            (("wrong", None, None, None, None, None, None),),
+                            (),
+                        )
+                    elif mode == "ill_typed":
+                        row = list(metadata_valid_rows[index])
+                        row[0] = None
+                        conn.fake_results[sql] = FakeCursor(
+                            cursor_description(metadata_columns[index]),
+                            (tuple(row),),
+                        )
+                    elif mode == "duplicate":
+                        row = metadata_valid_rows[index]
+                        conn.fake_results[sql] = FakeCursor(
+                            cursor_description(metadata_columns[index]),
+                            (row, row),
+                        )
+                    elif mode == "out_of_order":
+                        conn.fake_results[sql] = FakeCursor(
+                            cursor_description(metadata_columns[index]),
+                            metadata_out_of_order_rows[index],
+                        )
+                    else:
+                        conn.fake_results[sql] = FakeCursor(
+                            cursor_description(metadata_columns[index]),
+                            (metadata_impossible_rows[index],),
+                        )
+                    assert_error(
+                        module,
+                        lambda conn=conn: module.ensure_vendor_organization_schema(
+                            conn
+                        ),
+                        "metadata_unreadable",
+                    )
+                    if any(
+                        statement.startswith(("SAVEPOINT ", "CREATE "))
+                        or statement
+                        in module._VENDOR_ORGANIZATION_ROW_COUNT_SQL
+                        for statement in conn.trace
+                    ):
+                        raise AssertionError(
+                            f"metadata {index}/{mode}: fail-closed path drifted"
+                        )
+                    conn.rollback()
+                finally:
+                    conn.close()
+
+        metadata_initial_call_counts = (1, 1, 1, 7, 4, 4, 19, 1)
+        for index, sql in enumerate(metadata_sql):
+            for mode in ("exception", "shape"):
+                path = temp_root / f"post-metadata-{index}-{mode}.db"
+                conn = create_parent_fixture(path, injected=True)
+                try:
+                    assert isinstance(conn, InjectedConnection)
+                    begin(conn)
+                    occurrence = metadata_initial_call_counts[index] + 1
+                    if mode == "exception":
+                        conn.failure_occurrences.add((sql, occurrence))
+                    else:
+                        conn.fake_result_occurrences[(sql, occurrence)] = (
+                            FakeCursor(
+                                (
+                                    (
+                                        "wrong",
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                        None,
+                                    ),
+                                ),
+                                (),
+                            )
+                        )
+                    assert_error(
+                        module,
+                        lambda conn=conn: (
+                            module.ensure_vendor_organization_schema(conn)
+                        ),
+                        "ddl_or_postcheck_failed",
+                    )
+                    assert_no_target_objects(
+                        conn, f"post-create metadata {index}/{mode}"
+                    )
+                    conn.rollback()
+                finally:
+                    conn.close()
+                reopen_no_residue(
+                    path, f"post-create metadata {index}/{mode} reopen"
+                )
+
+        for index, statement in enumerate(
+            module.VENDOR_ORGANIZATION_SCHEMA_STATEMENTS
+        ):
+            path = temp_root / f"ddl-failure-{index}.db"
+            conn = create_parent_fixture(path, injected=True)
+            try:
+                assert isinstance(conn, InjectedConnection)
+                begin(conn)
+                conn.trace.clear()
+                conn.failures.add(statement)
+                assert_error(
+                    module,
+                    lambda conn=conn: module.ensure_vendor_organization_schema(
+                        conn
+                    ),
+                    "ddl_or_postcheck_failed",
+                )
+                if conn.in_transaction is not True:
+                    raise AssertionError(
+                        f"DDL failure {index}: caller transaction resolved"
+                    )
+                if conn.commit_calls or conn.rollback_calls:
+                    raise AssertionError(
+                        f"DDL failure {index}: helper resolved transaction"
+                    )
+                assert_no_target_objects(conn, f"DDL failure {index}")
+                conn.rollback()
+            finally:
+                conn.close()
+            reopen_no_residue(path, f"DDL failure {index} reopen")
+
+        count_outcomes = {
+            "exception": None,
+            "wrong_name": FakeCursor(
+                (("wrong", None, None, None, None, None, None),),
+                ((0,),),
+            ),
+            "no_rows": FakeCursor(
+                (("row_count", None, None, None, None, None, None),),
+                (),
+            ),
+            "multiple_rows": FakeCursor(
+                (("row_count", None, None, None, None, None, None),),
+                ((0,), (0,)),
+            ),
+            "wrong_columns": FakeCursor(
+                (
+                    ("row_count", None, None, None, None, None, None),
+                    ("extra", None, None, None, None, None, None),
+                ),
+                ((0, 0),),
+            ),
+            "bool": FakeCursor(
+                (("row_count", None, None, None, None, None, None),),
+                ((False,),),
+            ),
+            "negative": FakeCursor(
+                (("row_count", None, None, None, None, None, None),),
+                ((-1,),),
+            ),
+            "nonzero": FakeCursor(
+                (("row_count", None, None, None, None, None, None),),
+                ((1,),),
+            ),
+        }
+        for query_index, sql in enumerate(
+            module._VENDOR_ORGANIZATION_ROW_COUNT_SQL
+        ):
+            for outcome, fake in count_outcomes.items():
+                path = (
+                    temp_root
+                    / f"count-{query_index}-{outcome}.db"
+                )
+                conn = create_parent_fixture(path, injected=True)
+                try:
+                    assert isinstance(conn, InjectedConnection)
+                    begin(conn)
+                    conn.trace.clear()
+                    if outcome == "exception":
+                        conn.failures.add(sql)
+                    else:
+                        assert fake is not None
+                        conn.fake_results[sql] = fake
+                    assert_error(
+                        module,
+                        lambda conn=conn: module.ensure_vendor_organization_schema(
+                            conn
+                        ),
+                        "ddl_or_postcheck_failed",
+                    )
+                    assert_no_target_objects(
+                        conn, f"count {query_index}/{outcome}"
+                    )
+                    conn.rollback()
+                finally:
+                    conn.close()
+                reopen_no_residue(
+                    path, f"count {query_index}/{outcome} reopen"
+                )
+
+        savepoint_path = temp_root / "savepoint-create-failure.db"
+        conn = create_parent_fixture(savepoint_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            begin(conn)
+            conn.trace.clear()
+            conn.failures.add(module._VENDOR_ORGANIZATION_SAVEPOINT_SQL)
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "savepoint_create_failed",
+            )
+            assert_no_target_objects(conn, "savepoint create failure")
+            conn.rollback()
+        finally:
+            conn.close()
+
+        rollback_path = temp_root / "rollback-to-failure.db"
+        conn = create_parent_fixture(rollback_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            begin(conn)
+            conn.trace.clear()
+            conn.failures.update(
+                {
+                    module.VENDOR_ORGANIZATION_SCHEMA_STATEMENTS[0],
+                    module._VENDOR_ORGANIZATION_ROLLBACK_TO_SQL,
+                }
+            )
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "rollback_to_failed",
+            )
+            if module._VENDOR_ORGANIZATION_RELEASE_SQL in conn.trace:
+                raise AssertionError(
+                    "rollback-to failure attempted same-name release"
+                )
+            conn.rollback()
+        finally:
+            conn.close()
+        reopen_no_residue(rollback_path, "rollback-to failure")
+
+        cleanup_path = temp_root / "cleanup-release-failure.db"
+        conn = create_parent_fixture(cleanup_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            begin(conn)
+            conn.failures.update(
+                {
+                    module.VENDOR_ORGANIZATION_SCHEMA_STATEMENTS[0],
+                    module._VENDOR_ORGANIZATION_RELEASE_SQL,
+                }
+            )
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "cleanup_release_failed",
+            )
+            conn.rollback()
+        finally:
+            conn.close()
+        reopen_no_residue(cleanup_path, "cleanup release failure")
+
+        success_release_path = temp_root / "success-release-failure.db"
+        conn = create_parent_fixture(success_release_path, injected=True)
+        try:
+            assert isinstance(conn, InjectedConnection)
+            begin(conn)
+            conn.failures.add(module._VENDOR_ORGANIZATION_RELEASE_SQL)
+            assert_error(
+                module,
+                lambda: module.ensure_vendor_organization_schema(conn),
+                "success_release_failed",
+            )
+            conn.rollback()
+        finally:
+            conn.close()
+        reopen_no_residue(success_release_path, "success release failure")
+
+        constraint_path = temp_root / "constraints.db"
+        conn = create_parent_fixture(constraint_path)
+        try:
+            begin(conn)
+            module.ensure_vendor_organization_schema(conn)
+            conn.commit()
+            conn.execute("PRAGMA foreign_keys = ON")
+            begin(conn)
+            conn.execute(
+                "INSERT INTO vendor_accounts (id, vendor_name) "
+                "VALUES (1, 'Vendor')"
+            )
+            conn.execute(
+                "INSERT INTO vendor_accounts (id, vendor_name) "
+                "VALUES (2, 'Vendor 2')"
+            )
+            conn.execute("INSERT INTO sites (id, name) VALUES (1, 'Site')")
+            conn.execute(
+                "INSERT INTO sheets (id, name) VALUES (1, 'Sheet')"
+            )
+            audit = (
+                "system",
+                "smoke",
+                "constraint test",
+                "smoke",
+                "corr",
+                "system",
+                "smoke",
+                "constraint test",
+                "smoke",
+                "corr",
+            )
+            organization_id = "11111111-1111-4111-8111-111111111111"
+            membership_id = "22222222-2222-4222-8222-222222222222"
+            assignment_id = "33333333-3333-4333-8333-333333333333"
+            binding_id = "44444444-4444-4444-8444-444444444444"
+            conn.execute(
+                "INSERT INTO vendor_organizations "
+                "(vendor_id, display_name, organization_status, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (organization_id, "Vendor", *audit),
+            )
+            conn.execute(
+                "INSERT INTO vendor_organization_memberships "
+                "(vendor_membership_id, vendor_id, vendor_account_id, "
+                "membership_role, membership_status, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (?, ?, 1, 'owner', 'active', ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?)",
+                (membership_id, organization_id, *audit),
+            )
+            conn.execute(
+                "INSERT INTO vendor_site_assignments "
+                "(vendor_site_assignment_id, vendor_id, site_id, "
+                "assignment_status, created_actor_kind, "
+                "created_actor_id, created_reason, created_source, "
+                "created_correlation_id, updated_actor_kind, "
+                "updated_actor_id, updated_reason, updated_source, "
+                "updated_correlation_id) "
+                "VALUES (?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (assignment_id, organization_id, *audit),
+            )
+            conn.execute(
+                "INSERT INTO sheet_vendor_bindings "
+                "(sheet_vendor_binding_id, vendor_id, sheet_id, site_id, "
+                "vendor_site_assignment_id, binding_status, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (?, ?, 1, 1, ?, 'active', ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?)",
+                (binding_id, organization_id, assignment_id, *audit),
+            )
+            successor_membership_id = (
+                "99999999-9999-4999-8999-999999999999"
+            )
+            successor_assignment_id = (
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            )
+            successor_binding_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+            conn.execute(
+                "INSERT INTO vendor_organization_memberships "
+                "(vendor_membership_id, vendor_id, vendor_account_id, "
+                "membership_role, membership_status, "
+                "predecessor_membership_id, created_actor_kind, "
+                "created_actor_id, created_reason, created_source, "
+                "created_correlation_id, updated_actor_kind, "
+                "updated_actor_id, updated_reason, updated_source, "
+                "updated_correlation_id) "
+                "VALUES (?, ?, ?, 'member', 'revoked', ?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?)",
+                (
+                    successor_membership_id,
+                    organization_id,
+                    "2",
+                    membership_id,
+                    *audit,
+                ),
+            )
+            stored_integer = conn.execute(
+                "SELECT typeof(vendor_account_id) "
+                "FROM vendor_organization_memberships "
+                "WHERE vendor_membership_id = ?",
+                (successor_membership_id,),
+            ).fetchone()[0]
+            if stored_integer != "integer":
+                raise AssertionError(
+                    "post-affinity vendor_account_id was not INTEGER"
+                )
+            conn.execute(
+                "INSERT INTO vendor_site_assignments "
+                "(vendor_site_assignment_id, vendor_id, site_id, "
+                "assignment_status, predecessor_assignment_id, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (?, ?, 1, 'inactive', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    successor_assignment_id,
+                    organization_id,
+                    assignment_id,
+                    *audit,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO sheet_vendor_bindings "
+                "(sheet_vendor_binding_id, vendor_id, sheet_id, site_id, "
+                "vendor_site_assignment_id, binding_status, "
+                "predecessor_binding_id, created_actor_kind, "
+                "created_actor_id, created_reason, created_source, "
+                "created_correlation_id, updated_actor_kind, "
+                "updated_actor_id, updated_reason, updated_source, "
+                "updated_correlation_id) "
+                "VALUES (?, ?, 1, 1, ?, 'inactive', ?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?)",
+                (
+                    successor_binding_id,
+                    organization_id,
+                    assignment_id,
+                    binding_id,
+                    *audit,
+                ),
+            )
+
+            def expect_integrity(sql: str, params):
+                conn.execute("SAVEPOINT rejected_constraint")
+                try:
+                    conn.execute(sql, params)
+                except sqlite3.IntegrityError:
+                    conn.execute(
+                        "ROLLBACK TO SAVEPOINT rejected_constraint"
+                    )
+                    conn.execute("RELEASE SAVEPOINT rejected_constraint")
+                else:
+                    raise AssertionError(
+                        "constraint negative unexpectedly succeeded"
+                    )
+
+            def expect_success(sql: str, params):
+                conn.execute("SAVEPOINT accepted_constraint")
+                try:
+                    conn.execute(sql, params)
+                except BaseException as exc:
+                    raise AssertionError(
+                        "constraint positive unexpectedly failed"
+                    ) from exc
+                finally:
+                    conn.execute(
+                        "ROLLBACK TO SAVEPOINT accepted_constraint"
+                    )
+                    conn.execute("RELEASE SAVEPOINT accepted_constraint")
+
+            def uuid_value(number: int) -> str:
+                return (
+                    f"{number:08x}-0000-4000-8000-"
+                    f"{number:012x}"
+                )
+
+            organization_insert_sql = (
+                "INSERT INTO vendor_organizations "
+                "(vendor_id, display_name, organization_status, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (:vendor_id, :display_name, "
+                ":organization_status, :created_actor_kind, "
+                ":created_actor_id, :created_reason, :created_source, "
+                ":created_correlation_id, :updated_actor_kind, "
+                ":updated_actor_id, :updated_reason, :updated_source, "
+                ":updated_correlation_id)"
+            )
+
+            def organization_params(vendor_id, **overrides):
+                values = {
+                    "vendor_id": vendor_id,
+                    "display_name": "Constraint Vendor",
+                    "organization_status": "active",
+                    "created_actor_kind": "system",
+                    "created_actor_id": "smoke",
+                    "created_reason": "constraint test",
+                    "created_source": "smoke",
+                    "created_correlation_id": "corr",
+                    "updated_actor_kind": "system",
+                    "updated_actor_id": "smoke",
+                    "updated_reason": "constraint test",
+                    "updated_source": "smoke",
+                    "updated_correlation_id": "corr",
+                }
+                values.update(overrides)
+                return values
+
+            membership_insert_sql = (
+                "INSERT INTO vendor_organization_memberships "
+                "(vendor_membership_id, vendor_id, vendor_account_id, "
+                "membership_role, membership_status, "
+                "predecessor_membership_id, created_actor_kind, "
+                "created_actor_id, created_reason, created_source, "
+                "created_correlation_id, updated_actor_kind, "
+                "updated_actor_id, updated_reason, updated_source, "
+                "updated_correlation_id) "
+                "VALUES (:id, :vendor_id, :parent_id, :role, :status, "
+                ":predecessor, :created_actor_kind, :created_actor_id, "
+                ":created_reason, :created_source, "
+                ":created_correlation_id, :updated_actor_kind, "
+                ":updated_actor_id, :updated_reason, :updated_source, "
+                ":updated_correlation_id)"
+            )
+            assignment_insert_sql = (
+                "INSERT INTO vendor_site_assignments "
+                "(vendor_site_assignment_id, vendor_id, site_id, "
+                "assignment_status, predecessor_assignment_id, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (:id, :vendor_id, :parent_id, :status, "
+                ":predecessor, :created_actor_kind, :created_actor_id, "
+                ":created_reason, :created_source, "
+                ":created_correlation_id, :updated_actor_kind, "
+                ":updated_actor_id, :updated_reason, :updated_source, "
+                ":updated_correlation_id)"
+            )
+            binding_insert_sql = (
+                "INSERT INTO sheet_vendor_bindings "
+                "(sheet_vendor_binding_id, vendor_id, sheet_id, site_id, "
+                "vendor_site_assignment_id, binding_status, "
+                "predecessor_binding_id, created_actor_kind, "
+                "created_actor_id, created_reason, created_source, "
+                "created_correlation_id, updated_actor_kind, "
+                "updated_actor_id, updated_reason, updated_source, "
+                "updated_correlation_id) "
+                "VALUES (:id, :vendor_id, :sheet_id, :site_id, "
+                ":assignment_id, :status, :predecessor, "
+                ":created_actor_kind, :created_actor_id, "
+                ":created_reason, :created_source, "
+                ":created_correlation_id, :updated_actor_kind, "
+                ":updated_actor_id, :updated_reason, :updated_source, "
+                ":updated_correlation_id)"
+            )
+
+            def relationship_params(
+                row_id,
+                *,
+                vendor_id=organization_id,
+                parent_id=1,
+                role="member",
+                status="inactive",
+                predecessor=None,
+                sheet_id=1,
+                site_id=1,
+                assignment_value=assignment_id,
+                **overrides,
+            ):
+                values = {
+                    "id": row_id,
+                    "vendor_id": vendor_id,
+                    "parent_id": parent_id,
+                    "role": role,
+                    "status": status,
+                    "predecessor": predecessor,
+                    "sheet_id": sheet_id,
+                    "site_id": site_id,
+                    "assignment_id": assignment_value,
+                    "created_actor_kind": "system",
+                    "created_actor_id": "smoke",
+                    "created_reason": "constraint test",
+                    "created_source": "smoke",
+                    "created_correlation_id": "corr",
+                    "updated_actor_kind": "system",
+                    "updated_actor_id": "smoke",
+                    "updated_reason": "constraint test",
+                    "updated_source": "smoke",
+                    "updated_correlation_id": "corr",
+                }
+                values.update(overrides)
+                return values
+
+            invalid_uuid_values = (
+                "",
+                "ABCDEFAB-CDEF-4ABC-8ABC-ABCDEFABCDEF",
+                organization_id.replace("-", ""),
+                "{" + organization_id + "}",
+                "urn:uuid:" + organization_id,
+                organization_id[:14] + "5" + organization_id[15:],
+                organization_id[:19] + "7" + organization_id[20:],
+                "g" + organization_id[1:],
+                "00000000-0000-0000-0000-000000000000",
+                organization_id + "x",
+                123,
+            )
+            for invalid_uuid in invalid_uuid_values:
+                expect_integrity(
+                    organization_insert_sql,
+                    organization_params(invalid_uuid),
+                )
+
+            frozen_whitespace = tuple(
+                chr(value)
+                for value in (
+                    0x09,
+                    0x0A,
+                    0x0B,
+                    0x0C,
+                    0x0D,
+                    0x1C,
+                    0x1D,
+                    0x1E,
+                    0x1F,
+                    0x20,
+                    0x85,
+                    0xA0,
+                    0x1680,
+                    *range(0x2000, 0x200B),
+                    0x2028,
+                    0x2029,
+                    0x202F,
+                    0x205F,
+                    0x3000,
+                )
+            )
+            if len(frozen_whitespace) != 29:
+                raise AssertionError("frozen whitespace set size drifted")
+            for index, blank in enumerate(
+                ("", *frozen_whitespace, "".join(frozen_whitespace))
+            ):
+                expect_integrity(
+                    organization_insert_sql,
+                    organization_params(
+                        uuid_value(100 + index),
+                        display_name=blank,
+                    ),
+                )
+            expect_integrity(
+                organization_insert_sql,
+                organization_params(
+                    uuid_value(200),
+                    display_name="x" * 101,
+                ),
+            )
+            expect_success(
+                organization_insert_sql,
+                organization_params(
+                    uuid_value(201),
+                    display_name=" Vendor ",
+                ),
+            )
+
+            audit_fields = (
+                "created_actor_id",
+                "created_reason",
+                "created_source",
+                "created_correlation_id",
+                "updated_actor_id",
+                "updated_reason",
+                "updated_source",
+                "updated_correlation_id",
+            )
+            for index, field in enumerate(audit_fields):
+                expect_integrity(
+                    organization_insert_sql,
+                    organization_params(
+                        uuid_value(220 + index),
+                        **{field: "".join(frozen_whitespace)},
+                    ),
+                )
+            for index, kind in enumerate(
+                ("system", "internal_user", "vendor_account", "migration")
+            ):
+                expect_success(
+                    organization_insert_sql,
+                    organization_params(
+                        uuid_value(240 + index),
+                        created_actor_kind=kind,
+                        updated_actor_kind=kind,
+                    ),
+                )
+            for index, status in enumerate(
+                ("active", "disabled", "retired")
+            ):
+                expect_success(
+                    organization_insert_sql,
+                    organization_params(
+                        uuid_value(250 + index),
+                        organization_status=status,
+                    ),
+                )
+            for index, bad_status in enumerate(
+                ("ACTIVE", "", None, 1)
+            ):
+                expect_integrity(
+                    organization_insert_sql,
+                    organization_params(
+                        uuid_value(260 + index),
+                        organization_status=bad_status,
+                    ),
+                )
+            expect_integrity(
+                organization_insert_sql,
+                organization_params(
+                    uuid_value(270),
+                    created_actor_kind="unknown",
+                ),
+            )
+
+            for index, (sql, params) in enumerate(
+                (
+                    (
+                        membership_insert_sql,
+                        relationship_params(
+                            "invalid-membership-id",
+                            status="revoked",
+                        ),
+                    ),
+                    (
+                        assignment_insert_sql,
+                        relationship_params(
+                            "invalid-assignment-id",
+                        ),
+                    ),
+                    (
+                        binding_insert_sql,
+                        relationship_params(
+                            "invalid-binding-id",
+                        ),
+                    ),
+                    (
+                        membership_insert_sql,
+                        relationship_params(
+                            uuid_value(303),
+                            vendor_id="invalid-vendor-id",
+                            status="revoked",
+                        ),
+                    ),
+                )
+            ):
+                expect_integrity(sql, params)
+
+            for index, value in enumerate((0, -1, None, "not-integer")):
+                expect_integrity(
+                    membership_insert_sql,
+                    relationship_params(
+                        uuid_value(320 + index),
+                        parent_id=value,
+                        status="revoked",
+                    ),
+                )
+                expect_integrity(
+                    assignment_insert_sql,
+                    relationship_params(
+                        uuid_value(330 + index),
+                        parent_id=value,
+                    ),
+                )
+                expect_integrity(
+                    binding_insert_sql,
+                    relationship_params(
+                        uuid_value(340 + index),
+                        sheet_id=value,
+                    ),
+                )
+            expect_integrity(
+                membership_insert_sql,
+                relationship_params(
+                    uuid_value(350),
+                    parent_id=999,
+                    status="revoked",
+                ),
+            )
+            expect_integrity(
+                assignment_insert_sql,
+                relationship_params(
+                    uuid_value(351),
+                    parent_id=999,
+                ),
+            )
+            expect_integrity(
+                binding_insert_sql,
+                relationship_params(
+                    uuid_value(352),
+                    sheet_id=999,
+                ),
+            )
+            expect_integrity(
+                binding_insert_sql,
+                relationship_params(
+                    uuid_value(353),
+                    assignment_value=uuid_value(999),
+                ),
+            )
+
+            for index, role in enumerate(("owner", "member")):
+                for status_index, status in enumerate(
+                    ("pending", "active", "revoked")
+                ):
+                    expect_success(
+                        membership_insert_sql,
+                        relationship_params(
+                            uuid_value(
+                                370 + index * 10 + status_index
+                            ),
+                            parent_id=2,
+                            role=role,
+                            status=status,
+                        ),
+                    )
+            for bad_role in ("OWNER", "", None, 1):
+                expect_integrity(
+                    membership_insert_sql,
+                    relationship_params(
+                        uuid_value(390 + len(str(bad_role))),
+                        parent_id=2,
+                        role=bad_role,
+                        status="revoked",
+                    ),
+                )
+            for bad_status in ("ACTIVE", "", None, 1):
+                expect_integrity(
+                    membership_insert_sql,
+                    relationship_params(
+                        uuid_value(400 + len(str(bad_status))),
+                        parent_id=2,
+                        status=bad_status,
+                    ),
+                )
+            conn.execute("INSERT INTO sites (id, name) VALUES (2, 'Site 2')")
+            conn.execute(
+                "INSERT INTO sheets (id, name) VALUES (2, 'Sheet 2')"
+            )
+            for status_index, status in enumerate(("active", "inactive")):
+                expect_success(
+                    assignment_insert_sql,
+                    relationship_params(
+                        uuid_value(420 + status_index),
+                        parent_id=2,
+                        status=status,
+                    ),
+                )
+                expect_success(
+                    binding_insert_sql,
+                    relationship_params(
+                        uuid_value(430 + status_index),
+                        sheet_id=2,
+                        site_id=2,
+                        status=status,
+                    ),
+                )
+
+            organization_id_two = uuid_value(450)
+            conn.execute(
+                organization_insert_sql,
+                organization_params(organization_id_two),
+            )
+            conn.execute(
+                "INSERT INTO vendor_accounts (id, vendor_name) "
+                "VALUES (3, 'Vendor 3')"
+            )
+            expect_integrity(
+                membership_insert_sql,
+                relationship_params(
+                    uuid_value(451),
+                    vendor_id=organization_id_two,
+                    parent_id=1,
+                    status="active",
+                ),
+            )
+            pending_pair_id = uuid_value(452)
+            conn.execute(
+                membership_insert_sql,
+                relationship_params(
+                    pending_pair_id,
+                    parent_id=3,
+                    status="pending",
+                ),
+            )
+            expect_integrity(
+                membership_insert_sql,
+                relationship_params(
+                    uuid_value(453),
+                    parent_id=3,
+                    status="pending",
+                ),
+            )
+            for row_id in (uuid_value(454), uuid_value(455)):
+                conn.execute(
+                    membership_insert_sql,
+                    relationship_params(
+                        row_id,
+                        parent_id=3,
+                        status="revoked",
+                    ),
+                )
+            if (
+                conn.execute(
+                    "SELECT COUNT(*) FROM "
+                    "vendor_organization_memberships "
+                    "WHERE vendor_id = ? AND vendor_account_id = 3 "
+                    "AND membership_status = 'revoked'",
+                    (organization_id,),
+                ).fetchone()[0]
+                != 2
+            ):
+                raise AssertionError(
+                    "historical revoked memberships were not representable"
+                )
+
+            for row_id in (uuid_value(460), uuid_value(461)):
+                conn.execute(
+                    assignment_insert_sql,
+                    relationship_params(
+                        row_id,
+                        status="inactive",
+                    ),
+                )
+            for row_id in (uuid_value(462), uuid_value(463)):
+                conn.execute(
+                    binding_insert_sql,
+                    relationship_params(
+                        row_id,
+                        status="inactive",
+                    ),
+                )
+
+            for sql, row_id, predecessor in (
+                (
+                    membership_insert_sql,
+                    uuid_value(470),
+                    uuid_value(470),
+                ),
+                (
+                    assignment_insert_sql,
+                    uuid_value(471),
+                    uuid_value(471),
+                ),
+                (
+                    binding_insert_sql,
+                    uuid_value(472),
+                    uuid_value(472),
+                ),
+            ):
+                expect_integrity(
+                    sql,
+                    relationship_params(
+                        row_id,
+                        parent_id=2,
+                        status="revoked"
+                        if sql == membership_insert_sql
+                        else "inactive",
+                        predecessor=predecessor,
+                    ),
+                )
+            for sql, row_id in (
+                (membership_insert_sql, uuid_value(473)),
+                (assignment_insert_sql, uuid_value(474)),
+                (binding_insert_sql, uuid_value(475)),
+            ):
+                expect_integrity(
+                    sql,
+                    relationship_params(
+                        row_id,
+                        parent_id=2,
+                        status="revoked"
+                        if sql == membership_insert_sql
+                        else "inactive",
+                        predecessor="invalid-predecessor",
+                    ),
+                )
+                expect_integrity(
+                    sql,
+                    relationship_params(
+                        row_id,
+                        parent_id=2,
+                        status="revoked"
+                        if sql == membership_insert_sql
+                        else "inactive",
+                        predecessor=uuid_value(998),
+                    ),
+                )
+
+            mismatch_assignment_id = uuid_value(480)
+            conn.execute(
+                assignment_insert_sql,
+                relationship_params(
+                    mismatch_assignment_id,
+                    vendor_id=organization_id_two,
+                    parent_id=2,
+                    status="inactive",
+                ),
+            )
+            expect_success(
+                binding_insert_sql,
+                relationship_params(
+                    uuid_value(481),
+                    vendor_id=organization_id,
+                    sheet_id=2,
+                    site_id=1,
+                    assignment_value=mismatch_assignment_id,
+                    status="inactive",
+                ),
+            )
+
+            expect_integrity(
+                "INSERT INTO vendor_organizations "
+                "(vendor_id, display_name, organization_status, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (?, ?, 'invalid', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "55555555-5555-4555-8555-555555555555",
+                    "\u3000",
+                    *audit,
+                ),
+            )
+            expect_integrity(
+                "INSERT INTO vendor_organizations "
+                "(vendor_id, display_name, organization_status, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "\u3000",
+                    *audit,
+                ),
+            )
+            expect_integrity(
+                "INSERT INTO vendor_organization_memberships "
+                "(vendor_membership_id, vendor_id, vendor_account_id, "
+                "membership_role, membership_status, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (?, ?, 1, 'member', 'active', ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?)",
+                (
+                    "66666666-6666-4666-8666-666666666666",
+                    organization_id,
+                    *audit,
+                ),
+            )
+            expect_integrity(
+                "INSERT INTO vendor_site_assignments "
+                "(vendor_site_assignment_id, vendor_id, site_id, "
+                "assignment_status, created_actor_kind, "
+                "created_actor_id, created_reason, created_source, "
+                "created_correlation_id, updated_actor_kind, "
+                "updated_actor_id, updated_reason, updated_source, "
+                "updated_correlation_id) "
+                "VALUES (?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "77777777-7777-4777-8777-777777777777",
+                    organization_id,
+                    *audit,
+                ),
+            )
+            expect_integrity(
+                "INSERT INTO sheet_vendor_bindings "
+                "(sheet_vendor_binding_id, vendor_id, sheet_id, site_id, "
+                "vendor_site_assignment_id, binding_status, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (?, ?, 1, 1, ?, 'active', ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?)",
+                (
+                    "88888888-8888-4888-8888-888888888888",
+                    organization_id,
+                    assignment_id,
+                    *audit,
+                ),
+            )
+            expect_integrity(
+                "INSERT INTO vendor_organization_memberships "
+                "(vendor_membership_id, vendor_id, vendor_account_id, "
+                "membership_role, membership_status, "
+                "predecessor_membership_id, created_actor_kind, "
+                "created_actor_id, created_reason, created_source, "
+                "created_correlation_id, updated_actor_kind, "
+                "updated_actor_id, updated_reason, updated_source, "
+                "updated_correlation_id) "
+                "VALUES (?, ?, 2, 'member', 'revoked', ?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?)",
+                (
+                    "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+                    organization_id,
+                    membership_id,
+                    *audit,
+                ),
+            )
+            expect_integrity(
+                "INSERT INTO vendor_site_assignments "
+                "(vendor_site_assignment_id, vendor_id, site_id, "
+                "assignment_status, predecessor_assignment_id, "
+                "created_actor_kind, created_actor_id, created_reason, "
+                "created_source, created_correlation_id, "
+                "updated_actor_kind, updated_actor_id, updated_reason, "
+                "updated_source, updated_correlation_id) "
+                "VALUES (?, ?, 1, 'inactive', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                    organization_id,
+                    assignment_id,
+                    *audit,
+                ),
+            )
+            expect_integrity(
+                "INSERT INTO sheet_vendor_bindings "
+                "(sheet_vendor_binding_id, vendor_id, sheet_id, site_id, "
+                "vendor_site_assignment_id, binding_status, "
+                "predecessor_binding_id, created_actor_kind, "
+                "created_actor_id, created_reason, created_source, "
+                "created_correlation_id, updated_actor_kind, "
+                "updated_actor_id, updated_reason, updated_source, "
+                "updated_correlation_id) "
+                "VALUES (?, ?, 1, 1, ?, 'inactive', ?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?)",
+                (
+                    "ffffffff-ffff-4fff-8fff-ffffffffffff",
+                    organization_id,
+                    assignment_id,
+                    binding_id,
+                    *audit,
+                ),
+            )
+            conn.rollback()
+            for table in target_tables:
+                if (
+                    conn.execute(
+                        f'SELECT COUNT(*) FROM "{table}"'
+                    ).fetchone()[0]
+                    != 0
+                ):
+                    raise AssertionError(
+                        f"constraint rollback retained {table} rows"
+                    )
+        finally:
+            conn.close()
+
+        manifest_db_root = temp_root / "manifest-db"
+        manifest_artifact_root = temp_root / "manifest-artifacts"
+        manifest_db_root.mkdir()
+        manifest_artifact_root.mkdir()
+        manifest_pre = manifest_db_root / "manifest-pre.db"
+        conn = create_parent_fixture(manifest_pre)
+        try:
+            conn.execute(
+                "INSERT INTO legacy_probe (probe_id, note) "
+                "VALUES (1, 'preserved')"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        manifest_post = manifest_db_root / "manifest-post.db"
+        shutil.copy2(manifest_pre, manifest_post)
+        conn = sqlite3.connect(manifest_post)
+        try:
+            begin(conn)
+            module.ensure_vendor_organization_schema(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+        capture_env = {**os.environ}
+        capture_env.pop("DATABASE_URL", None)
+        capture_env["APP_DB_PATH"] = str(
+            temp_root / "manifest-app-sentinel.db"
+        )
+        capture_env["PYTHONDONTWRITEBYTECODE"] = "1"
+        capture_env["PYTHONPYCACHEPREFIX"] = str(
+            temp_root / "manifest-pycache"
+        )
+
+        def capture_manifest(db_path: Path, output_dir: Path):
+            before = file_family(db_path)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(TOOLS_DIR / "capture_schema_manifest.py"),
+                    "capture",
+                    "--db",
+                    str(db_path),
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                cwd=ROOT_DIR,
+                env=capture_env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            if result.returncode != 0 or result.stderr:
+                raise AssertionError(
+                    "vendor manifest capture failed: "
+                    + (result.stderr or result.stdout)
+                )
+            if file_family(db_path) != before:
+                raise AssertionError("manifest capture changed source family")
+            return json.loads(
+                (output_dir / "manifest_payload_v1.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        pre_dir = manifest_artifact_root / "manifest-pre-artifacts"
+        post_dir = manifest_artifact_root / "manifest-post-artifacts"
+        pre_payload = capture_manifest(manifest_pre, pre_dir)
+        post_payload = capture_manifest(manifest_post, post_dir)
+        compare_result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(TOOLS_DIR / "capture_schema_manifest.py"),
+                "compare",
+                "--pre-dir",
+                str(pre_dir),
+                "--post-dir",
+                str(post_dir),
+            ],
+            cwd=ROOT_DIR,
+            env=capture_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if compare_result.returncode != 0 or compare_result.stderr:
+            raise AssertionError(
+                "vendor manifest compare failed: "
+                + (compare_result.stderr or compare_result.stdout)
+            )
+        comparison = json.loads(compare_result.stdout)
+        if comparison["classifications"] != [
+            "expected vendor-organization-only schema delta"
+        ]:
+            raise AssertionError(
+                "vendor-only manifest classification mismatch: "
+                + repr(comparison["classifications"])
+            )
+
+        manifest_cross_type = (
+            manifest_db_root / "manifest-cross-type.db"
+        )
+        shutil.copy2(manifest_post, manifest_cross_type)
+        conn = sqlite3.connect(manifest_cross_type)
+        try:
+            conn.execute(
+                "CREATE TABLE idx_vendor_organizations_archive "
+                "(archive_id INTEGER PRIMARY KEY)"
+            )
+            conn.execute(
+                "CREATE INDEX vendor_organization_audit "
+                "ON legacy_probe(note)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        cross_type_dir = (
+            manifest_artifact_root / "manifest-cross-type-artifacts"
+        )
+        cross_type_payload = capture_manifest(
+            manifest_cross_type,
+            cross_type_dir,
+        )
+        cross_type_compare_result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(TOOLS_DIR / "capture_schema_manifest.py"),
+                "compare",
+                "--pre-dir",
+                str(post_dir),
+                "--post-dir",
+                str(cross_type_dir),
+            ],
+            cwd=ROOT_DIR,
+            env=capture_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if (
+            cross_type_compare_result.returncode != 0
+            or cross_type_compare_result.stderr
+        ):
+            raise AssertionError(
+                "cross-type manifest comparison failed: "
+                + (
+                    cross_type_compare_result.stderr
+                    or cross_type_compare_result.stdout
+                )
+            )
+        cross_type_classifications = json.loads(
+            cross_type_compare_result.stdout
+        )["classifications"]
+        if (
+            "legacy schema drift" not in cross_type_classifications
+            or "vendor schema drift" in cross_type_classifications
+            or cross_type_payload["business_row_counts"]
+            != post_payload["business_row_counts"]
+        ):
+            raise AssertionError(
+                "type-specific harmless manifest ownership drifted: "
+                + repr(cross_type_classifications)
+            )
+        if (
+            pre_payload["legacy_manifest_sha256"]
+            != post_payload["legacy_manifest_sha256"]
+            or any(
+                table in pre_payload["business_row_counts"]
+                for table in target_tables
+            )
+            or {
+                table: post_payload["business_row_counts"].get(table)
+                for table in target_tables
+            }
+            != {table: 0 for table in target_tables}
+            or post_payload["write_attempts"] != 0
+            or post_payload["postgresql_attempts"] != 0
+        ):
+            raise AssertionError("vendor manifest projection evidence drifted")
+        post_table_names = {
+            item["name"]
+            for item in post_payload["table_inventory"]
+            if item["name"] in target_tables
+        }
+        post_index_names = {
+            item["name"]
+            for item in post_payload["index_inventory"]
+            if item["tbl_name"] in target_tables
+        }
+        if (
+            post_table_names != set(target_tables)
+            or post_index_names
+            != set((*target_indexes, *target_autoindexes))
+        ):
+            raise AssertionError("manifest object inventory mismatch")
+
+        def manifest_sql_fingerprint(value):
+            if value is None:
+                return None
+            normalized = value.replace("\r\n", "\n").replace(
+                "\r",
+                "\n",
+            )
+            normalized = normalized.strip(" \t\n\v\f")
+            if normalized.endswith(";"):
+                normalized = normalized[:-1]
+            normalized = normalized.rstrip(" \t\n\v\f")
+            return hashlib.sha256(
+                normalized.encode("utf-8")
+            ).hexdigest().upper()
+
+        expected_table_sql = {}
+        expected_index_sql = {}
+        expected_index_metadata = {}
+        for statement in module.VENDOR_ORGANIZATION_SCHEMA_STATEMENTS:
+            table_match = re.match(
+                r"\s*CREATE TABLE ([a-z_]+)",
+                statement,
+            )
+            if table_match:
+                expected_table_sql[table_match.group(1)] = (
+                    manifest_sql_fingerprint(statement)
+                )
+                continue
+            index_match = re.match(
+                r"\s*CREATE (UNIQUE )?INDEX ([a-z_]+)\s+"
+                r"ON ([a-z_]+)",
+                statement,
+            )
+            if index_match is None:
+                raise AssertionError(
+                    "manifest expected DDL parser missed a statement"
+                )
+            index_name = index_match.group(2)
+            expected_index_sql[index_name] = manifest_sql_fingerprint(
+                statement
+            )
+            expected_index_metadata[index_name] = (
+                1 if index_match.group(1) else 0,
+                "c",
+                1 if "\nWHERE " in statement else 0,
+            )
+
+        vendor_table_records = tuple(
+            item
+            for item in post_payload["table_inventory"]
+            if item["name"] in target_tables
+        )
+        if tuple(item["name"] for item in vendor_table_records) != tuple(
+            sorted(target_tables)
+        ) or any(
+            (
+                item["type"],
+                item["tbl_name"],
+                manifest_sql_fingerprint(item["sql"]),
+            )
+            != (
+                "table",
+                item["name"],
+                expected_table_sql[item["name"]],
+            )
+            for item in vendor_table_records
+        ):
+            raise AssertionError(
+                "manifest table projection was not exact and ordered"
+            )
+
+        vendor_index_records = tuple(
+            item
+            for item in post_payload["index_inventory"]
+            if item["tbl_name"] in target_tables
+        )
+        if tuple(item["name"] for item in vendor_index_records) != tuple(
+            sorted((*target_indexes, *target_autoindexes))
+        ):
+            raise AssertionError(
+                "manifest index projection order was not exact"
+            )
+        for item in vendor_index_records:
+            if item["name"] in expected_index_sql:
+                expected = (
+                    expected_index_sql[item["name"]],
+                    *expected_index_metadata[item["name"]],
+                )
+            else:
+                expected = (None, 1, "pk", 0)
+            if (
+                manifest_sql_fingerprint(item["sql"]),
+                item["unique"],
+                item["origin"],
+                item["partial"],
+            ) != expected:
+                raise AssertionError(
+                    "manifest index projection metadata was not exact"
+                )
+        expected_mapping = [
+            {"name": item["name"], "tbl_name": item["tbl_name"]}
+            for item in post_payload["index_inventory"]
+        ]
+        if post_payload["index_table_mapping"] != expected_mapping:
+            raise AssertionError(
+                "manifest index mapping was not exact and ordered"
+            )
+
+        def canonical_artifact_bytes(value):
+            return json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+
+        def write_manifest_mutation(name, mutate):
+            target = manifest_artifact_root / name
+            shutil.copytree(post_dir, target)
+            payload_path = target / "manifest_payload_v1.json"
+            checksums_path = target / "manifest_checksums_v1.json"
+            payload = json.loads(payload_path.read_text(encoding="utf-8"))
+            checksums = json.loads(
+                checksums_path.read_text(encoding="utf-8")
+            )
+            mutate(payload)
+            payload_bytes = canonical_artifact_bytes(payload)
+            payload_sha = hashlib.sha256(
+                payload_bytes
+            ).hexdigest().upper()
+            payload_path.write_bytes(payload_bytes)
+            checksums["manifest_id"] = payload_sha
+            checksums["manifest_payload_sha256"] = payload_sha
+            checksums["output_files"][
+                "manifest_payload_v1.json"
+            ] = {
+                "size": len(payload_bytes),
+                "sha256": payload_sha,
+            }
+            checksums_path.write_bytes(
+                canonical_artifact_bytes(checksums)
+            )
+            return target
+
+        def compare_manifest_dirs(before_dir, after_dir):
+            return subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    str(TOOLS_DIR / "capture_schema_manifest.py"),
+                    "compare",
+                    "--pre-dir",
+                    str(before_dir),
+                    "--post-dir",
+                    str(after_dir),
+                ],
+                cwd=ROOT_DIR,
+                env=capture_env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+
+        def table_record(payload, name):
+            return next(
+                item
+                for item in payload["table_inventory"]
+                if item["name"] == name
+            )
+
+        def index_record(payload, name):
+            return next(
+                item
+                for item in payload["index_inventory"]
+                if item["name"] == name
+            )
+
+        semantic_manifest_mutations = (
+            (
+                "wrong-table-sql",
+                lambda payload: table_record(
+                    payload,
+                    "vendor_organizations",
+                ).__setitem__(
+                    "sql",
+                    table_record(
+                        payload,
+                        "vendor_organizations",
+                    )["sql"]
+                    + "\n-- drift",
+                ),
+            ),
+            (
+                "wrong-index-sql",
+                lambda payload: index_record(
+                    payload,
+                    "idx_vendor_organizations_status",
+                ).__setitem__(
+                    "sql",
+                    index_record(
+                        payload,
+                        "idx_vendor_organizations_status",
+                    )["sql"]
+                    + "\n-- drift",
+                ),
+            ),
+            (
+                "wrong-index-unique",
+                lambda payload: index_record(
+                    payload,
+                    "idx_vendor_organizations_status",
+                ).__setitem__("unique", 1),
+            ),
+            (
+                "wrong-index-origin",
+                lambda payload: index_record(
+                    payload,
+                    "idx_vendor_organizations_status",
+                ).__setitem__("origin", "u"),
+            ),
+            (
+                "wrong-index-partial",
+                lambda payload: index_record(
+                    payload,
+                    "idx_vendor_organizations_status",
+                ).__setitem__("partial", 1),
+            ),
+        )
+        for name, mutate in semantic_manifest_mutations:
+            mutated_dir = write_manifest_mutation(name, mutate)
+            for before_dir in (pre_dir, post_dir):
+                result = compare_manifest_dirs(
+                    before_dir,
+                    mutated_dir,
+                )
+                if result.returncode != 0 or result.stderr:
+                    raise AssertionError(
+                        f"semantic manifest mutation {name} failed to "
+                        f"compare: {result.stderr or result.stdout}"
+                    )
+                classifications = json.loads(result.stdout)[
+                    "classifications"
+                ]
+                if (
+                    "vendor schema drift" not in classifications
+                    or "expected vendor-organization-only schema delta"
+                    in classifications
+                    or "identical" in classifications
+                ):
+                    raise AssertionError(
+                        f"manifest mutation {name} failed closed "
+                        f"classification: {classifications!r}"
+                    )
+
+        def swap_first_two(items):
+            items[0], items[1] = items[1], items[0]
+
+        def cross_vendor_with_nonvendor(items, vendor_names, key):
+            for position, item in enumerate(items):
+                if item[key] not in vendor_names:
+                    continue
+                for neighbor in (position - 1, position + 1):
+                    if (
+                        0 <= neighbor < len(items)
+                        and items[neighbor][key] not in vendor_names
+                    ):
+                        items[position], items[neighbor] = (
+                            items[neighbor],
+                            items[position],
+                        )
+                        return
+            raise AssertionError(
+                "manifest fixture lacked adjacent vendor/non-vendor records"
+            )
+
+        def add_nonvendor_index_and_cross(payload):
+            payload["index_inventory"].append(
+                {
+                    "type": "index",
+                    "name": "idx_legacy_probe_note",
+                    "tbl_name": "legacy_probe",
+                    "sql": (
+                        "CREATE INDEX idx_legacy_probe_note "
+                        "ON legacy_probe(note)"
+                    ),
+                    "unique": 0,
+                    "origin": "c",
+                    "partial": 0,
+                }
+            )
+            payload["index_inventory"].sort(
+                key=lambda item: (item["name"], item["tbl_name"])
+            )
+            payload["index_table_mapping"] = [
+                {"name": item["name"], "tbl_name": item["tbl_name"]}
+                for item in payload["index_inventory"]
+            ]
+            cross_vendor_with_nonvendor(
+                payload["index_inventory"],
+                set((*target_indexes, *target_autoindexes)),
+                "name",
+            )
+            payload["index_table_mapping"] = [
+                {"name": item["name"], "tbl_name": item["tbl_name"]}
+                for item in payload["index_inventory"]
+            ]
+
+        invalid_manifest_mutations = (
+            (
+                "bool-index-metadata",
+                lambda payload: index_record(
+                    payload,
+                    target_autoindexes[0],
+                ).__setitem__("unique", True),
+                "index inventory record contract mismatch",
+            ),
+            (
+                "table-order",
+                lambda payload: swap_first_two(
+                    payload["table_inventory"]
+                ),
+                "table inventory order mismatch",
+            ),
+            (
+                "index-order",
+                lambda payload: swap_first_two(
+                    payload["index_inventory"]
+                ),
+                "index inventory order mismatch",
+            ),
+            (
+                "mapping-order",
+                lambda payload: swap_first_two(
+                    payload["index_table_mapping"]
+                ),
+                "index table mapping contract mismatch",
+            ),
+            (
+                "vendor-table-crosses-nonvendor",
+                lambda payload: cross_vendor_with_nonvendor(
+                    payload["table_inventory"],
+                    set(target_tables),
+                    "name",
+                ),
+                "table inventory order mismatch",
+            ),
+            (
+                "vendor-index-crosses-nonvendor",
+                add_nonvendor_index_and_cross,
+                "index inventory order mismatch",
+            ),
+            (
+                "mapping-owner",
+                lambda payload: payload["index_table_mapping"][
+                    0
+                ].__setitem__("tbl_name", "wrong_owner"),
+                "index table mapping contract mismatch",
+            ),
+            (
+                "missing-vendor-count",
+                lambda payload: payload["business_row_counts"].pop(
+                    target_tables[0]
+                ),
+                "vendor row-count presence contract mismatch",
+            ),
+        )
+        for name, mutate, expected_fragment in invalid_manifest_mutations:
+            mutated_dir = write_manifest_mutation(name, mutate)
+            result = compare_manifest_dirs(post_dir, mutated_dir)
+            if (
+                result.returncode == 0
+                or expected_fragment
+                not in (result.stderr + result.stdout)
+            ):
+                raise AssertionError(
+                    f"manifest structural mutation {name} did not fail "
+                    f"closed: {result.stderr or result.stdout}"
+                )
+
+        if (temp_root / "manifest-app-sentinel.db").exists():
+            raise AssertionError("manifest capture imported app")
+        if postgres_connect_calls:
+            raise AssertionError(
+                f"PostgreSQL attempts observed: {postgres_connect_calls!r}"
+            )
+    finally:
+        psycopg.connect = original_postgres_connect
+
+    print("vendor organization physical schema smoke PASS")
+    return 0
+
+
+def run_vendor_organization_physical_schema_smoke(
+    temp_root: Path | None = None,
+) -> None:
+    repository_paths = tuple(
+        ROOT_DIR / name
+        for name in ("site.db", "site.db-wal", "site.db-shm", "site.db-journal")
+    )
+
+    def snapshot():
+        result = {}
+        for path in repository_paths:
+            if path.exists():
+                info = path.stat()
+                result[path.name] = (
+                    True,
+                    info.st_size,
+                    info.st_mtime_ns,
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                )
+            else:
+                result[path.name] = (False, None, None, None)
+        return result
+
+    before = snapshot()
+    owns_root = temp_root is None
+    context = (
+        tempfile.TemporaryDirectory(
+            prefix="vendor-id-002b-physical-schema-smoke-"
+        )
+        if owns_root
+        else contextlib.nullcontext(str(temp_root))
+    )
+    with context as raw_root:
+        root = Path(raw_root).resolve()
+        system_temp_root = Path(tempfile.gettempdir()).resolve()
+        repository_root = ROOT_DIR.resolve()
+        if (
+            not root.is_relative_to(system_temp_root)
+            or root == repository_root
+            or root.is_relative_to(repository_root)
+        ):
+            raise AssertionError(
+                "vendor physical schema smoke root must be in system temp "
+                "and outside the repository"
+            )
+        root.mkdir(parents=True, exist_ok=True)
+        bootstrap_family = tuple(
+            root / name
+            for name in (
+                "bootstrap.db",
+                "bootstrap.db-wal",
+                "bootstrap.db-shm",
+                "bootstrap.db-journal",
+            )
+        )
+        if any(path.exists() for path in bootstrap_family):
+            raise AssertionError(
+                "vendor physical schema smoke bootstrap DB family was "
+                "not fresh"
+            )
+        env = {**os.environ}
+        env.pop("DATABASE_URL", None)
+        env["APP_DB_PATH"] = str(root / "outer-sentinel.db")
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+        env["PYTHONPYCACHEPREFIX"] = str(root / "outer-pycache")
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(Path(__file__).resolve()),
+                "--internal-vendor-organization-physical-schema-child",
+                str(root),
+            ],
+            cwd=ROOT_DIR,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        marker = "vendor organization physical schema smoke PASS"
+        if result.returncode != 0:
+            raise AssertionError(
+                "vendor organization physical schema child failed: "
+                + (result.stderr or result.stdout)
+            )
+        if result.stderr:
+            raise AssertionError(
+                "vendor organization physical schema child stderr was not empty: "
+                + result.stderr
+            )
+        if result.stdout.count(marker) != 1:
+            raise AssertionError(
+                "vendor organization physical schema marker count was not one"
+            )
+    if snapshot() != before:
+        raise AssertionError(
+            "vendor organization physical schema smoke changed canonical DB family"
+        )
+    print("vendor organization physical schema smoke PASS")
+
+
 def run_identity_registry_schema_smoke(temp_root: Path) -> None:
     temp_root.mkdir(parents=True, exist_ok=True)
     child_path = temp_root / "identity-registry-schema-smoke.py"
@@ -26564,17 +30040,57 @@ def run_schema_manifest_serializer_smoke(temp_root: Path) -> None:
     registry_db = db_root / "schema-manifest-registry.db"
     create_sample_sqlite(base_db)
     shutil.copy2(base_db, registry_db)
-    base_db_before = base_db.stat()
 
-    env = {
-        **os.environ,
-        "DATABASE_URL": "",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPYCACHEPREFIX": str((temp_root / "pycache").resolve()),
-    }
+    def source_family(path: Path):
+        state = {}
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            candidate = Path(str(path) + suffix)
+            if candidate.exists():
+                info = candidate.stat()
+                state[suffix] = (
+                    True,
+                    info.st_size,
+                    info.st_mtime_ns,
+                    hashlib.sha256(candidate.read_bytes()).hexdigest(),
+                )
+            else:
+                state[suffix] = (False, None, None, None)
+        return state
+
+    base_db_before = source_family(base_db)
+    sentinel_db = temp_root / "must-not-be-created.db"
+    import_sentinel_root = temp_root / "import-sentinels"
+    import_sentinel_root.mkdir()
+    for module_name in ("app", "psycopg", "psycopg2", "sqlalchemy"):
+        (import_sentinel_root / f"{module_name}.py").write_text(
+            f'raise AssertionError("{module_name} import attempted by schema manifest serializer")\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+    env = {**os.environ}
+    env.pop("DATABASE_URL", None)
+    existing_pythonpath = env.get("PYTHONPATH")
+    env.update(
+        {
+            "APP_DB_PATH": str(sentinel_db),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPYCACHEPREFIX": str(
+                (temp_root / "pycache").resolve()
+            ),
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": (
+                str(import_sentinel_root)
+                if not existing_pythonpath
+                else str(import_sentinel_root)
+                + os.pathsep
+                + existing_pythonpath
+            ),
+        }
+    )
 
     def capture(db_path: Path, output_dir: Path) -> dict[str, object]:
-        before = db_path.stat()
+        before = source_family(db_path)
         result = run_script(
             "capture_schema_manifest.py",
             args=["capture", "--db", str(db_path), "--output-dir", str(output_dir)],
@@ -26582,8 +30098,8 @@ def run_schema_manifest_serializer_smoke(temp_root: Path) -> None:
         )
         if result.stderr:
             raise AssertionError(f"capture_schema_manifest.py capture stderr was not empty: {result.stderr}")
-        after = db_path.stat()
-        if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns:
+        after = source_family(db_path)
+        if before != after:
             raise AssertionError("source DB changed during schema manifest capture")
         return json.loads(result.stdout)
 
@@ -26670,7 +30186,7 @@ def run_schema_manifest_serializer_smoke(temp_root: Path) -> None:
         raise AssertionError("identical compare did not preserve legacy manifest bytes")
 
     add_registry_only_schema(registry_db)
-    registry_db_after_registry_only_schema = registry_db.stat()
+    registry_db_after_registry_only_schema = source_family(registry_db)
 
     registry_capture_dir = artifact_root / "registry-capture"
     registry_capture = capture(registry_db, registry_capture_dir)
@@ -26738,13 +30254,15 @@ def run_schema_manifest_serializer_smoke(temp_root: Path) -> None:
     for artifact_dir in (base_capture_dir, base_capture_again_dir, registry_capture_dir, transport_dir, reconstructed_dir):
         if temp_root.resolve() not in artifact_dir.resolve().parents and artifact_dir.resolve() != temp_root.resolve():
             raise AssertionError("serializer artifacts escaped the serializer temp root")
-    if base_db.stat().st_size != base_db_before.st_size or base_db.stat().st_mtime_ns != base_db_before.st_mtime_ns:
+    if source_family(base_db) != base_db_before:
         raise AssertionError("base serializer smoke DB changed")
-    if (
-        registry_db.stat().st_size != registry_db_after_registry_only_schema.st_size
-        or registry_db.stat().st_mtime_ns != registry_db_after_registry_only_schema.st_mtime_ns
-    ):
+    if source_family(registry_db) != registry_db_after_registry_only_schema:
         raise AssertionError("registry serializer smoke DB changed")
+    if sentinel_db.exists() or any(
+        Path(str(sentinel_db) + suffix).exists()
+        for suffix in ("-wal", "-shm", "-journal")
+    ):
+        raise AssertionError("schema manifest serializer imported app")
     if ("APP_DB_PATH" in os.environ) != parent_app_db_path_present or os.environ.get("APP_DB_PATH") != parent_app_db_path:
         raise AssertionError("serializer smoke changed parent APP_DB_PATH")
     if ("DATABASE_URL" in os.environ) != parent_database_url_present or os.environ.get("DATABASE_URL") != parent_database_url:
@@ -26894,6 +30412,9 @@ def main() -> int:
         )
         run_vendor_organization_schema_readiness_smoke(
             Path(tmpdir) / "vendor-organization-schema-readiness"
+        )
+        run_vendor_organization_physical_schema_smoke(
+            Path(tmpdir) / "vendor-organization-physical-schema"
         )
         run_identity_registry_discovery_smoke(
             Path(tmpdir) / "identity-registry-discovery"
@@ -27152,6 +30673,23 @@ if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--internal-vendor-organization-schema-readiness":
         run_vendor_organization_schema_readiness_smoke()
         raise SystemExit(0)
+    if (
+        len(sys.argv) == 2
+        and sys.argv[1]
+        == "--internal-vendor-organization-physical-schema"
+    ):
+        run_vendor_organization_physical_schema_smoke()
+        raise SystemExit(0)
+    if (
+        len(sys.argv) == 3
+        and sys.argv[1]
+        == "--internal-vendor-organization-physical-schema-child"
+    ):
+        raise SystemExit(
+            _run_vendor_organization_physical_schema_child(
+                Path(sys.argv[2])
+            )
+        )
     if len(sys.argv) == 2 and sys.argv[1] == "--internal-identity-registry-discovery":
         run_identity_registry_discovery_smoke()
         raise SystemExit(0)

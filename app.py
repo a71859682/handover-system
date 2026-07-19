@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
 import uuid
 from collections.abc import Mapping
@@ -201,6 +202,1598 @@ def ensure_identity_registry_schema(conn: sqlite3.Connection) -> None:
     for statement in IDENTITY_REGISTRY_SCHEMA_STATEMENTS:
         conn.execute(statement)
 
+
+_VENDOR_ORGANIZATIONS_TABLE_SQL = """
+CREATE TABLE vendor_organizations (
+    vendor_id TEXT NOT NULL PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    organization_status TEXT NOT NULL DEFAULT 'disabled',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_actor_kind TEXT NOT NULL,
+    created_actor_id TEXT NOT NULL,
+    created_reason TEXT NOT NULL,
+    created_source TEXT NOT NULL,
+    created_correlation_id TEXT NOT NULL,
+    updated_actor_kind TEXT NOT NULL,
+    updated_actor_id TEXT NOT NULL,
+    updated_reason TEXT NOT NULL,
+    updated_source TEXT NOT NULL,
+    updated_correlation_id TEXT NOT NULL,
+    CHECK (
+        typeof(vendor_id) = 'text'
+        AND length(vendor_id) = 36
+        AND vendor_id GLOB
+            '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+        AND vendor_id <> '00000000-0000-0000-0000-000000000000'
+    ),
+    CHECK (
+        length(display_name) BETWEEN 1 AND 100
+        AND length(
+            trim(
+                display_name,
+                CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT)
+            )
+        ) > 0
+    ),
+    CHECK (organization_status IN ('active', 'disabled', 'retired')),
+    CHECK (created_actor_kind IN ('system', 'internal_user', 'vendor_account', 'migration')),
+    CHECK (updated_actor_kind IN ('system', 'internal_user', 'vendor_account', 'migration')),
+    CHECK (length(created_actor_id) BETWEEN 1 AND 128 AND length(trim(created_actor_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_actor_id) BETWEEN 1 AND 128 AND length(trim(updated_actor_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_reason) BETWEEN 1 AND 500 AND length(trim(created_reason, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_reason) BETWEEN 1 AND 500 AND length(trim(updated_reason, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_source) BETWEEN 1 AND 100 AND length(trim(created_source, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_source) BETWEEN 1 AND 100 AND length(trim(updated_source, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_correlation_id) BETWEEN 1 AND 128 AND length(trim(created_correlation_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_correlation_id) BETWEEN 1 AND 128 AND length(trim(updated_correlation_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0)
+) STRICT;
+"""
+
+_VENDOR_ORGANIZATION_MEMBERSHIPS_TABLE_SQL = """
+CREATE TABLE vendor_organization_memberships (
+    vendor_membership_id TEXT NOT NULL PRIMARY KEY,
+    vendor_id TEXT NOT NULL,
+    vendor_account_id INTEGER NOT NULL,
+    membership_role TEXT NOT NULL DEFAULT 'member',
+    membership_status TEXT NOT NULL DEFAULT 'pending',
+    predecessor_membership_id TEXT DEFAULT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_actor_kind TEXT NOT NULL,
+    created_actor_id TEXT NOT NULL,
+    created_reason TEXT NOT NULL,
+    created_source TEXT NOT NULL,
+    created_correlation_id TEXT NOT NULL,
+    updated_actor_kind TEXT NOT NULL,
+    updated_actor_id TEXT NOT NULL,
+    updated_reason TEXT NOT NULL,
+    updated_source TEXT NOT NULL,
+    updated_correlation_id TEXT NOT NULL,
+    FOREIGN KEY (vendor_id)
+        REFERENCES vendor_organizations(vendor_id)
+        ON DELETE RESTRICT
+        ON UPDATE NO ACTION,
+    FOREIGN KEY (vendor_account_id)
+        REFERENCES vendor_accounts(id)
+        ON DELETE RESTRICT
+        ON UPDATE NO ACTION,
+    FOREIGN KEY (predecessor_membership_id)
+        REFERENCES vendor_organization_memberships(vendor_membership_id)
+        ON DELETE RESTRICT
+        ON UPDATE NO ACTION,
+    CHECK (
+        typeof(vendor_membership_id) = 'text'
+        AND length(vendor_membership_id) = 36
+        AND vendor_membership_id GLOB
+            '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+        AND vendor_membership_id <> '00000000-0000-0000-0000-000000000000'
+    ),
+    CHECK (
+        typeof(vendor_id) = 'text'
+        AND length(vendor_id) = 36
+        AND vendor_id GLOB
+            '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+        AND vendor_id <> '00000000-0000-0000-0000-000000000000'
+    ),
+    CHECK (
+        predecessor_membership_id IS NULL
+        OR (
+            typeof(predecessor_membership_id) = 'text'
+            AND length(predecessor_membership_id) = 36
+            AND predecessor_membership_id GLOB
+                '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+            AND predecessor_membership_id <> '00000000-0000-0000-0000-000000000000'
+            AND predecessor_membership_id <> vendor_membership_id
+        )
+    ),
+    CHECK (typeof(vendor_account_id) = 'integer' AND vendor_account_id > 0),
+    CHECK (membership_role IN ('owner', 'member')),
+    CHECK (membership_status IN ('pending', 'active', 'revoked')),
+    CHECK (created_actor_kind IN ('system', 'internal_user', 'vendor_account', 'migration')),
+    CHECK (updated_actor_kind IN ('system', 'internal_user', 'vendor_account', 'migration')),
+    CHECK (length(created_actor_id) BETWEEN 1 AND 128 AND length(trim(created_actor_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_actor_id) BETWEEN 1 AND 128 AND length(trim(updated_actor_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_reason) BETWEEN 1 AND 500 AND length(trim(created_reason, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_reason) BETWEEN 1 AND 500 AND length(trim(updated_reason, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_source) BETWEEN 1 AND 100 AND length(trim(created_source, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_source) BETWEEN 1 AND 100 AND length(trim(updated_source, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_correlation_id) BETWEEN 1 AND 128 AND length(trim(created_correlation_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_correlation_id) BETWEEN 1 AND 128 AND length(trim(updated_correlation_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0)
+) STRICT;
+"""
+
+_VENDOR_SITE_ASSIGNMENTS_TABLE_SQL = """
+CREATE TABLE vendor_site_assignments (
+    vendor_site_assignment_id TEXT NOT NULL PRIMARY KEY,
+    vendor_id TEXT NOT NULL,
+    site_id INTEGER NOT NULL,
+    assignment_status TEXT NOT NULL DEFAULT 'inactive',
+    predecessor_assignment_id TEXT DEFAULT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_actor_kind TEXT NOT NULL,
+    created_actor_id TEXT NOT NULL,
+    created_reason TEXT NOT NULL,
+    created_source TEXT NOT NULL,
+    created_correlation_id TEXT NOT NULL,
+    updated_actor_kind TEXT NOT NULL,
+    updated_actor_id TEXT NOT NULL,
+    updated_reason TEXT NOT NULL,
+    updated_source TEXT NOT NULL,
+    updated_correlation_id TEXT NOT NULL,
+    FOREIGN KEY (vendor_id)
+        REFERENCES vendor_organizations(vendor_id)
+        ON DELETE RESTRICT
+        ON UPDATE NO ACTION,
+    FOREIGN KEY (site_id)
+        REFERENCES sites(id)
+        ON DELETE RESTRICT
+        ON UPDATE NO ACTION,
+    FOREIGN KEY (predecessor_assignment_id)
+        REFERENCES vendor_site_assignments(vendor_site_assignment_id)
+        ON DELETE RESTRICT
+        ON UPDATE NO ACTION,
+    CHECK (
+        typeof(vendor_site_assignment_id) = 'text'
+        AND length(vendor_site_assignment_id) = 36
+        AND vendor_site_assignment_id GLOB
+            '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+        AND vendor_site_assignment_id <> '00000000-0000-0000-0000-000000000000'
+    ),
+    CHECK (
+        typeof(vendor_id) = 'text'
+        AND length(vendor_id) = 36
+        AND vendor_id GLOB
+            '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+        AND vendor_id <> '00000000-0000-0000-0000-000000000000'
+    ),
+    CHECK (
+        predecessor_assignment_id IS NULL
+        OR (
+            typeof(predecessor_assignment_id) = 'text'
+            AND length(predecessor_assignment_id) = 36
+            AND predecessor_assignment_id GLOB
+                '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+            AND predecessor_assignment_id <> '00000000-0000-0000-0000-000000000000'
+            AND predecessor_assignment_id <> vendor_site_assignment_id
+        )
+    ),
+    CHECK (typeof(site_id) = 'integer' AND site_id > 0),
+    CHECK (assignment_status IN ('active', 'inactive')),
+    CHECK (created_actor_kind IN ('system', 'internal_user', 'vendor_account', 'migration')),
+    CHECK (updated_actor_kind IN ('system', 'internal_user', 'vendor_account', 'migration')),
+    CHECK (length(created_actor_id) BETWEEN 1 AND 128 AND length(trim(created_actor_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_actor_id) BETWEEN 1 AND 128 AND length(trim(updated_actor_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_reason) BETWEEN 1 AND 500 AND length(trim(created_reason, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_reason) BETWEEN 1 AND 500 AND length(trim(updated_reason, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_source) BETWEEN 1 AND 100 AND length(trim(created_source, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_source) BETWEEN 1 AND 100 AND length(trim(updated_source, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_correlation_id) BETWEEN 1 AND 128 AND length(trim(created_correlation_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_correlation_id) BETWEEN 1 AND 128 AND length(trim(updated_correlation_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0)
+) STRICT;
+"""
+
+_SHEET_VENDOR_BINDINGS_TABLE_SQL = """
+CREATE TABLE sheet_vendor_bindings (
+    sheet_vendor_binding_id TEXT NOT NULL PRIMARY KEY,
+    vendor_id TEXT NOT NULL,
+    sheet_id INTEGER NOT NULL,
+    site_id INTEGER NOT NULL,
+    vendor_site_assignment_id TEXT NOT NULL,
+    binding_status TEXT NOT NULL DEFAULT 'inactive',
+    predecessor_binding_id TEXT DEFAULT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_actor_kind TEXT NOT NULL,
+    created_actor_id TEXT NOT NULL,
+    created_reason TEXT NOT NULL,
+    created_source TEXT NOT NULL,
+    created_correlation_id TEXT NOT NULL,
+    updated_actor_kind TEXT NOT NULL,
+    updated_actor_id TEXT NOT NULL,
+    updated_reason TEXT NOT NULL,
+    updated_source TEXT NOT NULL,
+    updated_correlation_id TEXT NOT NULL,
+    FOREIGN KEY (vendor_id)
+        REFERENCES vendor_organizations(vendor_id)
+        ON DELETE RESTRICT
+        ON UPDATE NO ACTION,
+    FOREIGN KEY (sheet_id)
+        REFERENCES sheets(id)
+        ON DELETE RESTRICT
+        ON UPDATE NO ACTION,
+    FOREIGN KEY (site_id)
+        REFERENCES sites(id)
+        ON DELETE RESTRICT
+        ON UPDATE NO ACTION,
+    FOREIGN KEY (vendor_site_assignment_id)
+        REFERENCES vendor_site_assignments(vendor_site_assignment_id)
+        ON DELETE RESTRICT
+        ON UPDATE NO ACTION,
+    FOREIGN KEY (predecessor_binding_id)
+        REFERENCES sheet_vendor_bindings(sheet_vendor_binding_id)
+        ON DELETE RESTRICT
+        ON UPDATE NO ACTION,
+    CHECK (
+        typeof(sheet_vendor_binding_id) = 'text'
+        AND length(sheet_vendor_binding_id) = 36
+        AND sheet_vendor_binding_id GLOB
+            '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+        AND sheet_vendor_binding_id <> '00000000-0000-0000-0000-000000000000'
+    ),
+    CHECK (
+        typeof(vendor_id) = 'text'
+        AND length(vendor_id) = 36
+        AND vendor_id GLOB
+            '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+        AND vendor_id <> '00000000-0000-0000-0000-000000000000'
+    ),
+    CHECK (
+        typeof(vendor_site_assignment_id) = 'text'
+        AND length(vendor_site_assignment_id) = 36
+        AND vendor_site_assignment_id GLOB
+            '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+        AND vendor_site_assignment_id <> '00000000-0000-0000-0000-000000000000'
+    ),
+    CHECK (
+        predecessor_binding_id IS NULL
+        OR (
+            typeof(predecessor_binding_id) = 'text'
+            AND length(predecessor_binding_id) = 36
+            AND predecessor_binding_id GLOB
+                '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+            AND predecessor_binding_id <> '00000000-0000-0000-0000-000000000000'
+            AND predecessor_binding_id <> sheet_vendor_binding_id
+        )
+    ),
+    CHECK (typeof(sheet_id) = 'integer' AND sheet_id > 0),
+    CHECK (typeof(site_id) = 'integer' AND site_id > 0),
+    CHECK (binding_status IN ('active', 'inactive')),
+    CHECK (created_actor_kind IN ('system', 'internal_user', 'vendor_account', 'migration')),
+    CHECK (updated_actor_kind IN ('system', 'internal_user', 'vendor_account', 'migration')),
+    CHECK (length(created_actor_id) BETWEEN 1 AND 128 AND length(trim(created_actor_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_actor_id) BETWEEN 1 AND 128 AND length(trim(updated_actor_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_reason) BETWEEN 1 AND 500 AND length(trim(created_reason, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_reason) BETWEEN 1 AND 500 AND length(trim(updated_reason, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_source) BETWEEN 1 AND 100 AND length(trim(created_source, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_source) BETWEEN 1 AND 100 AND length(trim(updated_source, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(created_correlation_id) BETWEEN 1 AND 128 AND length(trim(created_correlation_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0),
+    CHECK (length(updated_correlation_id) BETWEEN 1 AND 128 AND length(trim(updated_correlation_id, CAST(X'090A0B0C0D1C1D1E1F20C285C2A0E19A80E28080E28081E28082E28083E28084E28085E28086E28087E28088E28089E2808AE280A8E280A9E280AFE2819FE38080' AS TEXT))) > 0)
+) STRICT;
+"""
+
+_IDX_VENDOR_ORGANIZATIONS_STATUS_SQL = """
+CREATE INDEX idx_vendor_organizations_status
+ON vendor_organizations (organization_status);
+"""
+
+_UQ_VENDOR_ORGANIZATION_MEMBERSHIPS_ACTIVE_ACCOUNT_SQL = """
+CREATE UNIQUE INDEX uq_vendor_organization_memberships_active_account
+ON vendor_organization_memberships (vendor_account_id)
+WHERE membership_status = 'active';
+"""
+
+_UQ_VENDOR_ORGANIZATION_MEMBERSHIPS_CURRENT_PAIR_SQL = """
+CREATE UNIQUE INDEX uq_vendor_organization_memberships_current_pair
+ON vendor_organization_memberships (vendor_id, vendor_account_id)
+WHERE membership_status IN ('pending', 'active');
+"""
+
+_IDX_VENDOR_ORGANIZATION_MEMBERSHIPS_VENDOR_STATUS_SQL = """
+CREATE INDEX idx_vendor_organization_memberships_vendor_status
+ON vendor_organization_memberships (vendor_id, membership_status);
+"""
+
+_IDX_VENDOR_ORGANIZATION_MEMBERSHIPS_ACCOUNT_STATUS_SQL = """
+CREATE INDEX idx_vendor_organization_memberships_account_status
+ON vendor_organization_memberships (vendor_account_id, membership_status);
+"""
+
+_UQ_VENDOR_ORGANIZATION_MEMBERSHIPS_PREDECESSOR_SQL = """
+CREATE UNIQUE INDEX uq_vendor_organization_memberships_predecessor
+ON vendor_organization_memberships (predecessor_membership_id)
+WHERE predecessor_membership_id IS NOT NULL;
+"""
+
+_UQ_VENDOR_SITE_ASSIGNMENTS_ACTIVE_PAIR_SQL = """
+CREATE UNIQUE INDEX uq_vendor_site_assignments_active_pair
+ON vendor_site_assignments (vendor_id, site_id)
+WHERE assignment_status = 'active';
+"""
+
+_IDX_VENDOR_SITE_ASSIGNMENTS_VENDOR_STATUS_SQL = """
+CREATE INDEX idx_vendor_site_assignments_vendor_status
+ON vendor_site_assignments (vendor_id, assignment_status);
+"""
+
+_IDX_VENDOR_SITE_ASSIGNMENTS_SITE_STATUS_SQL = """
+CREATE INDEX idx_vendor_site_assignments_site_status
+ON vendor_site_assignments (site_id, assignment_status);
+"""
+
+_UQ_VENDOR_SITE_ASSIGNMENTS_PREDECESSOR_SQL = """
+CREATE UNIQUE INDEX uq_vendor_site_assignments_predecessor
+ON vendor_site_assignments (predecessor_assignment_id)
+WHERE predecessor_assignment_id IS NOT NULL;
+"""
+
+_UQ_SHEET_VENDOR_BINDINGS_ACTIVE_PAIR_SQL = """
+CREATE UNIQUE INDEX uq_sheet_vendor_bindings_active_pair
+ON sheet_vendor_bindings (vendor_id, sheet_id)
+WHERE binding_status = 'active';
+"""
+
+_IDX_SHEET_VENDOR_BINDINGS_VENDOR_STATUS_SQL = """
+CREATE INDEX idx_sheet_vendor_bindings_vendor_status
+ON sheet_vendor_bindings (vendor_id, binding_status);
+"""
+
+_IDX_SHEET_VENDOR_BINDINGS_SHEET_STATUS_SQL = """
+CREATE INDEX idx_sheet_vendor_bindings_sheet_status
+ON sheet_vendor_bindings (sheet_id, binding_status);
+"""
+
+_IDX_SHEET_VENDOR_BINDINGS_ASSIGNMENT_SQL = """
+CREATE INDEX idx_sheet_vendor_bindings_assignment
+ON sheet_vendor_bindings (vendor_site_assignment_id);
+"""
+
+_UQ_SHEET_VENDOR_BINDINGS_PREDECESSOR_SQL = """
+CREATE UNIQUE INDEX uq_sheet_vendor_bindings_predecessor
+ON sheet_vendor_bindings (predecessor_binding_id)
+WHERE predecessor_binding_id IS NOT NULL;
+"""
+
+VENDOR_ORGANIZATION_SCHEMA_STATEMENTS = (
+    _VENDOR_ORGANIZATIONS_TABLE_SQL,
+    _VENDOR_ORGANIZATION_MEMBERSHIPS_TABLE_SQL,
+    _VENDOR_SITE_ASSIGNMENTS_TABLE_SQL,
+    _SHEET_VENDOR_BINDINGS_TABLE_SQL,
+    _IDX_VENDOR_ORGANIZATIONS_STATUS_SQL,
+    _UQ_VENDOR_ORGANIZATION_MEMBERSHIPS_ACTIVE_ACCOUNT_SQL,
+    _UQ_VENDOR_ORGANIZATION_MEMBERSHIPS_CURRENT_PAIR_SQL,
+    _IDX_VENDOR_ORGANIZATION_MEMBERSHIPS_VENDOR_STATUS_SQL,
+    _IDX_VENDOR_ORGANIZATION_MEMBERSHIPS_ACCOUNT_STATUS_SQL,
+    _UQ_VENDOR_ORGANIZATION_MEMBERSHIPS_PREDECESSOR_SQL,
+    _UQ_VENDOR_SITE_ASSIGNMENTS_ACTIVE_PAIR_SQL,
+    _IDX_VENDOR_SITE_ASSIGNMENTS_VENDOR_STATUS_SQL,
+    _IDX_VENDOR_SITE_ASSIGNMENTS_SITE_STATUS_SQL,
+    _UQ_VENDOR_SITE_ASSIGNMENTS_PREDECESSOR_SQL,
+    _UQ_SHEET_VENDOR_BINDINGS_ACTIVE_PAIR_SQL,
+    _IDX_SHEET_VENDOR_BINDINGS_VENDOR_STATUS_SQL,
+    _IDX_SHEET_VENDOR_BINDINGS_SHEET_STATUS_SQL,
+    _IDX_SHEET_VENDOR_BINDINGS_ASSIGNMENT_SQL,
+    _UQ_SHEET_VENDOR_BINDINGS_PREDECESSOR_SQL,
+)
+
+VENDOR_ORGANIZATION_MAIN_SCHEMA_SQL = """
+SELECT type, name, tbl_name, sql
+FROM main.sqlite_schema
+ORDER BY
+    type COLLATE BINARY,
+    name COLLATE BINARY,
+    tbl_name COLLATE BINARY;
+"""
+VENDOR_ORGANIZATION_TEMP_SCHEMA_SQL = """
+SELECT type, name, tbl_name, sql
+FROM temp.sqlite_schema
+ORDER BY
+    type COLLATE BINARY,
+    name COLLATE BINARY,
+    tbl_name COLLATE BINARY;
+"""
+VENDOR_ORGANIZATION_TABLE_LIST_SQL = """
+SELECT schema, name, type, ncol, wr, strict
+FROM pragma_table_list
+ORDER BY
+    schema COLLATE BINARY,
+    name COLLATE BINARY,
+    type COLLATE BINARY;
+"""
+VENDOR_ORGANIZATION_TABLE_XINFO_SQL = """
+SELECT cid, name, type, "notnull", dflt_value, pk, hidden
+FROM pragma_table_xinfo(?1, 'main')
+ORDER BY cid;
+"""
+VENDOR_ORGANIZATION_FOREIGN_KEY_LIST_SQL = """
+SELECT "from", "table", "to", on_update, on_delete, match, seq
+FROM pragma_foreign_key_list(?1, 'main')
+ORDER BY
+    "from" COLLATE BINARY,
+    "table" COLLATE BINARY,
+    "to" COLLATE BINARY,
+    seq;
+"""
+VENDOR_ORGANIZATION_INDEX_LIST_SQL = """
+SELECT name, "unique", origin, partial
+FROM pragma_index_list(?1, 'main')
+ORDER BY name COLLATE BINARY;
+"""
+VENDOR_ORGANIZATION_INDEX_XINFO_SQL = """
+SELECT seqno, cid, name, "desc", coll, key
+FROM pragma_index_xinfo(?1, 'main')
+ORDER BY seqno;
+"""
+VENDOR_ORGANIZATION_DATABASE_LIST_SQL = """
+SELECT seq, name, file
+FROM pragma_database_list
+ORDER BY seq;
+"""
+
+VENDOR_ORGANIZATIONS_ROW_COUNT_SQL = """
+SELECT COUNT(*) AS row_count
+FROM main.vendor_organizations;
+"""
+VENDOR_ORGANIZATION_MEMBERSHIPS_ROW_COUNT_SQL = """
+SELECT COUNT(*) AS row_count
+FROM main.vendor_organization_memberships;
+"""
+VENDOR_SITE_ASSIGNMENTS_ROW_COUNT_SQL = """
+SELECT COUNT(*) AS row_count
+FROM main.vendor_site_assignments;
+"""
+SHEET_VENDOR_BINDINGS_ROW_COUNT_SQL = """
+SELECT COUNT(*) AS row_count
+FROM main.sheet_vendor_bindings;
+"""
+
+_VENDOR_ORGANIZATION_REQUIRED_TABLES = (
+    "vendor_organizations",
+    "vendor_organization_memberships",
+    "vendor_site_assignments",
+    "sheet_vendor_bindings",
+)
+_VENDOR_ORGANIZATION_PARENT_TABLES = (
+    "vendor_accounts",
+    "sites",
+    "sheets",
+)
+_VENDOR_ORGANIZATION_AUTO_INDEXES = (
+    ("sqlite_autoindex_vendor_organizations_1", "vendor_organizations", "vendor_id"),
+    (
+        "sqlite_autoindex_vendor_organization_memberships_1",
+        "vendor_organization_memberships",
+        "vendor_membership_id",
+    ),
+    (
+        "sqlite_autoindex_vendor_site_assignments_1",
+        "vendor_site_assignments",
+        "vendor_site_assignment_id",
+    ),
+    (
+        "sqlite_autoindex_sheet_vendor_bindings_1",
+        "sheet_vendor_bindings",
+        "sheet_vendor_binding_id",
+    ),
+)
+_VENDOR_ORGANIZATION_EXPLICIT_INDEXES = (
+    (
+        "idx_vendor_organizations_status",
+        "vendor_organizations",
+        ("organization_status",),
+        0,
+        0,
+    ),
+    (
+        "uq_vendor_organization_memberships_active_account",
+        "vendor_organization_memberships",
+        ("vendor_account_id",),
+        1,
+        1,
+    ),
+    (
+        "uq_vendor_organization_memberships_current_pair",
+        "vendor_organization_memberships",
+        ("vendor_id", "vendor_account_id"),
+        1,
+        1,
+    ),
+    (
+        "idx_vendor_organization_memberships_vendor_status",
+        "vendor_organization_memberships",
+        ("vendor_id", "membership_status"),
+        0,
+        0,
+    ),
+    (
+        "idx_vendor_organization_memberships_account_status",
+        "vendor_organization_memberships",
+        ("vendor_account_id", "membership_status"),
+        0,
+        0,
+    ),
+    (
+        "uq_vendor_organization_memberships_predecessor",
+        "vendor_organization_memberships",
+        ("predecessor_membership_id",),
+        1,
+        1,
+    ),
+    (
+        "uq_vendor_site_assignments_active_pair",
+        "vendor_site_assignments",
+        ("vendor_id", "site_id"),
+        1,
+        1,
+    ),
+    (
+        "idx_vendor_site_assignments_vendor_status",
+        "vendor_site_assignments",
+        ("vendor_id", "assignment_status"),
+        0,
+        0,
+    ),
+    (
+        "idx_vendor_site_assignments_site_status",
+        "vendor_site_assignments",
+        ("site_id", "assignment_status"),
+        0,
+        0,
+    ),
+    (
+        "uq_vendor_site_assignments_predecessor",
+        "vendor_site_assignments",
+        ("predecessor_assignment_id",),
+        1,
+        1,
+    ),
+    (
+        "uq_sheet_vendor_bindings_active_pair",
+        "sheet_vendor_bindings",
+        ("vendor_id", "sheet_id"),
+        1,
+        1,
+    ),
+    (
+        "idx_sheet_vendor_bindings_vendor_status",
+        "sheet_vendor_bindings",
+        ("vendor_id", "binding_status"),
+        0,
+        0,
+    ),
+    (
+        "idx_sheet_vendor_bindings_sheet_status",
+        "sheet_vendor_bindings",
+        ("sheet_id", "binding_status"),
+        0,
+        0,
+    ),
+    (
+        "idx_sheet_vendor_bindings_assignment",
+        "sheet_vendor_bindings",
+        ("vendor_site_assignment_id",),
+        0,
+        0,
+    ),
+    (
+        "uq_sheet_vendor_bindings_predecessor",
+        "sheet_vendor_bindings",
+        ("predecessor_binding_id",),
+        1,
+        1,
+    ),
+)
+_VENDOR_ORGANIZATION_ERROR_CODES = (
+    "invalid_connection",
+    "inactive_transaction",
+    "metadata_unreadable",
+    "unsupported_database_topology",
+    "parent_incompatible",
+    "schema_partial",
+    "schema_drifted",
+    "extra_owned_object",
+    "wrong_object_type",
+    "savepoint_create_failed",
+    "ddl_or_postcheck_failed",
+    "rollback_to_failed",
+    "cleanup_release_failed",
+    "success_release_failed",
+)
+_VENDOR_ORGANIZATION_SAVEPOINT_SQL = "SAVEPOINT vendor_id_002_schema_v1"
+_VENDOR_ORGANIZATION_ROLLBACK_TO_SQL = (
+    "ROLLBACK TO SAVEPOINT vendor_id_002_schema_v1"
+)
+_VENDOR_ORGANIZATION_RELEASE_SQL = (
+    "RELEASE SAVEPOINT vendor_id_002_schema_v1"
+)
+_VENDOR_ORGANIZATION_ENTRY_BEGIN_SQL = "BEGIN IMMEDIATE"
+_VENDOR_ORGANIZATION_ROW_COUNT_SQL = (
+    VENDOR_ORGANIZATIONS_ROW_COUNT_SQL,
+    VENDOR_ORGANIZATION_MEMBERSHIPS_ROW_COUNT_SQL,
+    VENDOR_SITE_ASSIGNMENTS_ROW_COUNT_SQL,
+    SHEET_VENDOR_BINDINGS_ROW_COUNT_SQL,
+)
+_VENDOR_ORGANIZATION_RESERVED_PREFIXES = (
+    "vendor_organization_",
+    "vendor_organizations_",
+    "vendor_site_assignment_",
+    "vendor_site_assignments_",
+    "sheet_vendor_binding_",
+    "sheet_vendor_bindings_",
+    "idx_vendor_organizations_",
+    "uq_vendor_organizations_",
+    "idx_vendor_organization_memberships_",
+    "uq_vendor_organization_memberships_",
+    "idx_vendor_site_assignments_",
+    "uq_vendor_site_assignments_",
+    "idx_sheet_vendor_bindings_",
+    "uq_sheet_vendor_bindings_",
+)
+_VENDOR_ORGANIZATION_PARTIAL_PREDICATES = (
+    "membership_status = 'active'",
+    "membership_status IN ('pending', 'active')",
+    "predecessor_membership_id IS NOT NULL",
+    "assignment_status = 'active'",
+    "predecessor_assignment_id IS NOT NULL",
+    "binding_status = 'active'",
+    "predecessor_binding_id IS NOT NULL",
+)
+_VENDOR_ORGANIZATION_TABLE_COLUMNS = {
+    "vendor_organizations": (
+        (0, "vendor_id", "TEXT", 1, None, 1, 0),
+        (1, "display_name", "TEXT", 1, None, 0, 0),
+        (2, "organization_status", "TEXT", 1, "'disabled'", 0, 0),
+        (3, "created_at", "TEXT", 1, "CURRENT_TIMESTAMP", 0, 0),
+        (4, "updated_at", "TEXT", 1, "CURRENT_TIMESTAMP", 0, 0),
+        (5, "created_actor_kind", "TEXT", 1, None, 0, 0),
+        (6, "created_actor_id", "TEXT", 1, None, 0, 0),
+        (7, "created_reason", "TEXT", 1, None, 0, 0),
+        (8, "created_source", "TEXT", 1, None, 0, 0),
+        (9, "created_correlation_id", "TEXT", 1, None, 0, 0),
+        (10, "updated_actor_kind", "TEXT", 1, None, 0, 0),
+        (11, "updated_actor_id", "TEXT", 1, None, 0, 0),
+        (12, "updated_reason", "TEXT", 1, None, 0, 0),
+        (13, "updated_source", "TEXT", 1, None, 0, 0),
+        (14, "updated_correlation_id", "TEXT", 1, None, 0, 0),
+    ),
+    "vendor_organization_memberships": (
+        (0, "vendor_membership_id", "TEXT", 1, None, 1, 0),
+        (1, "vendor_id", "TEXT", 1, None, 0, 0),
+        (2, "vendor_account_id", "INTEGER", 1, None, 0, 0),
+        (3, "membership_role", "TEXT", 1, "'member'", 0, 0),
+        (4, "membership_status", "TEXT", 1, "'pending'", 0, 0),
+        (5, "predecessor_membership_id", "TEXT", 0, "NULL", 0, 0),
+        (6, "created_at", "TEXT", 1, "CURRENT_TIMESTAMP", 0, 0),
+        (7, "updated_at", "TEXT", 1, "CURRENT_TIMESTAMP", 0, 0),
+        (8, "created_actor_kind", "TEXT", 1, None, 0, 0),
+        (9, "created_actor_id", "TEXT", 1, None, 0, 0),
+        (10, "created_reason", "TEXT", 1, None, 0, 0),
+        (11, "created_source", "TEXT", 1, None, 0, 0),
+        (12, "created_correlation_id", "TEXT", 1, None, 0, 0),
+        (13, "updated_actor_kind", "TEXT", 1, None, 0, 0),
+        (14, "updated_actor_id", "TEXT", 1, None, 0, 0),
+        (15, "updated_reason", "TEXT", 1, None, 0, 0),
+        (16, "updated_source", "TEXT", 1, None, 0, 0),
+        (17, "updated_correlation_id", "TEXT", 1, None, 0, 0),
+    ),
+    "vendor_site_assignments": (
+        (0, "vendor_site_assignment_id", "TEXT", 1, None, 1, 0),
+        (1, "vendor_id", "TEXT", 1, None, 0, 0),
+        (2, "site_id", "INTEGER", 1, None, 0, 0),
+        (3, "assignment_status", "TEXT", 1, "'inactive'", 0, 0),
+        (4, "predecessor_assignment_id", "TEXT", 0, "NULL", 0, 0),
+        (5, "created_at", "TEXT", 1, "CURRENT_TIMESTAMP", 0, 0),
+        (6, "updated_at", "TEXT", 1, "CURRENT_TIMESTAMP", 0, 0),
+        (7, "created_actor_kind", "TEXT", 1, None, 0, 0),
+        (8, "created_actor_id", "TEXT", 1, None, 0, 0),
+        (9, "created_reason", "TEXT", 1, None, 0, 0),
+        (10, "created_source", "TEXT", 1, None, 0, 0),
+        (11, "created_correlation_id", "TEXT", 1, None, 0, 0),
+        (12, "updated_actor_kind", "TEXT", 1, None, 0, 0),
+        (13, "updated_actor_id", "TEXT", 1, None, 0, 0),
+        (14, "updated_reason", "TEXT", 1, None, 0, 0),
+        (15, "updated_source", "TEXT", 1, None, 0, 0),
+        (16, "updated_correlation_id", "TEXT", 1, None, 0, 0),
+    ),
+    "sheet_vendor_bindings": (
+        (0, "sheet_vendor_binding_id", "TEXT", 1, None, 1, 0),
+        (1, "vendor_id", "TEXT", 1, None, 0, 0),
+        (2, "sheet_id", "INTEGER", 1, None, 0, 0),
+        (3, "site_id", "INTEGER", 1, None, 0, 0),
+        (4, "vendor_site_assignment_id", "TEXT", 1, None, 0, 0),
+        (5, "binding_status", "TEXT", 1, "'inactive'", 0, 0),
+        (6, "predecessor_binding_id", "TEXT", 0, "NULL", 0, 0),
+        (7, "created_at", "TEXT", 1, "CURRENT_TIMESTAMP", 0, 0),
+        (8, "updated_at", "TEXT", 1, "CURRENT_TIMESTAMP", 0, 0),
+        (9, "created_actor_kind", "TEXT", 1, None, 0, 0),
+        (10, "created_actor_id", "TEXT", 1, None, 0, 0),
+        (11, "created_reason", "TEXT", 1, None, 0, 0),
+        (12, "created_source", "TEXT", 1, None, 0, 0),
+        (13, "created_correlation_id", "TEXT", 1, None, 0, 0),
+        (14, "updated_actor_kind", "TEXT", 1, None, 0, 0),
+        (15, "updated_actor_id", "TEXT", 1, None, 0, 0),
+        (16, "updated_reason", "TEXT", 1, None, 0, 0),
+        (17, "updated_source", "TEXT", 1, None, 0, 0),
+        (18, "updated_correlation_id", "TEXT", 1, None, 0, 0),
+    ),
+}
+_VENDOR_ORGANIZATION_FOREIGN_KEYS = {
+    "vendor_organizations": (),
+    "vendor_organization_memberships": (
+        (
+            "predecessor_membership_id",
+            "vendor_organization_memberships",
+            "vendor_membership_id",
+            "NO ACTION",
+            "RESTRICT",
+            "NONE",
+            0,
+        ),
+        (
+            "vendor_account_id",
+            "vendor_accounts",
+            "id",
+            "NO ACTION",
+            "RESTRICT",
+            "NONE",
+            0,
+        ),
+        (
+            "vendor_id",
+            "vendor_organizations",
+            "vendor_id",
+            "NO ACTION",
+            "RESTRICT",
+            "NONE",
+            0,
+        ),
+    ),
+    "vendor_site_assignments": (
+        (
+            "predecessor_assignment_id",
+            "vendor_site_assignments",
+            "vendor_site_assignment_id",
+            "NO ACTION",
+            "RESTRICT",
+            "NONE",
+            0,
+        ),
+        ("site_id", "sites", "id", "NO ACTION", "RESTRICT", "NONE", 0),
+        (
+            "vendor_id",
+            "vendor_organizations",
+            "vendor_id",
+            "NO ACTION",
+            "RESTRICT",
+            "NONE",
+            0,
+        ),
+    ),
+    "sheet_vendor_bindings": (
+        (
+            "predecessor_binding_id",
+            "sheet_vendor_bindings",
+            "sheet_vendor_binding_id",
+            "NO ACTION",
+            "RESTRICT",
+            "NONE",
+            0,
+        ),
+        ("sheet_id", "sheets", "id", "NO ACTION", "RESTRICT", "NONE", 0),
+        ("site_id", "sites", "id", "NO ACTION", "RESTRICT", "NONE", 0),
+        (
+            "vendor_id",
+            "vendor_organizations",
+            "vendor_id",
+            "NO ACTION",
+            "RESTRICT",
+            "NONE",
+            0,
+        ),
+        (
+            "vendor_site_assignment_id",
+            "vendor_site_assignments",
+            "vendor_site_assignment_id",
+            "NO ACTION",
+            "RESTRICT",
+            "NONE",
+            0,
+        ),
+    ),
+}
+
+
+class VendorOrganizationSchemaMigrationError(RuntimeError):
+    code: str
+
+    def __init__(self, code: str, /) -> None:
+        if type(code) is not str or code not in _VENDOR_ORGANIZATION_ERROR_CODES:
+            raise ValueError("invalid VENDOR-ID-002 schema migration error code")
+        self.code = code
+        super().__init__(f"VENDOR-ID-002 schema migration failed [{code}]")
+
+
+class _VendorOrganizationMetadataError(Exception):
+    pass
+
+
+def _raise_vendor_organization_schema_error(code: str) -> None:
+    error = VendorOrganizationSchemaMigrationError(code)
+    raise error
+
+
+def _normalize_vendor_organization_schema_sql(value: object) -> str:
+    if type(value) is not str:
+        raise _VendorOrganizationMetadataError
+    if "\x00" in value or any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        raise _VendorOrganizationMetadataError
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.strip(" \t\n\v\f")
+    if normalized.endswith(";"):
+        normalized = normalized[:-1]
+    normalized = normalized.rstrip(" \t\n\v\f")
+    if not normalized:
+        raise _VendorOrganizationMetadataError
+    return normalized
+
+
+def _vendor_organization_table_elements(sql: str) -> tuple[str, ...]:
+    normalized = _normalize_vendor_organization_schema_sql(sql)
+    elements: list[str] = []
+    buffer: list[str] = []
+    quote = ""
+    depth = 0
+    started = False
+    index = 0
+    while index < len(normalized):
+        char = normalized[index]
+        next_char = normalized[index + 1] if index + 1 < len(normalized) else ""
+        if quote:
+            if started:
+                buffer.append(char)
+            if quote == "]":
+                if char == "]":
+                    quote = ""
+            elif char == quote:
+                if next_char == quote:
+                    if started:
+                        buffer.append(next_char)
+                    index += 1
+                else:
+                    quote = ""
+            index += 1
+            continue
+        if char == "-" and next_char == "-":
+            raise _VendorOrganizationMetadataError
+        if char == "/" and next_char == "*":
+            raise _VendorOrganizationMetadataError
+        if char in ("'", '"', "`"):
+            quote = char
+            if started:
+                buffer.append(char)
+            index += 1
+            continue
+        if char == "[":
+            quote = "]"
+            if started:
+                buffer.append(char)
+            index += 1
+            continue
+        if char == "(":
+            depth += 1
+            if depth == 1:
+                started = True
+            else:
+                buffer.append(char)
+            index += 1
+            continue
+        if char == ")":
+            if depth <= 0:
+                raise _VendorOrganizationMetadataError
+            depth -= 1
+            if depth == 0:
+                elements.append("".join(buffer))
+                buffer = []
+                started = False
+            else:
+                buffer.append(char)
+            index += 1
+            continue
+        if started and depth == 1 and char == ",":
+            elements.append("".join(buffer))
+            buffer = []
+            index += 1
+            continue
+        if started:
+            buffer.append(char)
+        index += 1
+    if quote or depth != 0 or started or not elements:
+        raise _VendorOrganizationMetadataError
+    return tuple(elements)
+
+
+def _vendor_organization_parent_sql_is_compatible(sql: str) -> bool:
+    elements = _vendor_organization_table_elements(sql)
+    first = elements[0]
+    return (
+        re.fullmatch(
+            r"[ \t\n\v\f]*id[ \t\n\v\f]+INTEGER[ \t\n\v\f]+PRIMARY"
+            r"[ \t\n\v\f]+KEY(?:[ \t\n\v\f]+AUTOINCREMENT)?[ \t\n\v\f]*",
+            first,
+            flags=re.ASCII | re.IGNORECASE,
+        )
+        is not None
+    )
+
+
+def _vendor_metadata_rows(
+    conn: sqlite3.Connection,
+    sql: str,
+    expected_columns: tuple[str, ...],
+    expected_types: tuple[object, ...],
+    parameters: tuple[str, ...] = (),
+) -> tuple[tuple[object, ...], ...]:
+    cursor = conn.execute(sql, parameters)
+    if cursor.description is None:
+        raise _VendorOrganizationMetadataError
+    if tuple(column[0] for column in cursor.description) != expected_columns:
+        raise _VendorOrganizationMetadataError
+    rows: list[tuple[object, ...]] = []
+    for raw_row in cursor.fetchall():
+        row = tuple(raw_row)
+        if len(row) != len(expected_types):
+            raise _VendorOrganizationMetadataError
+        for value, expected in zip(row, expected_types, strict=True):
+            if expected == "str_or_none":
+                if value is not None and type(value) is not str:
+                    raise _VendorOrganizationMetadataError
+            elif type(value) is not expected:
+                raise _VendorOrganizationMetadataError
+        rows.append(row)
+    if len(set(rows)) != len(rows):
+        raise _VendorOrganizationMetadataError
+    return tuple(rows)
+
+
+def _vendor_rows_are_ordered(
+    rows: tuple[tuple[object, ...], ...],
+    key_indexes: tuple[int, ...],
+) -> bool:
+    keys = tuple(tuple(row[index] for index in key_indexes) for row in rows)
+    return keys == tuple(sorted(keys))
+
+
+def _require_vendor_metadata_domain(condition: bool) -> None:
+    if condition is not True:
+        raise _VendorOrganizationMetadataError
+
+
+def _validate_vendor_schema_rows(
+    rows: tuple[tuple[object, ...], ...],
+) -> None:
+    _require_vendor_metadata_domain(
+        len({row[:3] for row in rows}) == len(rows)
+        and all(
+            row[0] in ("index", "table", "trigger", "view")
+            and row[1] != ""
+            and row[2] != ""
+            and (row[3] is not None or row[0] == "index")
+            for row in rows
+        )
+    )
+
+
+def _validate_vendor_table_list_rows(
+    rows: tuple[tuple[object, ...], ...],
+) -> None:
+    _require_vendor_metadata_domain(
+        len({row[:3] for row in rows}) == len(rows)
+        and all(
+            row[0] != ""
+            and row[1] != ""
+            and row[2] in ("shadow", "table", "view", "virtual")
+            and row[3] >= 0
+            and row[4] in (0, 1)
+            and row[5] in (0, 1)
+            for row in rows
+        )
+    )
+
+
+def _validate_vendor_table_xinfo_rows(
+    rows: tuple[tuple[object, ...], ...],
+) -> None:
+    _require_vendor_metadata_domain(
+        len({row[0] for row in rows}) == len(rows)
+        and len({row[1] for row in rows}) == len(rows)
+        and all(
+            row[0] >= 0
+            and row[1] != ""
+            and row[3] in (0, 1)
+            and row[5] >= 0
+            and row[6] in (0, 1, 2, 3)
+            for row in rows
+        )
+    )
+
+
+def _validate_vendor_foreign_key_rows(
+    rows: tuple[tuple[object, ...], ...],
+) -> None:
+    _require_vendor_metadata_domain(
+        all(
+            row[0] != ""
+            and row[1] != ""
+            and row[2] != ""
+            and row[3]
+            in ("CASCADE", "NO ACTION", "RESTRICT", "SET DEFAULT", "SET NULL")
+            and row[4]
+            in ("CASCADE", "NO ACTION", "RESTRICT", "SET DEFAULT", "SET NULL")
+            and row[5] != ""
+            and row[6] >= 0
+            for row in rows
+        )
+    )
+
+
+def _validate_vendor_index_list_rows(
+    rows: tuple[tuple[object, ...], ...],
+) -> None:
+    _require_vendor_metadata_domain(
+        len({row[0] for row in rows}) == len(rows)
+        and all(
+            row[0] != ""
+            and row[1] in (0, 1)
+            and row[2] in ("c", "pk", "u")
+            and row[3] in (0, 1)
+            for row in rows
+        )
+    )
+
+
+def _validate_vendor_index_xinfo_rows(
+    rows: tuple[tuple[object, ...], ...],
+) -> None:
+    _require_vendor_metadata_domain(
+        len({row[0] for row in rows}) == len(rows)
+        and all(
+            row[0] >= 0
+            and row[1] >= -2
+            and row[3] in (0, 1)
+            and (row[4] is None or row[4] != "")
+            and row[5] in (0, 1)
+            for row in rows
+        )
+    )
+
+
+def _vendor_organization_is_reserved_name(
+    object_type: str,
+    name: str,
+) -> bool:
+    if (
+        name in _VENDOR_ORGANIZATION_REQUIRED_TABLES
+        or any(
+            name == spec[0]
+            for spec in _VENDOR_ORGANIZATION_EXPLICIT_INDEXES
+        )
+        or any(
+            name == spec[0]
+            for spec in _VENDOR_ORGANIZATION_AUTO_INDEXES
+        )
+    ):
+        return True
+    if object_type in ("table", "view", "trigger"):
+        return (
+            name[:20] == "vendor_organization_"
+            or name[:21] == "vendor_organizations_"
+            or name[:23] == "vendor_site_assignment_"
+            or name[:24] == "vendor_site_assignments_"
+            or name[:21] == "sheet_vendor_binding_"
+            or name[:22] == "sheet_vendor_bindings_"
+        )
+    if object_type == "index":
+        return (
+            name[:25] == "idx_vendor_organizations_"
+            or name[:24] == "uq_vendor_organizations_"
+            or name[:36]
+            == "idx_vendor_organization_memberships_"
+            or name[:35]
+            == "uq_vendor_organization_memberships_"
+            or name[:28] == "idx_vendor_site_assignments_"
+            or name[:27] == "uq_vendor_site_assignments_"
+            or name[:26] == "idx_sheet_vendor_bindings_"
+            or name[:25] == "uq_sheet_vendor_bindings_"
+        )
+    return False
+
+
+def _vendor_organization_expected_index_rows(
+    table: str,
+) -> tuple[tuple[object, ...], ...]:
+    rows = [
+        (name, unique, "c", partial)
+        for name, owner, _columns, unique, partial in _VENDOR_ORGANIZATION_EXPLICIT_INDEXES
+        if owner == table
+    ]
+    rows.extend(
+        (name, 1, "pk", 0)
+        for name, owner, _primary_key in _VENDOR_ORGANIZATION_AUTO_INDEXES
+        if owner == table
+    )
+    return tuple(sorted(rows, key=lambda row: row[0]))
+
+
+def _vendor_organization_expected_index_xinfo(
+    name: str,
+) -> tuple[tuple[object, ...], ...]:
+    for index_name, owner, columns, _unique, _partial in (
+        _VENDOR_ORGANIZATION_EXPLICIT_INDEXES
+    ):
+        if name == index_name:
+            column_cids = {
+                str(row[1]): int(row[0])
+                for row in _VENDOR_ORGANIZATION_TABLE_COLUMNS[owner]
+            }
+            return tuple(
+                (seqno, column_cids[column], column, 0, "BINARY", 1)
+                for seqno, column in enumerate(columns)
+            ) + ((len(columns), -1, None, 0, "BINARY", 0),)
+    for index_name, owner, primary_key in _VENDOR_ORGANIZATION_AUTO_INDEXES:
+        if name == index_name:
+            primary_key_cid = next(
+                int(row[0])
+                for row in _VENDOR_ORGANIZATION_TABLE_COLUMNS[owner]
+                if row[1] == primary_key
+            )
+            return (
+                (0, primary_key_cid, primary_key, 0, "BINARY", 1),
+                (1, -1, None, 0, "BINARY", 0),
+            )
+    raise _VendorOrganizationMetadataError
+
+
+def _classify_vendor_organization_schema(conn: sqlite3.Connection) -> str:
+    database_rows = _vendor_metadata_rows(
+        conn,
+        VENDOR_ORGANIZATION_DATABASE_LIST_SQL,
+        ("seq", "name", "file"),
+        (int, str, str),
+    )
+    _require_vendor_metadata_domain(
+        len({row[0] for row in database_rows}) == len(database_rows)
+        and len({row[1] for row in database_rows}) == len(database_rows)
+        and all(row[0] >= 0 and row[1] != "" for row in database_rows)
+    )
+    if not _vendor_rows_are_ordered(database_rows, (0,)):
+        raise _VendorOrganizationMetadataError
+    database_names = tuple(row[1] for row in database_rows)
+    if "main" not in database_names or any(
+        name not in ("main", "temp") for name in database_names
+    ):
+        return "unsupported_database_topology"
+
+    main_rows = _vendor_metadata_rows(
+        conn,
+        VENDOR_ORGANIZATION_MAIN_SCHEMA_SQL,
+        ("type", "name", "tbl_name", "sql"),
+        (str, str, str, "str_or_none"),
+    )
+    temp_rows = _vendor_metadata_rows(
+        conn,
+        VENDOR_ORGANIZATION_TEMP_SCHEMA_SQL,
+        ("type", "name", "tbl_name", "sql"),
+        (str, str, str, "str_or_none"),
+    )
+    table_list_rows = _vendor_metadata_rows(
+        conn,
+        VENDOR_ORGANIZATION_TABLE_LIST_SQL,
+        ("schema", "name", "type", "ncol", "wr", "strict"),
+        (str, str, str, int, int, int),
+    )
+    _validate_vendor_schema_rows(main_rows)
+    _validate_vendor_schema_rows(temp_rows)
+    _validate_vendor_table_list_rows(table_list_rows)
+    if not _vendor_rows_are_ordered(main_rows, (0, 1, 2)):
+        raise _VendorOrganizationMetadataError
+    if not _vendor_rows_are_ordered(temp_rows, (0, 1, 2)):
+        raise _VendorOrganizationMetadataError
+    if not _vendor_rows_are_ordered(table_list_rows, (0, 1, 2)):
+        raise _VendorOrganizationMetadataError
+
+    main_by_name: dict[str, list[tuple[object, ...]]] = {}
+    for row in main_rows:
+        main_by_name.setdefault(str(row[1]), []).append(row)
+    table_list_by_key = {
+        (str(row[0]), str(row[1]), str(row[2])): row for row in table_list_rows
+    }
+
+    parent_incompatible = False
+    for parent in _VENDOR_ORGANIZATION_PARENT_TABLES:
+        records = main_by_name.get(parent, [])
+        if len(records) != 1 or records[0][0] != "table":
+            parent_incompatible = True
+        parent_columns = _vendor_metadata_rows(
+            conn,
+            VENDOR_ORGANIZATION_TABLE_XINFO_SQL,
+            ("cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"),
+            (int, str, str, int, "str_or_none", int, int),
+            (parent,),
+        )
+        _validate_vendor_table_xinfo_rows(parent_columns)
+        if not _vendor_rows_are_ordered(parent_columns, (0,)):
+            raise _VendorOrganizationMetadataError
+        if len({row[0] for row in parent_columns}) != len(parent_columns):
+            raise _VendorOrganizationMetadataError
+        id_columns = [
+            row for row in parent_columns if row[1] == "id" and row[6] == 0
+        ]
+        if (
+            len(id_columns) != 1
+            or id_columns[0][0] != 0
+            or str(id_columns[0][2]).strip(" \t\n\v\f").upper() != "INTEGER"
+            or id_columns[0][3:] != (0, None, 1, 0)
+            or any(row[5] != 0 for row in parent_columns[1:])
+        ):
+            parent_incompatible = True
+        table_list_row = table_list_by_key.get(("main", parent, "table"))
+        if table_list_row is None or table_list_row[4] != 0:
+            parent_incompatible = True
+        if len(records) == 1 and records[0][0] == "table":
+            parent_sql = records[0][3]
+            if type(parent_sql) is not str:
+                raise _VendorOrganizationMetadataError
+            if not _vendor_organization_parent_sql_is_compatible(parent_sql):
+                parent_incompatible = True
+
+    required_table_rows: dict[str, tuple[tuple[object, ...], ...]] = {}
+    required_foreign_key_rows: dict[
+        str, tuple[tuple[object, ...], ...]
+    ] = {}
+    required_index_rows: dict[str, tuple[tuple[object, ...], ...]] = {}
+    for table in _VENDOR_ORGANIZATION_REQUIRED_TABLES:
+        columns = _vendor_metadata_rows(
+            conn,
+            VENDOR_ORGANIZATION_TABLE_XINFO_SQL,
+            ("cid", "name", "type", "notnull", "dflt_value", "pk", "hidden"),
+            (int, str, str, int, "str_or_none", int, int),
+            (table,),
+        )
+        foreign_keys = _vendor_metadata_rows(
+            conn,
+            VENDOR_ORGANIZATION_FOREIGN_KEY_LIST_SQL,
+            ("from", "table", "to", "on_update", "on_delete", "match", "seq"),
+            (str, str, str, str, str, str, int),
+            (table,),
+        )
+        indexes = _vendor_metadata_rows(
+            conn,
+            VENDOR_ORGANIZATION_INDEX_LIST_SQL,
+            ("name", "unique", "origin", "partial"),
+            (str, int, str, int),
+            (table,),
+        )
+        _validate_vendor_table_xinfo_rows(columns)
+        _validate_vendor_foreign_key_rows(foreign_keys)
+        _validate_vendor_index_list_rows(indexes)
+        if not _vendor_rows_are_ordered(columns, (0,)):
+            raise _VendorOrganizationMetadataError
+        if not _vendor_rows_are_ordered(foreign_keys, (0, 1, 2, 6)):
+            raise _VendorOrganizationMetadataError
+        if not _vendor_rows_are_ordered(indexes, (0,)):
+            raise _VendorOrganizationMetadataError
+        required_table_rows[table] = columns
+        required_foreign_key_rows[table] = foreign_keys
+        required_index_rows[table] = indexes
+
+    all_index_names = tuple(
+        spec[0] for spec in _VENDOR_ORGANIZATION_EXPLICIT_INDEXES
+    ) + tuple(spec[0] for spec in _VENDOR_ORGANIZATION_AUTO_INDEXES)
+    index_xinfo_rows: dict[str, tuple[tuple[object, ...], ...]] = {}
+    for index_name in all_index_names:
+        rows = _vendor_metadata_rows(
+            conn,
+            VENDOR_ORGANIZATION_INDEX_XINFO_SQL,
+            ("seqno", "cid", "name", "desc", "coll", "key"),
+            (int, int, "str_or_none", int, "str_or_none", int),
+            (index_name,),
+        )
+        if not _vendor_rows_are_ordered(rows, (0,)):
+            raise _VendorOrganizationMetadataError
+        _validate_vendor_index_xinfo_rows(rows)
+        index_xinfo_rows[index_name] = rows
+
+    wrong_object_type = False
+    extra_owned_object = False
+    schema_drifted = False
+
+    explicit_index_names = tuple(
+        spec[0] for spec in _VENDOR_ORGANIZATION_EXPLICIT_INDEXES
+    )
+    expected_names = set(_VENDOR_ORGANIZATION_REQUIRED_TABLES)
+    expected_names.update(explicit_index_names)
+    expected_names.update(spec[0] for spec in _VENDOR_ORGANIZATION_AUTO_INDEXES)
+
+    for required_name in expected_names:
+        expected_type = (
+            "table"
+            if required_name in _VENDOR_ORGANIZATION_REQUIRED_TABLES
+            else "index"
+        )
+        for record in main_by_name.get(required_name, []):
+            if record[0] != expected_type:
+                wrong_object_type = True
+
+    for record in temp_rows:
+        object_type, name, owner, _sql = record
+        if _vendor_organization_is_reserved_name(
+            str(object_type),
+            str(name),
+        ):
+            wrong_object_type = True
+        elif (
+            object_type in ("index", "trigger")
+            and owner in _VENDOR_ORGANIZATION_REQUIRED_TABLES
+        ):
+            extra_owned_object = True
+
+    for record in table_list_rows:
+        schema_name, name, object_type, _ncol, _wr, _strict = record
+        if (
+            schema_name == "temp"
+            and _vendor_organization_is_reserved_name(
+                str(object_type),
+                str(name),
+            )
+        ):
+            wrong_object_type = True
+
+    expected_main_records = {
+        ("table", table) for table in _VENDOR_ORGANIZATION_REQUIRED_TABLES
+    }
+    expected_main_records.update(("index", name) for name in explicit_index_names)
+    expected_main_records.update(
+        ("index", name) for name, _owner, _primary_key in _VENDOR_ORGANIZATION_AUTO_INDEXES
+    )
+    for record in main_rows:
+        object_type, name, owner, _sql = record
+        pair = (str(object_type), str(name))
+        if pair in expected_main_records:
+            continue
+        if (
+            str(object_type) == "index"
+            and str(owner) in _VENDOR_ORGANIZATION_REQUIRED_TABLES
+            and str(name).startswith("sqlite_autoindex_")
+        ):
+            schema_drifted = True
+        elif _vendor_organization_is_reserved_name(
+            str(object_type),
+            str(name),
+        ) or (
+            str(object_type) in ("index", "trigger")
+            and str(owner) in _VENDOR_ORGANIZATION_REQUIRED_TABLES
+        ):
+            extra_owned_object = True
+
+    normalized_statements = tuple(
+        _normalize_vendor_organization_schema_sql(statement)
+        for statement in VENDOR_ORGANIZATION_SCHEMA_STATEMENTS
+    )
+    expected_table_sql = dict(
+        zip(
+            _VENDOR_ORGANIZATION_REQUIRED_TABLES,
+            normalized_statements[:4],
+            strict=True,
+        )
+    )
+    expected_index_sql = dict(
+        zip(explicit_index_names, normalized_statements[4:], strict=True)
+    )
+
+    base_present = 0
+    for table in _VENDOR_ORGANIZATION_REQUIRED_TABLES:
+        records = [
+            row
+            for row in main_by_name.get(table, [])
+            if row[0] == "table"
+        ]
+        if len(records) == 1:
+            base_present += 1
+            observed_sql = records[0][3]
+            if (
+                type(observed_sql) is not str
+                or _normalize_vendor_organization_schema_sql(observed_sql)
+                != expected_table_sql[table]
+                or table_list_by_key.get(("main", table, "table"))
+                != (
+                    "main",
+                    table,
+                    "table",
+                    len(_VENDOR_ORGANIZATION_TABLE_COLUMNS[table]),
+                    0,
+                    1,
+                )
+                or required_table_rows[table]
+                != _VENDOR_ORGANIZATION_TABLE_COLUMNS[table]
+                or required_foreign_key_rows[table]
+                != _VENDOR_ORGANIZATION_FOREIGN_KEYS[table]
+                or required_index_rows[table]
+                != _vendor_organization_expected_index_rows(table)
+            ):
+                schema_drifted = True
+
+    for index_name, owner, _columns, _unique, _partial in (
+        _VENDOR_ORGANIZATION_EXPLICIT_INDEXES
+    ):
+        records = [
+            row
+            for row in main_by_name.get(index_name, [])
+            if row[0] == "index"
+        ]
+        if len(records) == 1:
+            base_present += 1
+            observed_sql = records[0][3]
+            if (
+                records[0][2] != owner
+                or type(observed_sql) is not str
+                or index_xinfo_rows[index_name]
+                != _vendor_organization_expected_index_xinfo(index_name)
+            ):
+                schema_drifted = True
+            if type(observed_sql) is str:
+                normalized_sql = _normalize_vendor_organization_schema_sql(
+                    observed_sql
+                )
+                if normalized_sql != expected_index_sql[index_name]:
+                    schema_drifted = True
+                if "\nWHERE " in normalized_sql:
+                    predicate = normalized_sql.split("\nWHERE ", 1)[1]
+                    if (
+                        predicate
+                        not in _VENDOR_ORGANIZATION_PARTIAL_PREDICATES
+                    ):
+                        schema_drifted = True
+
+    autoindex_present = 0
+    autoindex_drifted = False
+    for auto_name, owner, _primary_key in _VENDOR_ORGANIZATION_AUTO_INDEXES:
+        records = [
+            row
+            for row in main_by_name.get(auto_name, [])
+            if row[0] == "index"
+        ]
+        if len(records) == 1:
+            autoindex_present += 1
+            if (
+                records[0][2] != owner
+                or records[0][3] is not None
+                or index_xinfo_rows[auto_name]
+                != _vendor_organization_expected_index_xinfo(auto_name)
+            ):
+                autoindex_drifted = True
+        elif records or index_xinfo_rows[auto_name]:
+            autoindex_drifted = True
+
+    if parent_incompatible:
+        return "parent_incompatible"
+    if wrong_object_type:
+        return "wrong_object_type"
+    if extra_owned_object:
+        return "extra_owned_object"
+    if base_present == 0:
+        if autoindex_present != 0 or autoindex_drifted:
+            return "schema_drifted"
+        return "all_absent"
+    if base_present != 19:
+        return "schema_partial"
+    if autoindex_present != 4 or autoindex_drifted:
+        return "schema_drifted"
+    if schema_drifted:
+        return "schema_drifted"
+    return "all_exact"
+
+
+def _vendor_organization_schema_state(conn: sqlite3.Connection) -> str:
+    state = "metadata_unreadable"
+    try:
+        state = _classify_vendor_organization_schema(conn)
+    except Exception:
+        pass
+    return state
+
+
+def _vendor_organization_row_count_is_zero(
+    conn: sqlite3.Connection,
+    sql: str,
+) -> bool:
+    cursor = conn.execute(sql)
+    if cursor.description is None:
+        return False
+    if tuple(column[0] for column in cursor.description) != ("row_count",):
+        return False
+    rows = cursor.fetchall()
+    if len(rows) != 1:
+        return False
+    row = tuple(rows[0])
+    return len(row) == 1 and type(row[0]) is int and row[0] == 0
+
+
+def ensure_vendor_organization_schema(
+    conn: sqlite3.Connection,
+    /,
+) -> str:
+    if not isinstance(conn, sqlite3.Connection):
+        _raise_vendor_organization_schema_error("invalid_connection")
+    if conn.in_transaction is not True:
+        _raise_vendor_organization_schema_error("inactive_transaction")
+
+    state = _vendor_organization_schema_state(conn)
+    if state == "all_exact":
+        return "all_exact"
+    if state != "all_absent":
+        _raise_vendor_organization_schema_error(state)
+
+    savepoint_created = True
+    try:
+        conn.execute(_VENDOR_ORGANIZATION_SAVEPOINT_SQL)
+    except Exception:
+        savepoint_created = False
+    if not savepoint_created:
+        _raise_vendor_organization_schema_error("savepoint_create_failed")
+
+    operation_succeeded = True
+    try:
+        for statement in VENDOR_ORGANIZATION_SCHEMA_STATEMENTS:
+            conn.execute(statement)
+        operation_succeeded = (
+            _vendor_organization_schema_state(conn) == "all_exact"
+        )
+        if operation_succeeded:
+            for row_count_sql in _VENDOR_ORGANIZATION_ROW_COUNT_SQL:
+                if not _vendor_organization_row_count_is_zero(
+                    conn, row_count_sql
+                ):
+                    operation_succeeded = False
+                    break
+    except Exception:
+        operation_succeeded = False
+
+    if not operation_succeeded:
+        rollback_succeeded = True
+        try:
+            conn.execute(_VENDOR_ORGANIZATION_ROLLBACK_TO_SQL)
+        except Exception:
+            rollback_succeeded = False
+        if not rollback_succeeded:
+            _raise_vendor_organization_schema_error("rollback_to_failed")
+        cleanup_release_succeeded = True
+        try:
+            conn.execute(_VENDOR_ORGANIZATION_RELEASE_SQL)
+        except Exception:
+            cleanup_release_succeeded = False
+        if not cleanup_release_succeeded:
+            _raise_vendor_organization_schema_error("cleanup_release_failed")
+        _raise_vendor_organization_schema_error("ddl_or_postcheck_failed")
+
+    success_release_succeeded = True
+    try:
+        conn.execute(_VENDOR_ORGANIZATION_RELEASE_SQL)
+    except Exception:
+        success_release_succeeded = False
+    if not success_release_succeeded:
+        _raise_vendor_organization_schema_error("success_release_failed")
+    return "created"
 
 def env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
@@ -5108,6 +6701,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
     ensure_scheduling_entries_schema(conn)
     ensure_vendor_contacts_schema(conn)
     ensure_identity_registry_schema(conn)
+    vendor_schema_transaction_started = conn.in_transaction is not True
+    if vendor_schema_transaction_started:
+        conn.execute(_VENDOR_ORGANIZATION_ENTRY_BEGIN_SQL)
+    try:
+        ensure_vendor_organization_schema(conn)
+    except VendorOrganizationSchemaMigrationError:
+        conn.rollback()
+        raise
 
 
 def seed_admin(conn: sqlite3.Connection) -> None:
@@ -6240,6 +7841,14 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     ensure_site_foundation_schema(conn)
     ensure_vendor_contacts_schema(conn)
     ensure_identity_registry_schema(conn)
+    vendor_schema_transaction_started = conn.in_transaction is not True
+    if vendor_schema_transaction_started:
+        conn.execute(_VENDOR_ORGANIZATION_ENTRY_BEGIN_SQL)
+    try:
+        ensure_vendor_organization_schema(conn)
+    except VendorOrganizationSchemaMigrationError:
+        conn.rollback()
+        raise
 
 
 def normalize_progress_values(conn: sqlite3.Connection) -> None:

@@ -6,6 +6,7 @@ import gzip
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 from dataclasses import dataclass
@@ -29,6 +30,334 @@ REGISTRY_EXPLICIT_INDEXES = (
     "idx_login_identifier_aliases_provenance_reconciliation",
     "idx_login_identifier_aliases_active_exact_alias",
 )
+VENDOR_SCHEMA_TABLES = (
+    "vendor_organizations",
+    "vendor_organization_memberships",
+    "vendor_site_assignments",
+    "sheet_vendor_bindings",
+)
+VENDOR_SCHEMA_EXPLICIT_INDEXES = (
+    "idx_vendor_organizations_status",
+    "uq_vendor_organization_memberships_active_account",
+    "uq_vendor_organization_memberships_current_pair",
+    "idx_vendor_organization_memberships_vendor_status",
+    "idx_vendor_organization_memberships_account_status",
+    "uq_vendor_organization_memberships_predecessor",
+    "uq_vendor_site_assignments_active_pair",
+    "idx_vendor_site_assignments_vendor_status",
+    "idx_vendor_site_assignments_site_status",
+    "uq_vendor_site_assignments_predecessor",
+    "uq_sheet_vendor_bindings_active_pair",
+    "idx_sheet_vendor_bindings_vendor_status",
+    "idx_sheet_vendor_bindings_sheet_status",
+    "idx_sheet_vendor_bindings_assignment",
+    "uq_sheet_vendor_bindings_predecessor",
+)
+VENDOR_SCHEMA_AUTO_INDEXES = (
+    "sqlite_autoindex_vendor_organizations_1",
+    "sqlite_autoindex_vendor_organization_memberships_1",
+    "sqlite_autoindex_vendor_site_assignments_1",
+    "sqlite_autoindex_sheet_vendor_bindings_1",
+)
+VENDOR_SCHEMA_INDEX_TABLES = (
+    ("idx_vendor_organizations_status", "vendor_organizations"),
+    (
+        "uq_vendor_organization_memberships_active_account",
+        "vendor_organization_memberships",
+    ),
+    (
+        "uq_vendor_organization_memberships_current_pair",
+        "vendor_organization_memberships",
+    ),
+    (
+        "idx_vendor_organization_memberships_vendor_status",
+        "vendor_organization_memberships",
+    ),
+    (
+        "idx_vendor_organization_memberships_account_status",
+        "vendor_organization_memberships",
+    ),
+    (
+        "uq_vendor_organization_memberships_predecessor",
+        "vendor_organization_memberships",
+    ),
+    ("uq_vendor_site_assignments_active_pair", "vendor_site_assignments"),
+    ("idx_vendor_site_assignments_vendor_status", "vendor_site_assignments"),
+    ("idx_vendor_site_assignments_site_status", "vendor_site_assignments"),
+    ("uq_vendor_site_assignments_predecessor", "vendor_site_assignments"),
+    ("uq_sheet_vendor_bindings_active_pair", "sheet_vendor_bindings"),
+    ("idx_sheet_vendor_bindings_vendor_status", "sheet_vendor_bindings"),
+    ("idx_sheet_vendor_bindings_sheet_status", "sheet_vendor_bindings"),
+    ("idx_sheet_vendor_bindings_assignment", "sheet_vendor_bindings"),
+    ("uq_sheet_vendor_bindings_predecessor", "sheet_vendor_bindings"),
+    ("sqlite_autoindex_vendor_organizations_1", "vendor_organizations"),
+    (
+        "sqlite_autoindex_vendor_organization_memberships_1",
+        "vendor_organization_memberships",
+    ),
+    (
+        "sqlite_autoindex_vendor_site_assignments_1",
+        "vendor_site_assignments",
+    ),
+    ("sqlite_autoindex_sheet_vendor_bindings_1", "sheet_vendor_bindings"),
+)
+VENDOR_SCHEMA_RESERVED_PREFIXES = (
+    "vendor_organization_",
+    "vendor_organizations_",
+    "vendor_site_assignment_",
+    "vendor_site_assignments_",
+    "sheet_vendor_binding_",
+    "sheet_vendor_bindings_",
+    "idx_vendor_organizations_",
+    "uq_vendor_organizations_",
+    "idx_vendor_organization_memberships_",
+    "uq_vendor_organization_memberships_",
+    "idx_vendor_site_assignments_",
+    "uq_vendor_site_assignments_",
+    "idx_sheet_vendor_bindings_",
+    "uq_sheet_vendor_bindings_",
+)
+VENDOR_SCHEMA_EXPECTED_TABLE_PROJECTION = (
+    (
+        "table",
+        "sheet_vendor_bindings",
+        "sheet_vendor_bindings",
+        "3716D0C12B6B3840F7201B1BC21A8587AA4B7F8D8AE0156CD6AD61E51BB4C3F9",
+    ),
+    (
+        "table",
+        "vendor_organization_memberships",
+        "vendor_organization_memberships",
+        "4C752048FBCA928C66EA5471B1DEAFA33799841FAF6A3CF9F0C76A8C4D0D9EE9",
+    ),
+    (
+        "table",
+        "vendor_organizations",
+        "vendor_organizations",
+        "F5694E0410E5B7BE5337D51D22FE2109B9AC85884FFE332C73EC235AE5E5859C",
+    ),
+    (
+        "table",
+        "vendor_site_assignments",
+        "vendor_site_assignments",
+        "E2A0E39543672BBA0C3DA760289D4A78C9D2719D9F3351B0042DAA65824D0F0F",
+    ),
+)
+VENDOR_SCHEMA_EXPECTED_INDEX_PROJECTION = (
+    (
+        "index",
+        "idx_sheet_vendor_bindings_assignment",
+        "sheet_vendor_bindings",
+        "B0B8EA08E4F1FB1F2A63286105F31EBABB6448E2F4EAA980C4E302F0DFAE988C",
+        0,
+        "c",
+        0,
+    ),
+    (
+        "index",
+        "idx_sheet_vendor_bindings_sheet_status",
+        "sheet_vendor_bindings",
+        "A7A3CD88B7F3EF66424DE0387DFBEB71635EF9BD9C001C87D2DB2C8BB50B4281",
+        0,
+        "c",
+        0,
+    ),
+    (
+        "index",
+        "idx_sheet_vendor_bindings_vendor_status",
+        "sheet_vendor_bindings",
+        "622353B7FE77BFD39FD34DE3814708EE039B1C705F7B28919D7ADEF05291B64C",
+        0,
+        "c",
+        0,
+    ),
+    (
+        "index",
+        "idx_vendor_organization_memberships_account_status",
+        "vendor_organization_memberships",
+        "D46D8FFDC85E5ADD28B837D3621225B1340D4A02D7034F188B33A4CF7CFB1852",
+        0,
+        "c",
+        0,
+    ),
+    (
+        "index",
+        "idx_vendor_organization_memberships_vendor_status",
+        "vendor_organization_memberships",
+        "FB049C469BD27AC7F09CA464094DF7B06858B1506A8EE628A1BBA5EB8BE7C63D",
+        0,
+        "c",
+        0,
+    ),
+    (
+        "index",
+        "idx_vendor_organizations_status",
+        "vendor_organizations",
+        "62D847B316049622E2CDF9B1A7E7018FD9D618ACA51DFE2616938A43B628BC3C",
+        0,
+        "c",
+        0,
+    ),
+    (
+        "index",
+        "idx_vendor_site_assignments_site_status",
+        "vendor_site_assignments",
+        "D61F0DE3FD1BC6D1537266B6F341CDBF5421DA03992794BD7DE87CEA094D7949",
+        0,
+        "c",
+        0,
+    ),
+    (
+        "index",
+        "idx_vendor_site_assignments_vendor_status",
+        "vendor_site_assignments",
+        "15811104376D96B520CAC94E3515D126B8392A7CB372DDD232B83BCFFDA29363",
+        0,
+        "c",
+        0,
+    ),
+    (
+        "index",
+        "sqlite_autoindex_sheet_vendor_bindings_1",
+        "sheet_vendor_bindings",
+        None,
+        1,
+        "pk",
+        0,
+    ),
+    (
+        "index",
+        "sqlite_autoindex_vendor_organization_memberships_1",
+        "vendor_organization_memberships",
+        None,
+        1,
+        "pk",
+        0,
+    ),
+    (
+        "index",
+        "sqlite_autoindex_vendor_organizations_1",
+        "vendor_organizations",
+        None,
+        1,
+        "pk",
+        0,
+    ),
+    (
+        "index",
+        "sqlite_autoindex_vendor_site_assignments_1",
+        "vendor_site_assignments",
+        None,
+        1,
+        "pk",
+        0,
+    ),
+    (
+        "index",
+        "uq_sheet_vendor_bindings_active_pair",
+        "sheet_vendor_bindings",
+        "294D523A043C46C97E37E93C7A2C6FD06980F1B9A9A8897200ACD34FE9FC6BC4",
+        1,
+        "c",
+        1,
+    ),
+    (
+        "index",
+        "uq_sheet_vendor_bindings_predecessor",
+        "sheet_vendor_bindings",
+        "B9BA262664738455360223A07A483547165FA94EFFEF840D44CE253B3A165A6E",
+        1,
+        "c",
+        1,
+    ),
+    (
+        "index",
+        "uq_vendor_organization_memberships_active_account",
+        "vendor_organization_memberships",
+        "85362E89727406A9A5776899ADB7274DEE363810CAC4EB8495E1D65C281AC559",
+        1,
+        "c",
+        1,
+    ),
+    (
+        "index",
+        "uq_vendor_organization_memberships_current_pair",
+        "vendor_organization_memberships",
+        "3ABEA572A0E16EF3653100138B34ED07039804C1A92AA583E4C36483CA20A2C7",
+        1,
+        "c",
+        1,
+    ),
+    (
+        "index",
+        "uq_vendor_organization_memberships_predecessor",
+        "vendor_organization_memberships",
+        "6F158BB70F45737B6E86991905B7BEB61636D73F6D44A8AEFF1CC6EFD3113C88",
+        1,
+        "c",
+        1,
+    ),
+    (
+        "index",
+        "uq_vendor_site_assignments_active_pair",
+        "vendor_site_assignments",
+        "2FDFAA0E6B65461636FB8F4E9E1478F90C970BAD9D304A37BE5C51462B323931",
+        1,
+        "c",
+        1,
+    ),
+    (
+        "index",
+        "uq_vendor_site_assignments_predecessor",
+        "vendor_site_assignments",
+        "61E6674FB6BB073B784AE86BB10C1AC47CFC2F9B038F15446359293D36C434EF",
+        1,
+        "c",
+        1,
+    ),
+)
+VENDOR_SCHEMA_EXPECTED_INDEX_MAPPING = (
+    ("idx_sheet_vendor_bindings_assignment", "sheet_vendor_bindings"),
+    ("idx_sheet_vendor_bindings_sheet_status", "sheet_vendor_bindings"),
+    ("idx_sheet_vendor_bindings_vendor_status", "sheet_vendor_bindings"),
+    (
+        "idx_vendor_organization_memberships_account_status",
+        "vendor_organization_memberships",
+    ),
+    (
+        "idx_vendor_organization_memberships_vendor_status",
+        "vendor_organization_memberships",
+    ),
+    ("idx_vendor_organizations_status", "vendor_organizations"),
+    ("idx_vendor_site_assignments_site_status", "vendor_site_assignments"),
+    ("idx_vendor_site_assignments_vendor_status", "vendor_site_assignments"),
+    ("sqlite_autoindex_sheet_vendor_bindings_1", "sheet_vendor_bindings"),
+    (
+        "sqlite_autoindex_vendor_organization_memberships_1",
+        "vendor_organization_memberships",
+    ),
+    ("sqlite_autoindex_vendor_organizations_1", "vendor_organizations"),
+    (
+        "sqlite_autoindex_vendor_site_assignments_1",
+        "vendor_site_assignments",
+    ),
+    ("uq_sheet_vendor_bindings_active_pair", "sheet_vendor_bindings"),
+    ("uq_sheet_vendor_bindings_predecessor", "sheet_vendor_bindings"),
+    (
+        "uq_vendor_organization_memberships_active_account",
+        "vendor_organization_memberships",
+    ),
+    (
+        "uq_vendor_organization_memberships_current_pair",
+        "vendor_organization_memberships",
+    ),
+    (
+        "uq_vendor_organization_memberships_predecessor",
+        "vendor_organization_memberships",
+    ),
+    ("uq_vendor_site_assignments_active_pair", "vendor_site_assignments"),
+    ("uq_vendor_site_assignments_predecessor", "vendor_site_assignments"),
+)
 BUSINESS_TABLES = (
     "extra_fields",
     "floors",
@@ -48,6 +377,7 @@ BUSINESS_TABLES = (
     "vendor_accounts",
     "vendor_contacts",
     "vendor_work_entries",
+    *VENDOR_SCHEMA_TABLES,
 )
 WRITABLE_PRAGMAS = {
     "foreign_keys",
@@ -260,6 +590,227 @@ def project_legacy_record(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalize_vendor_schema_sql(value: Any) -> str | None:
+    if value is None:
+        return None
+    if type(value) is not str:
+        return ""
+    if "\x00" in value or any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        return ""
+    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.strip(" \t\n\v\f")
+    if normalized.endswith(";"):
+        normalized = normalized[:-1]
+    normalized = normalized.rstrip(" \t\n\v\f")
+    if not normalized:
+        return ""
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest().upper()
+
+
+def validate_manifest_inventory_contract(payload: dict[str, Any]) -> None:
+    table_inventory = payload["table_inventory"]
+    if type(table_inventory) is not list:
+        raise SystemExit("FAIL table inventory must be a list.")
+    table_identities: list[tuple[str, str, str]] = []
+    for item in table_inventory:
+        if (
+            type(item) is not dict
+            or set(item) != {"type", "name", "tbl_name", "sql"}
+            or item["type"] != "table"
+            or type(item["name"]) is not str
+            or type(item["tbl_name"]) is not str
+            or item["name"] != item["tbl_name"]
+            or (
+                item["sql"] is not None
+                and type(item["sql"]) is not str
+            )
+        ):
+            raise SystemExit("FAIL table inventory record contract mismatch.")
+        table_identities.append(
+            (item["type"], item["name"], item["tbl_name"])
+        )
+    if len(table_identities) != len(set(table_identities)):
+        raise SystemExit("FAIL duplicate table inventory identity.")
+    if table_inventory != sorted(
+        table_inventory,
+        key=lambda item: item["name"],
+    ):
+        raise SystemExit("FAIL table inventory order mismatch.")
+
+    index_inventory = payload["index_inventory"]
+    if type(index_inventory) is not list:
+        raise SystemExit("FAIL index inventory must be a list.")
+    index_identities: list[tuple[str, str, str]] = []
+    for item in index_inventory:
+        if (
+            type(item) is not dict
+            or set(item)
+            != {
+                "type",
+                "name",
+                "tbl_name",
+                "sql",
+                "unique",
+                "origin",
+                "partial",
+            }
+            or item["type"] != "index"
+            or type(item["name"]) is not str
+            or type(item["tbl_name"]) is not str
+            or (
+                item["sql"] is not None
+                and type(item["sql"]) is not str
+            )
+            or type(item["unique"]) is not int
+            or item["unique"] not in {0, 1}
+            or type(item["origin"]) is not str
+            or item["origin"] not in {"c", "u", "pk"}
+            or type(item["partial"]) is not int
+            or item["partial"] not in {0, 1}
+        ):
+            raise SystemExit("FAIL index inventory record contract mismatch.")
+        index_identities.append(
+            (item["type"], item["name"], item["tbl_name"])
+        )
+    if len(index_identities) != len(set(index_identities)):
+        raise SystemExit("FAIL duplicate index inventory identity.")
+    if index_inventory != sorted(
+        index_inventory,
+        key=lambda item: (item["name"], item["tbl_name"]),
+    ):
+        raise SystemExit("FAIL index inventory order mismatch.")
+
+    expected_mapping = [
+        {"name": item["name"], "tbl_name": item["tbl_name"]}
+        for item in index_inventory
+    ]
+    if payload["index_table_mapping"] != expected_mapping:
+        raise SystemExit("FAIL index table mapping contract mismatch.")
+
+    if type(payload["schema_version"]) is not int or payload[
+        "schema_version"
+    ] < 0:
+        raise SystemExit("FAIL schema version contract mismatch.")
+    business_row_counts = payload["business_row_counts"]
+    if type(business_row_counts) is not dict or any(
+        type(name) is not str
+        or type(count) is not int
+        or count < 0
+        for name, count in business_row_counts.items()
+    ):
+        raise SystemExit("FAIL business row-count contract mismatch.")
+    present_vendor_tables = {
+        item["name"]
+        for item in table_inventory
+        if item["name"] in VENDOR_SCHEMA_TABLES
+    }
+    vendor_count_tables = {
+        name
+        for name in business_row_counts
+        if name in VENDOR_SCHEMA_TABLES
+    }
+    if vendor_count_tables != present_vendor_tables:
+        raise SystemExit(
+            "FAIL vendor row-count presence contract mismatch."
+        )
+    registry_row_counts = payload["registry_row_counts"]
+    if type(registry_row_counts) is not dict or any(
+        type(name) is not str
+        or (
+            count is not None
+            and (type(count) is not int or count < 0)
+        )
+        for name, count in registry_row_counts.items()
+    ):
+        raise SystemExit("FAIL registry row-count contract mismatch.")
+
+
+def vendor_schema_projection(
+    payload: dict[str, Any],
+) -> tuple[
+    tuple[tuple[Any, ...], ...],
+    tuple[tuple[Any, ...], ...],
+    tuple[tuple[Any, ...], ...],
+]:
+    def owned_name(object_type: Any, name: Any) -> bool:
+        if type(object_type) is not str or type(name) is not str:
+            return False
+        if (
+            name in VENDOR_SCHEMA_TABLES
+            or name in VENDOR_SCHEMA_EXPLICIT_INDEXES
+            or name in VENDOR_SCHEMA_AUTO_INDEXES
+        ):
+            return True
+        if object_type in ("table", "view", "trigger"):
+            return (
+                name[:20] == "vendor_organization_"
+                or name[:21] == "vendor_organizations_"
+                or name[:23] == "vendor_site_assignment_"
+                or name[:24] == "vendor_site_assignments_"
+                or name[:21] == "sheet_vendor_binding_"
+                or name[:22] == "sheet_vendor_bindings_"
+            )
+        if object_type == "index":
+            return (
+                name[:25] == "idx_vendor_organizations_"
+                or name[:24] == "uq_vendor_organizations_"
+                or name[:36]
+                == "idx_vendor_organization_memberships_"
+                or name[:35]
+                == "uq_vendor_organization_memberships_"
+                or name[:28] == "idx_vendor_site_assignments_"
+                or name[:27] == "uq_vendor_site_assignments_"
+                or name[:26] == "idx_sheet_vendor_bindings_"
+                or name[:25] == "uq_sheet_vendor_bindings_"
+            )
+        return False
+
+    table_projection = tuple(
+        (
+            item["type"],
+            item["name"],
+            item["tbl_name"],
+            normalize_vendor_schema_sql(item["sql"]),
+        )
+        for item in payload["table_inventory"]
+        if owned_name(item["type"], item["name"])
+    )
+    index_projection = tuple(
+        (
+            item["type"],
+            item["name"],
+            item["tbl_name"],
+            normalize_vendor_schema_sql(item["sql"]),
+            item["unique"],
+            item["origin"],
+            item["partial"],
+        )
+        for item in payload["index_inventory"]
+        if owned_name(item["type"], item["name"])
+        or item["tbl_name"] in VENDOR_SCHEMA_TABLES
+    )
+    mapping_projection = tuple(
+        (item["name"], item["tbl_name"])
+        for item in payload["index_table_mapping"]
+        if owned_name("index", item["name"])
+        or item["tbl_name"] in VENDOR_SCHEMA_TABLES
+    )
+    return table_projection, index_projection, mapping_projection
+
+
+def vendor_schema_projection_state(payload: dict[str, Any]) -> str:
+    projection = vendor_schema_projection(payload)
+    if projection == ((), (), ()):
+        return "absent"
+    if projection == (
+        VENDOR_SCHEMA_EXPECTED_TABLE_PROJECTION,
+        VENDOR_SCHEMA_EXPECTED_INDEX_PROJECTION,
+        VENDOR_SCHEMA_EXPECTED_INDEX_MAPPING,
+    ):
+        return "exact"
+    return "drifted"
+
+
 def build_index_inventory(conn: sqlite3.Connection, table_inventory: list[dict[str, Any]]) -> list[dict[str, Any]]:
     index_rows = fetch_master_rows(
         conn,
@@ -307,7 +858,11 @@ def build_capture_payload(db_path: Path) -> tuple[dict[str, Any], bytes, bytes]:
             for row in table_rows
         ]
         all_tables = [row["name"] for row in table_rows]
-        legacy_tables = [name for name in all_tables if name not in REGISTRY_TABLES]
+        legacy_tables = [
+            name
+            for name in all_tables
+            if name not in REGISTRY_TABLES and name not in VENDOR_SCHEMA_TABLES
+        ]
 
         index_inventory = build_index_inventory(conn, table_inventory)
         index_table_mapping = [{"name": row["name"], "tbl_name": row["tbl_name"]} for row in index_inventory]
@@ -495,6 +1050,7 @@ def validate_manifest_dir_data(directory: Path, files: dict[str, bytes]) -> dict
         missing_fields = sorted(set(REQUIRED_CHECKSUM_KEYS) - set(checksums.keys()))
         unexpected_fields = sorted(set(checksums.keys()) - set(REQUIRED_CHECKSUM_KEYS))
         raise SystemExit(f"FAIL manifest checksums key set mismatch: missing={missing_fields} unexpected={unexpected_fields}")
+    validate_manifest_inventory_contract(payload)
     validate_legacy_records(legacy_records)
     if tuple(sorted(checksums.get("output_files", {}).keys())) != CHECKSUM_OUTPUT_FILES:
         raise SystemExit("FAIL manifest checksums output_files must contain exactly legacy_manifest_v1.json and manifest_payload_v1.json.")
@@ -580,6 +1136,7 @@ def classify_compare(pre: dict[str, Any], post: dict[str, Any]) -> dict[str, Any
     changed = []
     business_diffs = {}
     registry_count_diffs = {}
+    vendor_only_expected = False
     if semantic_comparison_performed:
         pre_by_key = {(item["type"], item["name"], item["tbl_name"]): item for item in pre_legacy_records}
         post_by_key = {(item["type"], item["name"], item["tbl_name"]): item for item in post_legacy_records}
@@ -606,9 +1163,45 @@ def classify_compare(pre: dict[str, Any], post: dict[str, Any]) -> dict[str, Any
             post_value = post_payload["registry_row_counts"].get(key)
             if post_value != pre_value:
                 registry_count_diffs[key] = {"pre": pre_value, "post": post_value}
+        pre_vendor_projection = vendor_schema_projection(pre_payload)
+        post_vendor_projection = vendor_schema_projection(post_payload)
+        pre_vendor_state = vendor_schema_projection_state(pre_payload)
+        post_vendor_state = vendor_schema_projection_state(post_payload)
+        expected_vendor_count_diffs = {
+            table: {"pre": None, "post": 0}
+            for table in VENDOR_SCHEMA_TABLES
+        }
+        non_vendor_business_diffs = {
+            key: value
+            for key, value in business_diffs.items()
+            if key not in VENDOR_SCHEMA_TABLES
+        }
+        vendor_only_expected = (
+            pre_vendor_state == "absent"
+            and post_vendor_state == "exact"
+            and business_diffs == expected_vendor_count_diffs
+            and pre_payload["legacy_manifest_sha256"]
+            == post_payload["legacy_manifest_sha256"]
+            and pre_payload["registry_object_presence"]
+            == post_payload["registry_object_presence"]
+            and pre_payload["registry_row_counts"]
+            == post_payload["registry_row_counts"]
+            and not non_vendor_business_diffs
+            and post_payload["schema_version"] - pre_payload["schema_version"] == 19
+        )
+        vendor_schema_drift = (
+            pre_vendor_state == "drifted"
+            or post_vendor_state == "drifted"
+            or (
+                pre_vendor_projection != post_vendor_projection
+                and not vendor_only_expected
+            )
+        )
         if missing or extra or changed or pre_legacy_bytes != post_legacy_bytes:
             classifications.append("legacy schema drift")
-        if business_diffs:
+        if vendor_schema_drift:
+            classifications.append("vendor schema drift")
+        if business_diffs and not vendor_only_expected:
             classifications.append("business data drift")
         if pre_payload["concurrent_runtime_change_observed"] or post_payload["concurrent_runtime_change_observed"]:
             classifications.append("concurrent runtime change")
@@ -625,6 +1218,10 @@ def classify_compare(pre: dict[str, Any], post: dict[str, Any]) -> dict[str, Any
         )
         if registry_only_expected:
             classifications.append("expected registry-only schema delta")
+        if vendor_only_expected:
+            classifications.append(
+                "expected vendor-organization-only schema delta"
+            )
         if not classifications:
             classifications.append("identical")
 
@@ -974,6 +1571,178 @@ def rewrite_checksums_for_payload(payload: dict[str, Any], legacy_bytes: bytes) 
     return canonical_json_bytes(checksums)
 
 
+def _exercise_vendor_projection_contract(
+    artifact_root: Path,
+    capture_a: Path,
+) -> None:
+    def write_projection_variant(
+        name: str,
+        source: Path,
+        transform: Any,
+    ) -> Path:
+        target = artifact_root / name
+        shutil.copytree(source, target)
+        payload = json.loads(
+            (target / "manifest_payload_v1.json").read_text("utf-8")
+        )
+        legacy_bytes = (
+            target / "legacy_manifest_v1.json"
+        ).read_bytes()
+        transform(payload)
+        payload_bytes = canonical_json_bytes(payload)
+        (
+            target / "manifest_payload_v1.json"
+        ).write_bytes(payload_bytes)
+        (
+            target / "manifest_checksums_v1.json"
+        ).write_bytes(
+            rewrite_checksums_for_payload(payload, legacy_bytes)
+        )
+        return target
+
+    wrong_vendor_table_capture = write_projection_variant(
+        "wrong-vendor-table-capture",
+        capture_a,
+        lambda payload: (
+            payload["table_inventory"].append(
+                {
+                    "type": "table",
+                    "name": "vendor_organizations",
+                    "tbl_name": "vendor_organizations",
+                    "sql": None,
+                }
+            ),
+            payload["table_inventory"].sort(
+                key=lambda item: item["name"]
+            ),
+            payload["business_row_counts"].__setitem__(
+                VENDOR_SCHEMA_TABLES[0],
+                0,
+            ),
+        ),
+    )
+    wrong_vendor_table_compare = classify_compare(
+        load_manifest_dir(capture_a),
+        load_manifest_dir(wrong_vendor_table_capture),
+    )
+    if (
+        "vendor schema drift"
+        not in wrong_vendor_table_compare["classifications"]
+        or "expected vendor-organization-only schema delta"
+        in wrong_vendor_table_compare["classifications"]
+        or "identical" in wrong_vendor_table_compare["classifications"]
+    ):
+        raise AssertionError(
+            "Same-name wrong vendor table SQL was not classified as drift."
+        )
+
+    wrong_vendor_index_capture = write_projection_variant(
+        "wrong-vendor-index-capture",
+        capture_a,
+        lambda payload: (
+            payload["index_inventory"].append(
+                {
+                    "type": "index",
+                    "name": "idx_vendor_organizations_status",
+                    "tbl_name": "vendor_organizations",
+                    "sql": None,
+                    "unique": 0,
+                    "origin": "c",
+                    "partial": 0,
+                }
+            ),
+            payload["index_inventory"].sort(
+                key=lambda item: (
+                    item["name"],
+                    item["tbl_name"],
+                )
+            ),
+            payload.__setitem__(
+                "index_table_mapping",
+                [
+                    {
+                        "name": item["name"],
+                        "tbl_name": item["tbl_name"],
+                    }
+                    for item in payload["index_inventory"]
+                ],
+            ),
+        ),
+    )
+    wrong_vendor_index_compare = classify_compare(
+        load_manifest_dir(capture_a),
+        load_manifest_dir(wrong_vendor_index_capture),
+    )
+    if (
+        "vendor schema drift"
+        not in wrong_vendor_index_compare["classifications"]
+        or "expected vendor-organization-only schema delta"
+        in wrong_vendor_index_compare["classifications"]
+        or "identical" in wrong_vendor_index_compare["classifications"]
+    ):
+        raise AssertionError(
+            "Same-name wrong vendor index SQL was not classified as drift."
+        )
+
+    table_order_capture = write_projection_variant(
+        "table-order-capture",
+        capture_a,
+        lambda payload: payload["table_inventory"].reverse(),
+    )
+    expect_fail(
+        lambda: load_manifest_dir(table_order_capture),
+        "table inventory order mismatch",
+    )
+
+    index_type_capture = write_projection_variant(
+        "index-type-capture",
+        capture_a,
+        lambda payload: payload["index_inventory"][0].__setitem__(
+            "unique",
+            bool(payload["index_inventory"][0]["unique"]),
+        ),
+    )
+    expect_fail(
+        lambda: load_manifest_dir(index_type_capture),
+        "index inventory record contract mismatch",
+    )
+
+    mapping_capture = write_projection_variant(
+        "mapping-capture",
+        capture_a,
+        lambda payload: payload["index_table_mapping"][0].__setitem__(
+            "tbl_name",
+            payload["index_table_mapping"][0]["tbl_name"] + "_drift",
+        ),
+    )
+    expect_fail(
+        lambda: load_manifest_dir(mapping_capture),
+        "index table mapping contract mismatch",
+    )
+
+    missing_vendor_count_capture = write_projection_variant(
+        "missing-vendor-count-capture",
+        capture_a,
+        lambda payload: (
+            payload["table_inventory"].append(
+                {
+                    "type": "table",
+                    "name": VENDOR_SCHEMA_TABLES[0],
+                    "tbl_name": VENDOR_SCHEMA_TABLES[0],
+                    "sql": None,
+                }
+            ),
+            payload["table_inventory"].sort(
+                key=lambda item: item["name"]
+            ),
+        ),
+    )
+    expect_fail(
+        lambda: load_manifest_dir(missing_vendor_count_capture),
+        "vendor row-count presence contract mismatch",
+    )
+
+
 def run_self_test() -> None:
     with tempfile.TemporaryDirectory(prefix="schema-manifest-self-test-") as tmpdir:
         root = Path(tmpdir)
@@ -992,6 +1761,8 @@ def run_self_test() -> None:
             raise AssertionError("Deterministic legacy manifest capture failed.")
         if (capture_a / "manifest_payload_v1.json").read_bytes() != (capture_b / "manifest_payload_v1.json").read_bytes():
             raise AssertionError("Deterministic payload capture failed.")
+
+        _exercise_vendor_projection_contract(artifact_root, capture_a)
 
         reordered_db = db_root / "reordered.db"
         create_sample_sqlite(reordered_db, reorder_legacy=True)
@@ -1012,9 +1783,49 @@ def run_self_test() -> None:
         registry_payload = json.loads((registry_capture / "manifest_payload_v1.json").read_text("utf-8"))
         if base_payload["legacy_manifest_sha256"] != registry_payload["legacy_manifest_sha256"]:
             raise AssertionError("Registry-only schema changed legacy digest.")
+        for payload in (base_payload, registry_payload):
+            if any(
+                table in payload["business_row_counts"]
+                for table in VENDOR_SCHEMA_TABLES
+            ):
+                raise AssertionError(
+                    "Absent vendor schema emitted a vendor aggregate row count."
+                )
         compare_registry = classify_compare(load_manifest_dir(capture_a), load_manifest_dir(registry_capture))
         if "expected registry-only schema delta" not in compare_registry["classifications"]:
             raise AssertionError("Registry-only addition classification failed.")
+
+        vendor_count_capture = artifact_root / "vendor-count-capture"
+        vendor_count_capture.mkdir()
+        vendor_count_payload = json.loads(
+            (capture_a / "manifest_payload_v1.json").read_text("utf-8")
+        )
+        vendor_count_payload["business_row_counts"][
+            VENDOR_SCHEMA_TABLES[0]
+        ] = 0
+        vendor_count_legacy = (
+            capture_a / "legacy_manifest_v1.json"
+        ).read_bytes()
+        vendor_count_payload_bytes = canonical_json_bytes(
+            vendor_count_payload
+        )
+        (
+            vendor_count_capture / "legacy_manifest_v1.json"
+        ).write_bytes(vendor_count_legacy)
+        (
+            vendor_count_capture / "manifest_payload_v1.json"
+        ).write_bytes(vendor_count_payload_bytes)
+        (
+            vendor_count_capture / "manifest_checksums_v1.json"
+        ).write_bytes(
+            rewrite_checksums_for_payload(
+                vendor_count_payload, vendor_count_legacy
+            )
+        )
+        expect_fail(
+            lambda: load_manifest_dir(vendor_count_capture),
+            "vendor row-count presence contract mismatch",
+        )
 
         schema_drift_db = db_root / "schema-drift.db"
         create_sample_sqlite(schema_drift_db)
