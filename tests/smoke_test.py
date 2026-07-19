@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import importlib.util
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -13,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import typing
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -24718,7 +24720,7 @@ def run_identity_registry_reconciliation_readiness_smoke(
                 [sys.executable, "-B", str(checker_path), "--self-test"],
                 "identity registry reconciliation readiness self-test PASS",
                 (
-                    "self_test_scenarios: 100",
+                    "self_test_scenarios: 130",
                     "database_access: 0",
                     "app_imports: 0",
                 ),
@@ -24770,6 +24772,1088 @@ def run_identity_registry_reconciliation_readiness_smoke(
             "identity registry reconciliation readiness smoke changed repository DB or sidecar state"
         )
     print("identity registry reconciliation readiness smoke PASS")
+
+
+def run_identity_registry_discovery_smoke(temp_root: Path | None = None) -> None:
+    owned_temp = None
+    if temp_root is None:
+        owned_temp = tempfile.TemporaryDirectory(
+            prefix="auth-id-001h-discovery-focused-"
+        )
+        temp_root = Path(owned_temp.name)
+    assert temp_root is not None
+    temp_root.mkdir(parents=True, exist_ok=True)
+    tool_path = TOOLS_DIR / "discover_identity_registry_anomalies.py"
+    if not tool_path.is_file():
+        raise AssertionError("identity registry discovery tool is missing")
+
+    spec = importlib.util.spec_from_file_location(
+        "auth_id_001h_discovery_smoke_module",
+        tool_path,
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("identity registry discovery tool could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    public_hints = typing.get_type_hints(
+        module.discover_identity_registry_anomalies
+    )
+    if public_hints != {
+        "db_path": Path,
+        "run_id": str,
+        "captured_at": str,
+        "tool_commit": str,
+        "return": dict[str, object],
+    }:
+        raise AssertionError("identity registry discovery callable annotations drifted")
+    main_hints = typing.get_type_hints(module._main)
+    if main_hints != {
+        "argv": typing.Sequence[str] | None,
+        "return": int,
+    }:
+        raise AssertionError("identity registry discovery CLI annotations drifted")
+    public_signature = inspect.signature(module.discover_identity_registry_anomalies)
+    if (
+        list(public_signature.parameters) != [
+            "db_path",
+            "run_id",
+            "captured_at",
+            "tool_commit",
+        ]
+        or any(
+            parameter.kind is not inspect.Parameter.KEYWORD_ONLY
+            or parameter.default is not inspect.Parameter.empty
+            for parameter in public_signature.parameters.values()
+        )
+        or public_signature.return_annotation != "dict[str, object]"
+    ):
+        raise AssertionError("identity registry discovery callable signature drifted")
+    main_signature = inspect.signature(module._main)
+    if (
+        list(main_signature.parameters) != ["argv"]
+        or main_signature.parameters["argv"].kind
+        is not inspect.Parameter.POSITIONAL_OR_KEYWORD
+        or main_signature.parameters["argv"].default is not None
+        or main_signature.return_annotation != "int"
+    ):
+        raise AssertionError("identity registry discovery CLI signature drifted")
+    if module.__all__ != (
+        "IdentityRegistryDiscoveryError",
+        "discover_identity_registry_anomalies",
+    ):
+        raise AssertionError("identity registry discovery public exports drifted")
+    raw_public_annotations = module.discover_identity_registry_anomalies.__annotations__
+    raw_main_annotations = module._main.__annotations__
+    if (
+        raw_public_annotations.get("db_path") == "'Path'"
+        or raw_main_annotations.get("argv") == "'Sequence[str] | None'"
+        or raw_public_annotations != {
+            "db_path": "_Path",
+            "run_id": "str",
+            "captured_at": "str",
+            "tool_commit": "str",
+            "return": "dict[str, object]",
+        }
+        or raw_main_annotations != {
+            "argv": "_Sequence[str] | None",
+            "return": "int",
+        }
+    ):
+        raise AssertionError("identity registry discovery raw annotations drifted")
+
+    run_id = "123e4567-e89b-42d3-a456-426614174000"
+    captured_at = "2026-07-19T00:00:00Z"
+    tool_commit = "53fd06ebd10cc2ce60e7cdf4c16737634c270f9e"
+    expected_top_keys = {
+        "format",
+        "schema_version",
+        "run_id",
+        "captured_at",
+        "tool",
+        "source",
+        "scope",
+        "capture_status",
+        "anomalies",
+        "errors",
+        "redaction",
+        "integrity",
+    }
+    anomaly_order = [
+        "schema_object_drift",
+        "noncanonical_registry_id",
+        "invalid_registry_status",
+        "invalid_provenance",
+        "invalid_backend_principal_key",
+        "orphan_fk_relationship",
+        "normalized_alias_ambiguity",
+        "active_exact_alias_collision",
+        "backend_principal_inconsistent_mapping",
+        "incompatible_backend_cardinality",
+        "conflicting_principals_different_identities",
+        "disabled_superseded_relationship_inconsistency",
+        "source_principal_missing_inactive_stale",
+        "snapshot_concurrency_drift",
+        "unknown_unclassified_anomaly",
+    ]
+
+    def db_evidence(path: Path) -> tuple[bytes, int, int, int, tuple[bool, bool, bool]]:
+        data = path.read_bytes()
+        info = path.stat()
+        return (
+            hashlib.sha256(data).digest(),
+            len(data),
+            info.st_size,
+            info.st_mtime_ns,
+            tuple(Path(str(path) + suffix).exists() for suffix in ("-wal", "-shm", "-journal")),
+        )
+
+    def bootstrap_exact(path: Path) -> None:
+        env = {
+            **os.environ,
+            "APP_DB_PATH": str(path),
+            "DATABASE_URL": "",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPYCACHEPREFIX": str((temp_root / "bootstrap-pycache").resolve()),
+        }
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", "import app"],
+            cwd=ROOT_DIR,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0 or result.stderr:
+            raise AssertionError(
+                "identity registry discovery bootstrap failed: "
+                + (result.stderr or result.stdout)
+            )
+
+    def create_permissive(path: Path) -> None:
+        connection = sqlite3.connect(path)
+        try:
+            connection.executescript(
+                """
+                CREATE TABLE global_identities (
+                    global_identity_id TEXT PRIMARY KEY,
+                    registry_status TEXT NOT NULL DEFAULT 'disabled',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_provenance TEXT NOT NULL,
+                    updated_provenance TEXT NOT NULL
+                ) STRICT;
+                CREATE TABLE login_identifier_aliases (
+                    login_identifier_alias_id TEXT PRIMARY KEY,
+                    global_identity_id TEXT NOT NULL,
+                    raw_alias TEXT NOT NULL,
+                    normalized_lookup_key TEXT NOT NULL,
+                    normalization_algorithm_family TEXT NOT NULL,
+                    normalization_profile TEXT NOT NULL,
+                    unicode_data_version TEXT NOT NULL,
+                    trim_conformance_profile TEXT NOT NULL,
+                    alias_status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_provenance TEXT NOT NULL,
+                    updated_provenance TEXT NOT NULL
+                ) STRICT;
+                CREATE TABLE backend_principal_mappings (
+                    backend_principal_mapping_id TEXT PRIMARY KEY,
+                    global_identity_id TEXT NOT NULL,
+                    backend_kind TEXT NOT NULL,
+                    backend_principal_key ANY NOT NULL,
+                    mapping_status TEXT NOT NULL DEFAULT 'active',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_provenance TEXT NOT NULL,
+                    updated_provenance TEXT NOT NULL
+                ) STRICT;
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def execute_many(path: Path, statement: str, rows: list[tuple]) -> None:
+        connection = sqlite3.connect(path)
+        try:
+            connection.executemany(statement, rows)
+            connection.commit()
+        finally:
+            connection.close()
+
+    def discover(path: Path) -> dict[str, object]:
+        before = db_evidence(path)
+        result = module.discover_identity_registry_anomalies(
+            db_path=path,
+            run_id=run_id,
+            captured_at=captured_at,
+            tool_commit=tool_commit,
+        )
+        after = db_evidence(path)
+        if before != after:
+            raise AssertionError("identity registry discovery changed source evidence")
+        if set(result) != expected_top_keys:
+            raise AssertionError("identity registry discovery top-level keys drifted")
+        if [item["code"] for item in result["anomalies"]] != anomaly_order:
+            raise AssertionError("identity registry discovery anomaly order drifted")
+        return result
+
+    def observation(result: dict[str, object], code: str) -> dict[str, object]:
+        return next(item for item in result["anomalies"] if item["code"] == code)
+
+    def reconstruct_hash(result: dict[str, object]) -> str:
+        copy = json.loads(
+            json.dumps(result, ensure_ascii=False, allow_nan=False)
+        )
+        copy["integrity"] = {}
+        encoded = json.dumps(
+            copy,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    exact_db = temp_root / "exact.db"
+    bootstrap_exact(exact_db)
+    exact_before = db_evidence(exact_db)
+    exact_a = discover(exact_db)
+    exact_b = discover(exact_db)
+    if exact_a != exact_b or exact_a["capture_status"] != "complete":
+        raise AssertionError("identity registry discovery deterministic complete capture failed")
+    if exact_a["errors"] != []:
+        raise AssertionError("identity registry discovery complete errors were not empty")
+    if observation(exact_a, "schema_object_drift")["state"] != "not_observed":
+        raise AssertionError("exact schema unexpectedly drifted")
+    if observation(exact_a, "unknown_unclassified_anomaly") != {
+        "code": "unknown_unclassified_anomaly",
+        "state": "not_observed",
+        "disposition": "fail_closed",
+        "count": 0,
+        "reason_code": "bounded_violation_not_observed",
+    }:
+        raise AssertionError("unknown anomaly boundary drifted")
+    if reconstruct_hash(exact_a) != exact_a["integrity"]["evidence_sha256"]:
+        raise AssertionError("identity registry discovery evidence hash did not reconstruct")
+    exact_json = json.dumps(
+        exact_a,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if str(exact_db) in exact_json or exact_db.name in exact_json or "PASS" in exact_json:
+        raise AssertionError("identity registry discovery leaked source or PASS text")
+
+    cli = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            str(tool_path),
+            "--db",
+            str(exact_db),
+            "--run-id",
+            run_id,
+            "--captured-at",
+            captured_at,
+            "--tool-commit",
+            tool_commit,
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if cli.returncode != 0 or cli.stderr != b"" or not cli.stdout.endswith(b"\n"):
+        raise AssertionError("identity registry discovery CLI complete contract failed")
+    if json.loads(cli.stdout)["capture_status"] != "complete":
+        raise AssertionError("identity registry discovery CLI did not emit complete capture")
+    if db_evidence(exact_db) != exact_before:
+        raise AssertionError("identity registry discovery CLI changed exact fixture")
+
+    class InjectedConnection:
+        def __init__(
+            self,
+            connection,
+            *,
+            sql: str | None,
+            occurrence: int,
+            exception_type: type[Exception],
+            close_failure: bool,
+        ) -> None:
+            self._connection = connection
+            self._sql = sql
+            self._occurrence = occurrence
+            self._exception_type = exception_type
+            self._close_failure = close_failure
+            self._counts: dict[str, int] = {}
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+        def execute(self, sql, *args, **kwargs):
+            count = self._counts.get(sql, 0) + 1
+            self._counts[sql] = count
+            if sql == self._sql and count == self._occurrence:
+                raise self._exception_type("private discovery smoke injection")
+            return self._connection.execute(sql, *args, **kwargs)
+
+        def close(self):
+            try:
+                if self._close_failure:
+                    raise self._exception_type("private discovery close injection")
+            finally:
+                self._connection.close()
+
+    class BinaryCapture:
+        def __init__(self) -> None:
+            self.buffer = io.BytesIO()
+
+    cli_arguments = [
+        "--db",
+        str(exact_db),
+        "--run-id",
+        run_id,
+        "--captured-at",
+        captured_at,
+        "--tool-commit",
+        tool_commit,
+    ]
+
+    def invoke_private_cli(path: Path) -> tuple[int, bytes, bytes]:
+        cli_arguments[1] = str(path)
+        stdout = BinaryCapture()
+        stderr = BinaryCapture()
+        original_stdout = module._sys.stdout
+        original_stderr = module._sys.stderr
+        try:
+            module._sys.stdout = stdout
+            module._sys.stderr = stderr
+            status = module._main(cli_arguments.copy())
+        finally:
+            module._sys.stdout = original_stdout
+            module._sys.stderr = original_stderr
+        return status, stdout.buffer.getvalue(), stderr.buffer.getvalue()
+
+    original_connect = sqlite3.connect
+
+    def install_connection_injection(
+        *,
+        sql: str | None = None,
+        occurrence: int = 1,
+        exception_type: type[Exception] = sqlite3.OperationalError,
+        connect_failure: bool = False,
+        close_failure: bool = False,
+    ):
+        def injected_connect(*args, **kwargs):
+            if connect_failure:
+                raise exception_type("private discovery connect injection")
+            return InjectedConnection(
+                original_connect(*args, **kwargs),
+                sql=sql,
+                occurrence=occurrence,
+                exception_type=exception_type,
+                close_failure=close_failure,
+            )
+
+        sqlite3.connect = injected_connect
+
+    def invoke_injected(
+        path: Path,
+        *,
+        sql: str | None = None,
+        occurrence: int = 1,
+        exception_type: type[Exception] = sqlite3.OperationalError,
+        connect_failure: bool = False,
+        close_failure: bool = False,
+    ) -> tuple[object, tuple[int, bytes, bytes]]:
+        before = db_evidence(path)
+        install_connection_injection(
+            sql=sql,
+            occurrence=occurrence,
+            exception_type=exception_type,
+            connect_failure=connect_failure,
+            close_failure=close_failure,
+        )
+        try:
+            try:
+                callable_result: object = module.discover_identity_registry_anomalies(
+                    db_path=path,
+                    run_id=run_id,
+                    captured_at=captured_at,
+                    tool_commit=tool_commit,
+                )
+            except module.IdentityRegistryDiscoveryError as error:
+                callable_result = error
+            cli_result = invoke_private_cli(path)
+        finally:
+            sqlite3.connect = original_connect
+        if db_evidence(path) != before:
+            raise AssertionError("private discovery injection changed source evidence")
+        return callable_result, cli_result
+
+    nonfixed_codes = [
+        code
+        for code in anomaly_order
+        if code
+        not in {
+            "invalid_provenance",
+            "conflicting_principals_different_identities",
+            "disabled_superseded_relationship_inconsistency",
+            "source_principal_missing_inactive_stale",
+            "snapshot_concurrency_drift",
+        }
+    ]
+
+    def assert_cli_bundle(
+        label: str,
+        callable_result: object,
+        cli_result: tuple[int, bytes, bytes],
+    ) -> dict[str, object]:
+        if not isinstance(callable_result, dict):
+            raise AssertionError(f"{label} callable did not return incomplete bundle")
+        status, stdout, stderr = cli_result
+        if (
+            status != 3
+            or not stdout.endswith(b"\n")
+            or stderr != b"AUTH-ID-001H DISCOVERY INCOMPLETE\n"
+        ):
+            raise AssertionError(f"{label} CLI incomplete contract failed")
+        cli_bundle = json.loads(stdout)
+        if (
+            callable_result["capture_status"] != "incomplete"
+            or cli_bundle["capture_status"] != "incomplete"
+            or [item["code"] for item in callable_result["anomalies"]] != anomaly_order
+            or [item["code"] for item in cli_bundle["anomalies"]] != anomaly_order
+        ):
+            raise AssertionError(f"{label} incomplete bundle shape drifted")
+        return callable_result
+
+    def assert_source_read_mapping(label: str, result: dict[str, object]) -> None:
+        if result["errors"] != ["source_read_incomplete"]:
+            raise AssertionError(f"{label} source-read error mapping drifted")
+        for code in nonfixed_codes:
+            item = observation(result, code)
+            expected_reason = (
+                "schema_contract_unavailable"
+                if code == "schema_object_drift"
+                else "bounded_query_incomplete"
+            )
+            if (
+                item["state"] != "indeterminate"
+                or item["count"] is not None
+                or item["reason_code"] != expected_reason
+            ):
+                raise AssertionError(f"{label} observation mapping drifted: {code}")
+
+    operational_cases = (
+        ("connect", None, 1, True, False),
+        ("query-only-set", module._QUERY_ONLY_SET_SQL, 1, False, False),
+        ("query-only-first-readback", module._QUERY_ONLY_READ_SQL, 1, False, False),
+        (
+            "query-only-protected-readback",
+            module._QUERY_ONLY_READ_SQL,
+            2,
+            False,
+            False,
+        ),
+        ("begin", module._BEGIN_SQL, 1, False, False),
+        ("database-list", module._DATABASE_LIST_SQL, 1, False, False),
+        ("connection-close", None, 1, False, True),
+    )
+    for label, sql, occurrence, connect_failure, close_failure in operational_cases:
+        callable_result, cli_result = invoke_injected(
+            exact_db,
+            sql=sql,
+            occurrence=occurrence,
+            connect_failure=connect_failure,
+            close_failure=close_failure,
+        )
+        incomplete = assert_cli_bundle(label, callable_result, cli_result)
+        assert_source_read_mapping(label, incomplete)
+
+    metadata_callable, metadata_cli = invoke_injected(
+        exact_db,
+        sql=module._SCHEMA_VERSION_SQL,
+    )
+    metadata_result = assert_cli_bundle(
+        "schema-metadata", metadata_callable, metadata_cli
+    )
+    if metadata_result["errors"] != ["schema_capture_incomplete"]:
+        raise AssertionError("schema metadata operational error mapping drifted")
+    for code in nonfixed_codes:
+        item = observation(metadata_result, code)
+        if (
+            item["state"] != "indeterminate"
+            or item["count"] is not None
+            or item["reason_code"] != "schema_contract_unavailable"
+        ):
+            raise AssertionError(f"schema metadata observation mapping drifted: {code}")
+
+    row_callable, row_cli = invoke_injected(
+        exact_db,
+        sql=module._INVALID_STATUS_SQL,
+    )
+    row_result = assert_cli_bundle("bounded-row", row_callable, row_cli)
+    if row_result["errors"] != ["bounded_query_incomplete"]:
+        raise AssertionError("bounded row operational error mapping drifted")
+    for code in nonfixed_codes:
+        item = observation(row_result, code)
+        if code in {"invalid_registry_status", "unknown_unclassified_anomaly"}:
+            if (
+                item["state"] != "indeterminate"
+                or item["count"] is not None
+                or item["reason_code"] != "bounded_query_incomplete"
+            ):
+                raise AssertionError(f"bounded row failure mapping drifted: {code}")
+        elif item["state"] != "not_observed" or item["count"] != 0:
+            raise AssertionError(f"independent bounded row result was discarded: {code}")
+
+    rollback_callable, rollback_cli = invoke_injected(
+        exact_db,
+        sql=module._ROLLBACK_SQL,
+    )
+    rollback_result = assert_cli_bundle(
+        "rollback-exact", rollback_callable, rollback_cli
+    )
+    assert_source_read_mapping("rollback-exact", rollback_result)
+
+    def assert_internal_injection(
+        label: str,
+        *,
+        sql: str | None = None,
+        occurrence: int = 1,
+        connect_failure: bool = False,
+        close_failure: bool = False,
+    ) -> None:
+        callable_result, (status, stdout, stderr) = invoke_injected(
+            exact_db,
+            sql=sql,
+            occurrence=occurrence,
+            exception_type=RuntimeError,
+            connect_failure=connect_failure,
+            close_failure=close_failure,
+        )
+        if (
+            not isinstance(callable_result, module.IdentityRegistryDiscoveryError)
+            or callable_result.args != ("identity registry discovery failed",)
+            or callable_result._classification != "internal"
+            or callable_result.__cause__ is not None
+            or callable_result.__context__ is not None
+            or status != 4
+            or stdout != b""
+            or stderr != b"AUTH-ID-001H DISCOVERY INTERNAL ERROR\n"
+        ):
+            raise AssertionError(f"{label} unexpected exception was not internal")
+
+    for label, sql, occurrence, connect_failure, close_failure in (
+        ("runtime-connect", None, 1, True, False),
+        ("runtime-query-only-set", module._QUERY_ONLY_SET_SQL, 1, False, False),
+        (
+            "runtime-query-only-first-readback",
+            module._QUERY_ONLY_READ_SQL,
+            1,
+            False,
+            False,
+        ),
+        (
+            "runtime-query-only-protected-readback",
+            module._QUERY_ONLY_READ_SQL,
+            2,
+            False,
+            False,
+        ),
+        ("runtime-begin", module._BEGIN_SQL, 1, False, False),
+        ("runtime-database-list", module._DATABASE_LIST_SQL, 1, False, False),
+        ("runtime-schema-metadata", module._SCHEMA_VERSION_SQL, 1, False, False),
+        ("runtime-bounded-row", module._INVALID_STATUS_SQL, 1, False, False),
+        ("runtime-rollback", module._ROLLBACK_SQL, 1, False, False),
+        ("runtime-close", None, 1, False, True),
+    ):
+        assert_internal_injection(
+            label,
+            sql=sql,
+            occurrence=occurrence,
+            connect_failure=connect_failure,
+            close_failure=close_failure,
+        )
+
+    original_authorizer_call = module._Authorizer.__call__
+
+    def violating_authorizer(self, *args):
+        self.violation = True
+        return self._sqlite3.SQLITE_DENY
+
+    module._Authorizer.__call__ = violating_authorizer
+    try:
+        authorizer_callable, authorizer_cli = invoke_injected(exact_db)
+    finally:
+        module._Authorizer.__call__ = original_authorizer_call
+    authorizer_status, authorizer_stdout, authorizer_stderr = authorizer_cli
+    if (
+        not isinstance(authorizer_callable, module.IdentityRegistryDiscoveryError)
+        or authorizer_callable._classification != "internal"
+        or authorizer_callable.args != ("identity registry discovery failed",)
+        or authorizer_callable.__cause__ is not None
+        or authorizer_callable.__context__ is not None
+        or authorizer_status != 4
+        or authorizer_stdout != b""
+        or authorizer_stderr != b"AUTH-ID-001H DISCOVERY INTERNAL ERROR\n"
+    ):
+        raise AssertionError("authorizer violation was downgraded from internal")
+
+    extra_db = temp_root / "extra-object.db"
+    shutil.copy2(exact_db, extra_db)
+    connection = sqlite3.connect(extra_db)
+    connection.execute("CREATE TABLE unrelated_discovery_fixture (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    extra_result = discover(extra_db)
+    if extra_result["capture_status"] != "complete" or observation(
+        extra_result, "schema_object_drift"
+    )["state"] != "not_observed":
+        raise AssertionError("unrelated schema object was treated as registry drift")
+    if extra_result["source"]["schema_manifest_sha256"] == exact_a["source"]["schema_manifest_sha256"]:
+        raise AssertionError("physical schema fingerprint ignored unrelated object")
+
+    missing_index_db = temp_root / "missing-index.db"
+    shutil.copy2(exact_db, missing_index_db)
+    connection = sqlite3.connect(missing_index_db)
+    connection.execute("DROP INDEX idx_login_identifier_aliases_candidate_lookup")
+    connection.commit()
+    connection.close()
+    missing_index = discover(missing_index_db)
+    if (
+        missing_index["capture_status"] != "incomplete"
+        or missing_index["errors"] != ["schema_drift"]
+        or observation(missing_index, "schema_object_drift")["state"] != "observed"
+    ):
+        raise AssertionError("missing index decision table failed")
+    incomplete_cli = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            str(tool_path),
+            "--db",
+            str(missing_index_db),
+            "--run-id",
+            run_id,
+            "--captured-at",
+            captured_at,
+            "--tool-commit",
+            tool_commit,
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if (
+        incomplete_cli.returncode != 3
+        or incomplete_cli.stderr != b"AUTH-ID-001H DISCOVERY INCOMPLETE\n"
+        or json.loads(incomplete_cli.stdout)["capture_status"] != "incomplete"
+    ):
+        raise AssertionError("identity registry discovery CLI incomplete contract failed")
+    drift_rollback_callable, drift_rollback_cli = invoke_injected(
+        missing_index_db,
+        sql=module._ROLLBACK_SQL,
+    )
+    drift_rollback = assert_cli_bundle(
+        "rollback-schema-drift",
+        drift_rollback_callable,
+        drift_rollback_cli,
+    )
+    if drift_rollback["errors"] != ["schema_drift", "source_read_incomplete"]:
+        raise AssertionError("rollback schema-drift error mapping drifted")
+    for code in nonfixed_codes:
+        item = observation(drift_rollback, code)
+        if code == "schema_object_drift":
+            if item["state"] != "observed" or item["count"] <= 0:
+                raise AssertionError("rollback discarded observed schema drift")
+        elif (
+            item["state"] != "indeterminate"
+            or item["count"] is not None
+            or item["reason_code"] != "bounded_query_incomplete"
+        ):
+            raise AssertionError(f"rollback retained completed row result: {code}")
+
+    missing_table_db = temp_root / "missing-table.db"
+    create_permissive(missing_table_db)
+    connection = sqlite3.connect(missing_table_db)
+    connection.execute("DROP TABLE backend_principal_mappings")
+    connection.commit()
+    connection.close()
+    missing_table = discover(missing_table_db)
+    if (
+        missing_table["capture_status"] != "incomplete"
+        or "schema_drift" not in missing_table["errors"]
+        or observation(missing_table, "invalid_registry_status")["state"] != "indeterminate"
+    ):
+        raise AssertionError("missing table decision table failed")
+
+    group_db = temp_root / "group-anomalies.db"
+    create_permissive(group_db)
+    ids = {
+        "g1": "00000000-0000-4000-8000-000000000001",
+        "g2": "00000000-0000-4000-8000-000000000002",
+        "a1": "00000000-0000-4000-8000-000000000011",
+        "a2": "00000000-0000-4000-8000-000000000012",
+        "a3": "00000000-0000-4000-8000-000000000013",
+        "a4": "00000000-0000-4000-8000-000000000014",
+        "m1": "00000000-0000-4000-8000-000000000021",
+        "m2": "00000000-0000-4000-8000-000000000022",
+        "m3": "00000000-0000-4000-8000-000000000023",
+    }
+    execute_many(
+        group_db,
+        "INSERT INTO global_identities (global_identity_id, registry_status, created_provenance, updated_provenance) VALUES (?, 'active', 'fixture', 'fixture')",
+        [(ids["g1"],), (ids["g2"],)],
+    )
+    alias_values = (
+        "shared-raw",
+        "shared-key",
+        "NFKC_CASEFOLD_V1",
+        "NFKC_CASEFOLD_V1_UCD16_0_0",
+        "16.0.0",
+        "PY3146_UCD16_0_0_STRIP_V1",
+    )
+    execute_many(
+        group_db,
+        "INSERT INTO login_identifier_aliases (login_identifier_alias_id, global_identity_id, raw_alias, normalized_lookup_key, normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, alias_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 'fixture', 'fixture')",
+        [
+            (ids["a1"], ids["g1"], *alias_values),
+            (ids["a2"], ids["g1"], *alias_values),
+            (ids["a3"], ids["g2"], "other-raw", *alias_values[1:]),
+        ],
+    )
+    execute_many(
+        group_db,
+        "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, 'internal', ?, 'active', 'fixture', 'fixture')",
+        [
+            (ids["m1"], ids["g1"], 100),
+            (ids["m2"], ids["g1"], 101),
+            (ids["m3"], ids["g2"], 100),
+        ],
+    )
+    group_result = discover(group_db)
+    for code in (
+        "schema_object_drift",
+        "normalized_alias_ambiguity",
+        "active_exact_alias_collision",
+        "backend_principal_inconsistent_mapping",
+        "incompatible_backend_cardinality",
+    ):
+        item = observation(group_result, code)
+        if item["state"] != "observed" or item["count"] <= 0:
+            raise AssertionError(f"simultaneous anomaly was not observed: {code}")
+
+    def targeted_fixture(name: str, statements: list[tuple[str, tuple]]) -> dict[str, object]:
+        path = temp_root / f"{name}.db"
+        create_permissive(path)
+        connection = sqlite3.connect(path)
+        for sql, parameters in statements:
+            connection.execute(sql, parameters)
+        connection.commit()
+        connection.close()
+        return discover(path)
+
+    invalid_id = targeted_fixture(
+        "invalid-id",
+        [
+            (
+                "INSERT INTO global_identities (global_identity_id, registry_status, created_provenance, updated_provenance) VALUES (?, 'active', 'fixture', 'fixture')",
+                ("bad-id",),
+            )
+        ],
+    )
+    invalid_status = targeted_fixture(
+        "invalid-status",
+        [
+            (
+                "INSERT INTO global_identities (global_identity_id, registry_status, created_provenance, updated_provenance) VALUES (?, ?, 'fixture', 'fixture')",
+                ("00000000-0000-4000-8000-000000000031", "pending"),
+            )
+        ],
+    )
+    invalid_key = targeted_fixture(
+        "invalid-key",
+        [
+            (
+                "INSERT INTO global_identities (global_identity_id, registry_status, created_provenance, updated_provenance) VALUES (?, 'active', 'fixture', 'fixture')",
+                ("00000000-0000-4000-8000-000000000041",),
+            ),
+            (
+                "INSERT INTO backend_principal_mappings (backend_principal_mapping_id, global_identity_id, backend_kind, backend_principal_key, mapping_status, created_provenance, updated_provenance) VALUES (?, ?, ?, ?, 'active', 'fixture', 'fixture')",
+                (
+                    "00000000-0000-4000-8000-000000000042",
+                    "00000000-0000-4000-8000-000000000041",
+                    "wrong",
+                    "text-key",
+                ),
+            ),
+        ],
+    )
+    orphan = targeted_fixture(
+        "orphan",
+        [
+            (
+                "INSERT INTO login_identifier_aliases (login_identifier_alias_id, global_identity_id, raw_alias, normalized_lookup_key, normalization_algorithm_family, normalization_profile, unicode_data_version, trim_conformance_profile, alias_status, created_provenance, updated_provenance) VALUES (?, ?, 'raw', 'key', 'NFKC_CASEFOLD_V1', 'NFKC_CASEFOLD_V1_UCD16_0_0', '16.0.0', 'PY3146_UCD16_0_0_STRIP_V1', 'active', 'fixture', 'fixture')",
+                (
+                    "00000000-0000-4000-8000-000000000051",
+                    "00000000-0000-4000-8000-000000000052",
+                ),
+            )
+        ],
+    )
+    for result, code in (
+        (invalid_id, "noncanonical_registry_id"),
+        (invalid_status, "invalid_registry_status"),
+        (invalid_key, "invalid_backend_principal_key"),
+        (orphan, "orphan_fk_relationship"),
+    ):
+        if observation(result, code)["state"] != "observed":
+            raise AssertionError(f"targeted anomaly was not observed: {code}")
+
+    if exact_a == group_result:
+        raise AssertionError("meaningful source difference did not change evidence")
+
+    wal_path = temp_root / "wal-header.db"
+    shutil.copy2(exact_db, wal_path)
+    wal_bytes = bytearray(wal_path.read_bytes())
+    wal_bytes[18] = 2
+    wal_bytes[19] = 2
+    wal_path.write_bytes(wal_bytes)
+    original_connect = sqlite3.connect
+    connection_attempts = 0
+
+    def counting_connect(*args, **kwargs):
+        nonlocal connection_attempts
+        connection_attempts += 1
+        return original_connect(*args, **kwargs)
+
+    sqlite3.connect = counting_connect
+    try:
+        try:
+            module.discover_identity_registry_anomalies(
+                db_path=wal_path,
+                run_id=run_id,
+                captured_at=captured_at,
+                tool_commit=tool_commit,
+            )
+        except module.IdentityRegistryDiscoveryError as error:
+            if (
+                error.args != ("identity registry discovery failed",)
+                or error.__cause__ is not None
+                or error.__context__ is not None
+                or error._classification != "input"
+            ):
+                raise AssertionError("input exception privacy contract drifted")
+        else:
+            raise AssertionError("WAL-format header was accepted")
+    finally:
+        sqlite3.connect = original_connect
+    if connection_attempts != 0 or any(
+        Path(str(wal_path) + suffix).exists() for suffix in ("-wal", "-shm", "-journal")
+    ):
+        raise AssertionError("WAL-format rejection attempted connection or sidecar")
+
+    for name, data in (
+        ("short", b"short"),
+        ("bad-magic", b"x" * 100),
+        ("mixed", _HEADER_BYTES_FOR_DISCOVERY_SMOKE),
+    ):
+        path = temp_root / f"{name}.db"
+        path.write_bytes(data)
+        if name == "mixed":
+            mixed = bytearray(path.read_bytes())
+            mixed[18], mixed[19] = 1, 2
+            path.write_bytes(mixed)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                str(tool_path),
+                "--db",
+                str(path),
+                "--run-id",
+                run_id,
+                "--captured-at",
+                captured_at,
+                "--tool-commit",
+                tool_commit,
+            ],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+        if (
+            result.returncode != 2
+            or result.stdout != b""
+            or result.stderr != b"AUTH-ID-001H DISCOVERY INPUT REJECTED\n"
+        ):
+            raise AssertionError(f"input rejection marker failed: {name}")
+
+    help_result = subprocess.run(
+        [sys.executable, "-B", str(tool_path), "--help"],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if (
+        help_result.returncode != 2
+        or help_result.stdout != b""
+        or help_result.stderr != b"AUTH-ID-001H DISCOVERY INPUT REJECTED\n"
+    ):
+        raise AssertionError("discovery --help did not fail closed")
+    for label, arguments in (
+        (
+            "repository-path",
+            [
+                "--db",
+                str(tool_path),
+                "--run-id",
+                run_id,
+                "--captured-at",
+                captured_at,
+                "--tool-commit",
+                tool_commit,
+            ],
+        ),
+        (
+            "invalid-calendar",
+            [
+                "--db",
+                str(exact_db),
+                "--run-id",
+                run_id,
+                "--captured-at",
+                "2026-02-30T00:00:00Z",
+                "--tool-commit",
+                tool_commit,
+            ],
+        ),
+        (
+            "repeated-option",
+            [
+                "--db",
+                str(exact_db),
+                "--db",
+                str(exact_db),
+                "--captured-at",
+                captured_at,
+                "--tool-commit",
+                tool_commit,
+            ],
+        ),
+    ):
+        rejected = subprocess.run(
+            [sys.executable, "-B", str(tool_path), *arguments],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=False,
+            check=False,
+        )
+        if (
+            rejected.returncode != 2
+            or rejected.stdout != b""
+            or rejected.stderr != b"AUTH-ID-001H DISCOVERY INPUT REJECTED\n"
+        ):
+            raise AssertionError(f"discovery input matrix failed: {label}")
+
+    sidecar_db = temp_root / "sidecar-present.db"
+    shutil.copy2(exact_db, sidecar_db)
+    sidecar = Path(str(sidecar_db) + "-wal")
+    sidecar.write_bytes(b"fixture-sidecar")
+    sidecar_before = sidecar.read_bytes()
+    sidecar_result = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            str(tool_path),
+            "--db",
+            str(sidecar_db),
+            "--run-id",
+            run_id,
+            "--captured-at",
+            captured_at,
+            "--tool-commit",
+            tool_commit,
+        ],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if (
+        sidecar_result.returncode != 2
+        or sidecar_result.stdout != b""
+        or sidecar_result.stderr != b"AUTH-ID-001H DISCOVERY INPUT REJECTED\n"
+        or sidecar.read_bytes() != sidecar_before
+    ):
+        raise AssertionError("pre-existing sidecar rejection or no-cleanup contract failed")
+
+    authorizer = module._Authorizer(sqlite3)
+    if authorizer(sqlite3.SQLITE_READ, "x", "y", "main", None) != sqlite3.SQLITE_DENY:
+        raise AssertionError("closed authorizer accepted callback")
+    authorizer.configure(
+        "schema_objects",
+        reads=(("read", "main", "sqlite_master", "type"),),
+        required=(("read", "main", "sqlite_master", "type"),),
+    )
+    if (
+        authorizer(sqlite3.SQLITE_READ, "sqlite_schema", "type", "main", None)
+        != sqlite3.SQLITE_DENY
+    ):
+        raise AssertionError("authorizer accepted sqlite_schema callback alias")
+    authorizer.close()
+    authorizer.configure(
+        "bounded_row_query",
+        functions=("count", "typeof"),
+        required=(("function", "count"),),
+    )
+    if (
+        authorizer(sqlite3.SQLITE_FUNCTION, None, "coalesce", None, None)
+        != sqlite3.SQLITE_DENY
+    ):
+        raise AssertionError("authorizer accepted forbidden function")
+    authorizer.close()
+
+    platform_code = (
+        "import importlib.util, pathlib, sys\n"
+        f"p=pathlib.Path({str(tool_path)!r})\n"
+        "s=importlib.util.spec_from_file_location('platform_failure',p)\n"
+        "m=importlib.util.module_from_spec(s); s.loader.exec_module(m)\n"
+        "m._sys.version_info=(3,13,0)\n"
+        f"raise SystemExit(m._main(['--db',{str(exact_db)!r},'--run-id',{run_id!r},"
+        f"'--captured-at',{captured_at!r},'--tool-commit',{tool_commit!r}]))\n"
+    )
+    platform_result = subprocess.run(
+        [sys.executable, "-B", "-c", platform_code],
+        cwd=ROOT_DIR,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if (
+        platform_result.returncode != 4
+        or platform_result.stdout != b""
+        or platform_result.stderr != b"AUTH-ID-001H DISCOVERY INTERNAL ERROR\n"
+    ):
+        raise AssertionError("platform failure marker failed")
+
+    if owned_temp is not None:
+        owned_temp.cleanup()
+    print("identity registry discovery smoke PASS")
+
+
+_HEADER_BYTES_FOR_DISCOVERY_SMOKE = (
+    b"SQLite format 3\0" + b"\0\0" + bytes((1, 1)) + b"\0" * 80
+)
 
 
 def run_identity_registry_schema_smoke(temp_root: Path) -> None:
@@ -25634,6 +26718,9 @@ def main() -> int:
         run_identity_registry_reconciliation_readiness_smoke(
             Path(tmpdir) / "identity-registry-reconciliation-readiness"
         )
+        run_identity_registry_discovery_smoke(
+            Path(tmpdir) / "identity-registry-discovery"
+        )
         run_identity_registry_schema_smoke(Path(tmpdir) / "identity-registry-schema")
         run_schema_manifest_serializer_smoke(Path(tmpdir) / "schema-manifest-serializer")
         vendor_auth_db = Path(tmpdir) / "vendor-auth-foundation.db"
@@ -25884,6 +26971,9 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if len(sys.argv) == 2 and sys.argv[1] == "--internal-identity-registry-reconciliation-readiness":
         run_identity_registry_reconciliation_readiness_smoke()
+        raise SystemExit(0)
+    if len(sys.argv) == 2 and sys.argv[1] == "--internal-identity-registry-discovery":
+        run_identity_registry_discovery_smoke()
         raise SystemExit(0)
     if len(sys.argv) == 3 and sys.argv[1] == "--internal-dev-vendor-credential-rotation":
         raise SystemExit(_run_dev_vendor_credential_rotation_child(Path(sys.argv[2])))

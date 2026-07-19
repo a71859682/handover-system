@@ -19,6 +19,7 @@ POLICY_F_PATH = Path("docs/auth_id_001f_lifecycle_tombstone_merge_policy.md")
 POLICY_G_PATH = Path("docs/auth_id_001g_explicit_cross_backend_linking_baseline.md")
 POLICY_H_PATH = Path("docs/auth_id_001h_reconciliation_upgrade_baseline.md")
 CHECKER_PATH = Path("tools/check_identity_registry_reconciliation_readiness.py")
+DISCOVERY_TOOL_PATH = Path("tools/discover_identity_registry_anomalies.py")
 LIFECYCLE_CHECKER_PATH = Path("tools/check_identity_registry_lifecycle_readiness.py")
 LINKING_CHECKER_PATH = Path("tools/check_identity_registry_linking_readiness.py")
 APPROVED_LIFECYCLE_CHECKER_SHA256 = (
@@ -1028,6 +1029,567 @@ def check_upstream_fingerprint(
     return []
 
 
+DISCOVERY_PUBLIC_EXPORTS = (
+    "IdentityRegistryDiscoveryError",
+    "discover_identity_registry_anomalies",
+)
+DISCOVERY_SQL_CONSTANTS = {
+    "_SCHEMA_OBJECTS_SQL",
+    "_TABLE_LIST_SQL",
+    "_TABLE_XINFO_SQL",
+    "_FOREIGN_KEY_LIST_SQL",
+    "_INDEX_LIST_SQL",
+    "_INDEX_XINFO_SQL",
+    "_QUERY_ONLY_SET_SQL",
+    "_QUERY_ONLY_READ_SQL",
+    "_BEGIN_SQL",
+    "_DATABASE_LIST_SQL",
+    "_SCHEMA_VERSION_SQL",
+    "_ROLLBACK_SQL",
+    "_NONCANONICAL_ID_SQL",
+    "_INVALID_STATUS_SQL",
+    "_INVALID_BACKEND_KEY_SQL",
+    "_ORPHAN_FK_SQL",
+    "_NORMALIZED_ALIAS_AMBIGUITY_SQL",
+    "_ACTIVE_EXACT_ALIAS_COLLISION_SQL",
+    "_INCONSISTENT_MAPPING_SQL",
+    "_INCOMPATIBLE_CARDINALITY_SQL",
+}
+DISCOVERY_REQUIRED_SOURCE_FRAGMENTS = (
+    'expected = {"--db", "--run-id", "--captured-at", "--tool-commit"}',
+    'resolved_path.as_uri() + "?mode=ro"',
+    "uri=True",
+    "cached_statements=0",
+    '_HEADER_MAGIC = b"SQLite format 3\\0"',
+    "data[18] != 1",
+    "data[19] != 1",
+    '_QUERY_ONLY_SET_SQL = "PRAGMA query_only=ON"',
+    '_QUERY_ONLY_READ_SQL = "PRAGMA query_only"',
+    '_BEGIN_SQL = "BEGIN"',
+    '_ROLLBACK_SQL = "ROLLBACK"',
+    "FROM sqlite_schema",
+    "FROM pragma_table_list",
+    "FROM pragma_table_xinfo(?)",
+    "FROM pragma_foreign_key_list(?)",
+    "FROM pragma_index_list(?)",
+    "FROM pragma_index_xinfo(?)",
+    '"sqlite_master", ("type", "name", "tbl_name", "sql")',
+    '("count", "typeof")',
+    '"auth-id-001h-disposable-registry-discovery"',
+    '"AUTH_ID_001H_DISPOSABLE_DISCOVERY_V1"',
+    '"unknown_unclassified_anomaly"',
+    '"backend_revalidation_required"',
+    '"cross_backend_subject_evidence_required"',
+    '"historical_ledger_unavailable"',
+    '"single_snapshot_cannot_exclude_concurrency_drift"',
+    '"schema_contract_unavailable"',
+    '"bounded_query_incomplete"',
+    "validate_identity_registry_id as _validate_identity_registry_id",
+    "def _source_read_incomplete_observations():",
+    "except authorizer._sqlite3.OperationalError:",
+    "except sqlite3.OperationalError:",
+    "observations = _source_read_incomplete_observations()",
+    "item = observations[code]",
+    "finally:\n        authorizer.close()",
+)
+DISCOVERY_FORBIDDEN_SOURCE_FRAGMENTS = (
+    "immutable=1",
+    "FROM sqlite_master",
+    "PRAGMA journal_mode",
+    "os.getenv",
+    "_os.getenv",
+    "os.environ",
+    "_os.environ",
+    "DATABASE_URL",
+    "APP_DB_PATH",
+    "import app",
+    "from app",
+    "capture_schema_manifest",
+    "check_identity_registry_schema",
+    "requests.",
+    "psycopg",
+    "sqlalchemy",
+)
+
+
+def discovery_contract_issue(reason: str, line: int = 1) -> Issue:
+    return Issue(
+        code="discovery_tool_contract_drift",
+        file=DISCOVERY_TOOL_PATH.as_posix(),
+        line=line,
+        symbol="<module>",
+        reason=reason,
+    )
+
+
+def top_level_definitions(tree: ast.Module) -> dict[str, ast.AST]:
+    result: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            result[node.name] = node
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    result[target.id] = node
+    return result
+
+
+def literal_assignment(tree: ast.Module, name: str) -> Any:
+    definitions = top_level_definitions(tree)
+    node = definitions.get(name)
+    if isinstance(node, ast.Assign):
+        try:
+            return ast.literal_eval(node.value)
+        except (TypeError, ValueError):
+            return UNKNOWN
+    if isinstance(node, ast.AnnAssign) and node.value is not None:
+        try:
+            return ast.literal_eval(node.value)
+        except (TypeError, ValueError):
+            return UNKNOWN
+    return UNKNOWN
+
+
+def check_discovery_tool_contract(root: Path) -> list[Issue]:
+    path = root / DISCOVERY_TOOL_PATH
+    if not path.is_file():
+        return [discovery_contract_issue("canonical discovery tool is missing")]
+    try:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=DISCOVERY_TOOL_PATH.as_posix())
+    except (OSError, UnicodeError, SyntaxError):
+        return [discovery_contract_issue("canonical discovery tool is unreadable or invalid")]
+
+    issues: list[Issue] = []
+
+    def add(reason: str, node: ast.AST | None = None) -> None:
+        issues.append(
+            discovery_contract_issue(reason, int(getattr(node, "lineno", 1)))
+        )
+
+    definitions = top_level_definitions(tree)
+    exports = literal_assignment(tree, "__all__")
+    if exports != DISCOVERY_PUBLIC_EXPORTS:
+        add("public export tuple is not exact", definitions.get("__all__"))
+
+    public_definitions = {
+        name
+        for name, node in definitions.items()
+        if not name.startswith("_")
+        and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    if public_definitions != set(DISCOVERY_PUBLIC_EXPORTS):
+        add("public class/function surface is not exact")
+
+    error_class = definitions.get("IdentityRegistryDiscoveryError")
+    if not isinstance(error_class, ast.ClassDef) or len(error_class.bases) != 1:
+        add("public exception class shape is not exact", error_class)
+    elif not (
+        isinstance(error_class.bases[0], ast.Name)
+        and error_class.bases[0].id == "Exception"
+    ):
+        add("public exception must derive only from Exception", error_class)
+
+    callable_node = definitions.get("discover_identity_registry_anomalies")
+    if not isinstance(callable_node, ast.FunctionDef):
+        add("public discovery callable is missing")
+    else:
+        arguments = callable_node.args
+        if (
+            arguments.posonlyargs
+            or arguments.args
+            or arguments.vararg is not None
+            or arguments.kwarg is not None
+            or [item.arg for item in arguments.kwonlyargs]
+            != ["db_path", "run_id", "captured_at", "tool_commit"]
+            or any(default is not None for default in arguments.kw_defaults)
+        ):
+            add("public callable arguments are not exact", callable_node)
+        callable_annotations = {
+            argument.arg: (
+                ast.unparse(argument.annotation)
+                if argument.annotation is not None
+                else None
+            )
+            for argument in arguments.kwonlyargs
+        }
+        if callable_annotations != {
+            "db_path": "_Path",
+            "run_id": "str",
+            "captured_at": "str",
+            "tool_commit": "str",
+        } or (
+            ast.unparse(callable_node.returns)
+            if callable_node.returns is not None
+            else None
+        ) != "dict[str, object]":
+            add("public callable annotations are not exact", callable_node)
+
+    main_node = definitions.get("_main")
+    if not isinstance(main_node, ast.FunctionDef):
+        add("private CLI entrypoint is missing")
+    else:
+        arguments = main_node.args
+        if (
+            arguments.posonlyargs
+            or [item.arg for item in arguments.args] != ["argv"]
+            or len(arguments.defaults) != 1
+            or not isinstance(arguments.defaults[0], ast.Constant)
+            or arguments.defaults[0].value is not None
+            or arguments.kwonlyargs
+            or arguments.vararg is not None
+            or arguments.kwarg is not None
+        ):
+            add("private CLI entrypoint arguments are not exact", main_node)
+        elif (
+            ast.unparse(arguments.args[0].annotation)
+            if arguments.args[0].annotation is not None
+            else None
+        ) != "_Sequence[str] | None" or (
+            ast.unparse(main_node.returns)
+            if main_node.returns is not None
+            else None
+        ) != "int":
+            add("private CLI entrypoint annotations are not exact", main_node)
+
+    private_path_alias = False
+    private_sequence_alias = False
+    public_annotation_names = set(definitions) & {"Path", "Sequence"}
+    for node in tree.body:
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module == "pathlib":
+            private_path_alias = any(
+                alias.name == "Path" and alias.asname == "_Path"
+                for alias in node.names
+            )
+            if any(
+                alias.name == "Path" and alias.asname != "_Path"
+                for alias in node.names
+            ):
+                public_annotation_names.add("Path")
+        if node.module == "typing":
+            private_sequence_alias = any(
+                alias.name == "Sequence" and alias.asname == "_Sequence"
+                for alias in node.names
+            )
+            if any(
+                alias.name == "Sequence" and alias.asname != "_Sequence"
+                for alias in node.names
+            ):
+                public_annotation_names.add("Sequence")
+    if not private_path_alias or not private_sequence_alias:
+        add("private Path and Sequence annotation aliases are not exact")
+    if public_annotation_names:
+        add("public Path or Sequence annotation alias appeared")
+
+    for fragment in DISCOVERY_REQUIRED_SOURCE_FRAGMENTS:
+        if fragment not in source:
+            add(f"required immutable discovery evidence is missing: {fragment}")
+    for fragment in DISCOVERY_FORBIDDEN_SOURCE_FRAGMENTS:
+        if fragment in source:
+            add(f"forbidden discovery capability appeared: {fragment}")
+
+    if source.count("sqlite3.connect(") != 1:
+        add("SQLite connection call count is not exactly one")
+    if source.count('resolved_path.as_uri() + "?mode=ro"') != 1:
+        add("single Path.as_uri mode=ro construction drifted")
+    if source.count("cached_statements=0") != 1:
+        add("statement cache boundary drifted")
+    if source.count('"_main"') and "_main" in exports:
+        add("private CLI entrypoint became public")
+
+    import_names: set[str] = set()
+    imported_e2_validator = False
+    sqlite_import_nodes: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                import_names.add(alias.name)
+                if alias.name == "sqlite3":
+                    sqlite_import_nodes.append(node)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            import_names.add(module)
+            if module == "sqlite3":
+                sqlite_import_nodes.append(node)
+            if module == "services.identity_registry_ids":
+                imported_e2_validator = any(
+                    alias.name == "validate_identity_registry_id"
+                    and alias.asname == "_validate_identity_registry_id"
+                    for alias in node.names
+                )
+    if sqlite_import_nodes:
+        add("sqlite3 must not be imported before the runtime gate", sqlite_import_nodes[0])
+    if not imported_e2_validator:
+        add("Production-frozen E2 validator import is not exact")
+    forbidden_modules = {
+        "app",
+        "tools.check_identity_registry_schema",
+        "tools.capture_schema_manifest",
+        "requests",
+        "psycopg",
+        "sqlalchemy",
+    }
+    if import_names & forbidden_modules:
+        add("forbidden app/schema/serializer/backend import appeared")
+
+    for name in DISCOVERY_SQL_CONSTANTS:
+        node = definitions.get(name)
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Constant):
+            add(f"fixed SQL constant is not immutable text: {name}", node)
+        elif type(node.value.value) is not str:
+            add(f"fixed SQL constant is not a string: {name}", node)
+    exact_statement_values = {
+        "_QUERY_ONLY_SET_SQL": "PRAGMA query_only=ON",
+        "_QUERY_ONLY_READ_SQL": "PRAGMA query_only",
+        "_BEGIN_SQL": "BEGIN",
+        "_DATABASE_LIST_SQL": "PRAGMA database_list",
+        "_SCHEMA_VERSION_SQL": "PRAGMA schema_version",
+        "_ROLLBACK_SQL": "ROLLBACK",
+    }
+    for name, expected in exact_statement_values.items():
+        if literal_assignment(tree, name) != expected:
+            add(f"fixed operational statement drifted: {name}", definitions.get(name))
+
+    row_queries = definitions.get("_ROW_QUERIES")
+    if not isinstance(row_queries, ast.Assign) or not isinstance(
+        row_queries.value, (ast.Tuple, ast.List)
+    ):
+        add("bounded row query registry is not immutable", row_queries)
+    else:
+        query_names: list[str] = []
+        for item in row_queries.value.elts:
+            if (
+                not isinstance(item, ast.Tuple)
+                or len(item.elts) != 2
+                or not isinstance(item.elts[0], ast.Constant)
+                or type(item.elts[0].value) is not str
+                or not isinstance(item.elts[1], ast.Name)
+            ):
+                add("bounded row query registry entry is dynamic", item)
+                continue
+            query_names.append(item.elts[0].value)
+        if query_names != [
+            "noncanonical_registry_id",
+            "invalid_registry_status",
+            "invalid_backend_principal_key",
+            "orphan_fk_relationship",
+            "normalized_alias_ambiguity",
+            "active_exact_alias_collision",
+            "backend_principal_inconsistent_mapping",
+            "incompatible_backend_cardinality",
+        ]:
+            add("bounded row query taxonomy or ordering drifted", row_queries)
+
+    anomaly_dispositions = definitions.get("_ANOMALY_DISPOSITIONS")
+    if not isinstance(anomaly_dispositions, ast.Assign):
+        add("frozen anomaly taxonomy is missing")
+    else:
+        try:
+            anomaly_value = ast.literal_eval(anomaly_dispositions.value)
+        except (TypeError, ValueError):
+            anomaly_value = ()
+        if len(anomaly_value) != 15 or anomaly_value[-1][0] != "unknown_unclassified_anomaly":
+            add("frozen anomaly taxonomy is not exact", anomaly_dispositions)
+
+    runtime_node = definitions.get("_runtime")
+    if not isinstance(runtime_node, ast.FunctionDef):
+        add("ordered platform/runtime gate is missing")
+    else:
+        runtime_source = ast.get_source_segment(source, runtime_node) or ""
+        positions = [
+            runtime_source.find('_os.name != "nt"'),
+            runtime_source.find('_sys.implementation.name != "cpython"'),
+            runtime_source.find("_sys.version_info[:2] != (3, 14)"),
+            runtime_source.find('__import__("sqlite3")'),
+            runtime_source.find("(3, 37, 0)"),
+            runtime_source.find("(4, 0, 0)"),
+        ]
+        if any(position < 0 for position in positions) or positions != sorted(positions):
+            add("platform/import/SQLite-version gate ordering drifted", runtime_node)
+
+    capture_node = definitions.get("_capture")
+    if not isinstance(capture_node, ast.FunctionDef):
+        add("single read-only capture implementation is missing")
+    else:
+        capture_source = ast.get_source_segment(source, capture_node) or ""
+        connect_calls = [
+            node
+            for node in ast.walk(capture_node)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "connect"
+        ]
+        if len(connect_calls) != 1:
+            add("capture must contain exactly one connect call", capture_node)
+        else:
+            call = connect_calls[0]
+            keyword_values = {keyword.arg: keyword.value for keyword in call.keywords}
+            if (
+                len(call.args) != 1
+                or set(keyword_values) != {"uri", "cached_statements"}
+                or not isinstance(keyword_values["uri"], ast.Constant)
+                or keyword_values["uri"].value is not True
+                or not isinstance(keyword_values["cached_statements"], ast.Constant)
+                or keyword_values["cached_statements"].value != 0
+            ):
+                add("exact mode=ro connection options drifted", call)
+        sqlite_operational_handlers = [
+            node
+            for node in ast.walk(capture_node)
+            if isinstance(node, ast.ExceptHandler)
+            and dotted_name(node.type) == "sqlite3.OperationalError"
+        ]
+        if len(sqlite_operational_handlers) != 4:
+            add(
+                "capture SQLite operational handling is not exact",
+                capture_node,
+            )
+        source_incomplete_calls = [
+            node
+            for node in ast.walk(capture_node)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_source_read_incomplete_observations"
+        ]
+        if len(source_incomplete_calls) != 2:
+            add(
+                "pre-transaction source failure observation initialization drifted",
+                capture_node,
+            )
+        if (
+            "except _Operational:\n                errors.add(\"source_read_incomplete\")\n"
+            "                observations = _source_read_incomplete_observations()"
+            not in capture_source
+        ):
+            add(
+                "protected query-only or BEGIN failure lacks complete observations",
+                capture_node,
+            )
+
+    source_incomplete_node = definitions.get(
+        "_source_read_incomplete_observations"
+    )
+    if not isinstance(source_incomplete_node, ast.FunctionDef):
+        add("source-read incomplete observation helper is missing")
+
+    run_statement_node = definitions.get("_run_statement")
+    if not isinstance(run_statement_node, ast.FunctionDef):
+        add("bounded SQLite statement runner is missing")
+    else:
+        statement_try = next(
+            (
+                node
+                for node in ast.walk(run_statement_node)
+                if isinstance(node, ast.Try)
+                and any(
+                    isinstance(child, ast.Call)
+                    and dotted_name(child.func) == "connection.execute"
+                    for child in ast.walk(node)
+                )
+            ),
+            None,
+        )
+        if statement_try is None:
+            add("bounded SQLite statement try boundary is missing", run_statement_node)
+        else:
+            handler_names = [
+                dotted_name(handler.type) for handler in statement_try.handlers
+            ]
+            if handler_names != [
+                "_Failure",
+                "authorizer._sqlite3.OperationalError",
+                "Exception",
+            ]:
+                add(
+                    "bounded SQLite operational/internal exception split drifted",
+                    statement_try,
+                )
+            else:
+                operational_source = (
+                    ast.get_source_segment(source, statement_try.handlers[1]) or ""
+                )
+                internal_source = (
+                    ast.get_source_segment(source, statement_try.handlers[2]) or ""
+                )
+                if (
+                    "authorizer.violation" not in operational_source
+                    or 'raise _Failure("internal") from None'
+                    not in operational_source
+                    or "raise _Operational from None" not in operational_source
+                ):
+                    add(
+                        "authorizer violation or SQLite operational mapping drifted",
+                        statement_try.handlers[1],
+                    )
+                if (
+                    'raise _Failure("internal") from None' not in internal_source
+                    or "raise _Operational" in internal_source
+                ):
+                    add(
+                        "unexpected statement exception is downgraded",
+                        statement_try.handlers[2],
+                    )
+
+    assemble_node = definitions.get("_assemble_output")
+    if not isinstance(assemble_node, ast.FunctionDef):
+        add("fail-closed output assembler is missing")
+    else:
+        observation_subscripts = [
+            node
+            for node in ast.walk(assemble_node)
+            if isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "observations"
+        ]
+        observation_defaults = [
+            node
+            for node in ast.walk(assemble_node)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "observations"
+            and node.func.attr in {"get", "setdefault"}
+        ]
+        if len(observation_subscripts) != 1 or observation_defaults:
+            add(
+                "output assembler no longer fails closed on missing observations",
+                assemble_node,
+            )
+
+    allowed_output_writes = {
+        ("_sys", "stdout", "buffer", "write"),
+        ("_sys", "stderr", "buffer", "write"),
+    }
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = dotted_name(node.func) or ""
+        lowered = name.lower()
+        if (
+            lowered in {"open", "print"}
+            or lowered.endswith(
+                (
+                    ".open",
+                    ".write_text",
+                    ".write_bytes",
+                    ".commit",
+                    ".executemany",
+                    ".executescript",
+                )
+            )
+            or ".logging" in lowered
+            or ".logger" in lowered
+        ):
+            parts = tuple(name.split("."))
+            if parts not in allowed_output_writes:
+                add("artifact, logging, write, or transaction capability appeared", node)
+
+    return sorted(set(issues))
+
+
 def python_sources(root: Path) -> list[Path]:
     excluded_files = {
         CHECKER_PATH,
@@ -1050,6 +1612,9 @@ def python_sources(root: Path) -> list[Path]:
 def analyze_repository(root: Path) -> list[Issue]:
     issues = check_h_policy(root)
     issues.extend(check_owner_boundaries(root))
+    discovery_issues = check_discovery_tool_contract(root)
+    issues.extend(discovery_issues)
+    discovery_authorized = not discovery_issues
     issues.extend(
         check_upstream_fingerprint(
             root,
@@ -1096,7 +1661,22 @@ def analyze_repository(root: Path) -> list[Issue]:
             continue
         analyzer = PythonSourceAnalyzer(root, path)
         analyzer.visit(tree)
-        issues.extend(analyzer.issues)
+        source_issues = analyzer.issues
+        if relative == DISCOVERY_TOOL_PATH and discovery_authorized:
+            authorized_symbols = {
+                "IdentityRegistryDiscoveryError",
+                "discover_identity_registry_anomalies",
+                "_main",
+            }
+            source_issues = [
+                issue
+                for issue in source_issues
+                if not (
+                    issue.code == "forbidden_registry_anomaly_scanner"
+                    and issue.symbol in authorized_symbols
+                )
+            ]
+        issues.extend(source_issues)
     return sorted(set(issues))
 
 
@@ -1133,6 +1713,7 @@ def write_base_tree(root: Path) -> None:
         POLICY_F_PATH,
         POLICY_G_PATH,
         POLICY_H_PATH,
+        DISCOVERY_TOOL_PATH,
         LIFECYCLE_CHECKER_PATH,
         LINKING_CHECKER_PATH,
     ):
@@ -1701,6 +2282,195 @@ def run_self_test() -> int:
                 )
             if PASS_MARKER in output:
                 raise AssertionError(f"negative scenario {name} emitted normal PASS marker")
+
+        discovery_source = (baseline / DISCOVERY_TOOL_PATH).read_text(encoding="utf-8")
+        discovery_mutations = (
+            (
+                "discovery_extra_export",
+                '    "discover_identity_registry_anomalies",\n)',
+                '    "discover_identity_registry_anomalies",\n    "extra",\n)',
+            ),
+            (
+                "discovery_cli_option",
+                'expected = {"--db", "--run-id", "--captured-at", "--tool-commit"}',
+                'expected = {"--database", "--run-id", "--captured-at", "--tool-commit"}',
+            ),
+            (
+                "discovery_uri_extra",
+                'resolved_path.as_uri() + "?mode=ro"',
+                'resolved_path.as_uri() + "?mode=ro&cache=shared"',
+            ),
+            (
+                "discovery_statement_cache",
+                "cached_statements=0",
+                "cached_statements=1",
+            ),
+            (
+                "discovery_header_write_version",
+                "data[18] != 1",
+                "data[18] != 2",
+            ),
+            (
+                "discovery_header_read_version",
+                "data[19] != 1",
+                "data[19] != 2",
+            ),
+            (
+                "discovery_top_level_sqlite_import",
+                "import stat as _stat",
+                "import stat as _stat\nimport sqlite3 as _sqlite3",
+            ),
+            (
+                "discovery_direct_master_sql",
+                "FROM sqlite_schema",
+                "FROM sqlite_master",
+            ),
+            (
+                "discovery_callback_alias",
+                '"sqlite_master", ("type", "name", "tbl_name", "sql")',
+                '"sqlite_schema", ("type", "name", "tbl_name", "sql")',
+            ),
+            (
+                "discovery_function_allowance",
+                '("count", "typeof")',
+                '("count", "typeof", "coalesce")',
+            ),
+            (
+                "discovery_app_import",
+                "import stat as _stat",
+                "import stat as _stat\nimport app",
+            ),
+            (
+                "discovery_environment_fallback",
+                "def _validate_inputs(db_path, run_id, captured_at, tool_commit) -> None:",
+                "def _validate_inputs(db_path, run_id, captured_at, tool_commit) -> None:\n    _os.getenv('APP_DB_PATH')",
+            ),
+            (
+                "discovery_e2_validator",
+                "validate_identity_registry_id as _validate_identity_registry_id",
+                "validate_identity_registry_id as _different_validator",
+            ),
+            (
+                "discovery_query_only_write",
+                '_QUERY_ONLY_SET_SQL = "PRAGMA query_only=ON"',
+                '_QUERY_ONLY_SET_SQL = "PRAGMA query_only=OFF"',
+            ),
+            (
+                "discovery_transaction_commit",
+                '_ROLLBACK_SQL = "ROLLBACK"',
+                '_ROLLBACK_SQL = "COMMIT"',
+            ),
+            (
+                "discovery_finally_reset",
+                "finally:\n        authorizer.close()",
+                "if authorizer.active:\n        authorizer.close()",
+            ),
+            (
+                "discovery_extra_public_function",
+                "class IdentityRegistryDiscoveryError(Exception):",
+                "def extra_discovery_entrypoint():\n    return None\n\n\nclass IdentityRegistryDiscoveryError(Exception):",
+            ),
+            (
+                "discovery_dynamic_schema_sql",
+                '_SCHEMA_OBJECTS_SQL = """SELECT',
+                '_SCHEMA_OBJECTS_SQL = "SELECT" + """',
+            ),
+            (
+                "discovery_unknown_removed",
+                '    ("unknown_unclassified_anomaly", "fail_closed"),',
+                "",
+            ),
+            (
+                "discovery_artifact_write",
+                "def _canonical_bytes(value) -> bytes:",
+                "def _canonical_bytes(value) -> bytes:\n    open('evidence.json', 'w')",
+            ),
+            (
+                "discovery_generic_operational_catch",
+                "        except sqlite3.OperationalError:\n"
+                '            errors.add("source_read_incomplete")',
+                "        except Exception:\n"
+                '            errors.add("source_read_incomplete")',
+            ),
+            (
+                "discovery_begin_observations_removed",
+                '            except _Operational:\n'
+                '                errors.add("source_read_incomplete")\n'
+                "                observations = _source_read_incomplete_observations()\n"
+                "            if transaction_started:",
+                '            except _Operational:\n'
+                '                errors.add("source_read_incomplete")\n'
+                "            if transaction_started:",
+            ),
+            (
+                "discovery_runtime_downgraded",
+                "    except Exception:\n"
+                '        raise _Failure("internal") from None\n'
+                "    finally:\n"
+                "        authorizer.close()",
+                "    except Exception:\n"
+                "        raise _Operational from None\n"
+                "    finally:\n"
+                "        authorizer.close()",
+            ),
+            (
+                "discovery_assemble_default",
+                "            item = observations[code]",
+                "            item = observations.get(code, {})",
+            ),
+            (
+                "discovery_db_path_double_quoted_annotation",
+                "    db_path: _Path,",
+                '    db_path: "Path",',
+            ),
+            (
+                "discovery_main_double_quoted_annotation",
+                "def _main(argv: _Sequence[str] | None = None) -> int:",
+                'def _main(argv: "Sequence[str] | None" = None) -> int:',
+            ),
+            (
+                "discovery_db_path_annotation_missing",
+                "    db_path: _Path,",
+                "    db_path,",
+            ),
+            (
+                "discovery_callable_return_annotation",
+                ") -> dict[str, object]:",
+                ") -> dict[str, str]:",
+            ),
+            (
+                "discovery_db_path_annotation_str",
+                "    db_path: _Path,",
+                "    db_path: str,",
+            ),
+            (
+                "discovery_public_path_alias",
+                "from pathlib import Path as _Path",
+                "from pathlib import Path as _Path\nPath = _Path",
+            ),
+        )
+        for name, old, new in discovery_mutations:
+            if old not in discovery_source:
+                raise AssertionError(f"discovery self-test mutation source missing: {name}")
+            root = temp_root / f"negative-{name}"
+            shutil.copytree(baseline, root)
+            mutated = discovery_source.replace(old, new, 1)
+            add_source(root, DISCOVERY_TOOL_PATH.as_posix(), mutated)
+            issues = analyze_repository(root)
+            status, output = render_normal(issues)
+            scenario_count += 1
+            if (
+                status == 0
+                or "discovery_tool_contract_drift"
+                not in {issue.code for issue in issues}
+            ):
+                raise AssertionError(
+                    f"discovery scenario {name} did not fail closed: {issues!r}"
+                )
+            if PASS_MARKER in output:
+                raise AssertionError(
+                    f"discovery scenario {name} emitted normal PASS marker"
+                )
 
         special_cases: list[tuple[str, Path, str]] = []
 
