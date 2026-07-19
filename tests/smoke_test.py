@@ -24774,6 +24774,180 @@ def run_identity_registry_reconciliation_readiness_smoke(
     print("identity registry reconciliation readiness smoke PASS")
 
 
+def run_vendor_organization_schema_readiness_smoke(
+    temp_root: Path | None = None,
+) -> None:
+    import ast
+    import hashlib
+
+    checker_path = TOOLS_DIR / "check_vendor_organization_schema.py"
+    source = checker_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(checker_path))
+    imported_roots: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_roots.add(node.module.split(".", 1)[0])
+    forbidden_imports = imported_roots & {
+        "app",
+        "flask",
+        "psycopg",
+        "psycopg2",
+        "sqlite3",
+        "sqlalchemy",
+        "subprocess",
+    }
+    if forbidden_imports:
+        raise AssertionError(
+            "vendor organization schema readiness checker has forbidden imports: "
+            + ", ".join(sorted(forbidden_imports))
+        )
+
+    def file_state(
+        path: Path,
+    ) -> tuple[bool, int | None, int | None, str | None]:
+        if not path.exists():
+            return (False, None, None, None)
+        stat = path.stat()
+        return (
+            True,
+            stat.st_size,
+            stat.st_mtime_ns,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+
+    repository_db_paths = tuple(
+        ROOT_DIR / name
+        for name in ("site.db", "site.db-wal", "site.db-shm", "site.db-journal")
+    )
+    repository_db_before = {path.name: file_state(path) for path in repository_db_paths}
+
+    owns_temp_root = temp_root is None
+    temp_context = tempfile.TemporaryDirectory(
+        prefix="vendor-id-002a-schema-readiness-smoke-"
+    ) if owns_temp_root else contextlib.nullcontext(str(temp_root))
+    with temp_context as temp_value:
+        effective_temp_root = Path(temp_value)
+        effective_temp_root.mkdir(parents=True, exist_ok=True)
+        sentinel_db = effective_temp_root / "must-not-be-created.db"
+        pycache_root = effective_temp_root / "pycache"
+        import_sentinel_root = effective_temp_root / "import-sentinels"
+        import_sentinel_root.mkdir(parents=True, exist_ok=True)
+        for module_name in (
+            "app",
+            "psycopg",
+            "psycopg2",
+            "sqlalchemy",
+            "sqlite3",
+        ):
+            (import_sentinel_root / f"{module_name}.py").write_text(
+                f'raise AssertionError("{module_name} import attempted by vendor schema readiness checker")\n',
+                encoding="utf-8",
+                newline="\n",
+            )
+        existing_pythonpath = os.environ.get("PYTHONPATH")
+        child_env = {
+            **os.environ,
+            "APP_DB_PATH": str(sentinel_db),
+            "DATABASE_URL": "postgresql://must-not-be-read.invalid/vendor",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPYCACHEPREFIX": str(pycache_root),
+            "PYTHONPATH": (
+                str(import_sentinel_root)
+                if not existing_pythonpath
+                else str(import_sentinel_root) + os.pathsep + existing_pythonpath
+            ),
+        }
+
+        normal = subprocess.run(
+            [sys.executable, "-B", str(checker_path)],
+            cwd=ROOT_DIR,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        normal_marker = "vendor organization schema readiness PASS"
+        if normal.returncode != 0:
+            raise AssertionError(
+                "vendor organization schema readiness normal child failed: "
+                + (normal.stderr or normal.stdout)
+            )
+        if normal.stderr:
+            raise AssertionError(
+                "vendor organization schema readiness normal child stderr was not empty: "
+                + normal.stderr
+            )
+        for required_line in (
+            "vendor_schema_readiness_scope: static_source_and_frozen_policy_only",
+            "issues_count: 0",
+            "database_access: 0",
+            "app_imports: 0",
+            normal_marker,
+        ):
+            if normal.stdout.count(required_line) != 1:
+                raise AssertionError(
+                    "vendor organization schema readiness normal child missing exact evidence: "
+                    + required_line
+                )
+
+        self_test = subprocess.run(
+            [sys.executable, "-B", str(checker_path), "--self-test"],
+            cwd=ROOT_DIR,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self_test_marker = "vendor organization schema readiness self-test PASS"
+        if self_test.returncode != 0:
+            raise AssertionError(
+                "vendor organization schema readiness self-test child failed: "
+                + (self_test.stderr or self_test.stdout)
+            )
+        if self_test.stderr:
+            raise AssertionError(
+                "vendor organization schema readiness self-test child stderr was not empty: "
+                + self_test.stderr
+            )
+        if self_test.stdout.count(self_test_marker) != 1:
+            raise AssertionError(
+                "vendor organization schema readiness self-test marker count was not one"
+            )
+        scenario_matches = re.findall(
+            r"(?m)^self_test_scenarios: ([1-9][0-9]*)$",
+            self_test.stdout,
+        )
+        if len(scenario_matches) != 1:
+            raise AssertionError(
+                "vendor organization schema readiness self-test scenario count was not exact"
+            )
+        for required_line in ("database_access: 0", "app_imports: 0"):
+            if self_test.stdout.count(required_line) != 1:
+                raise AssertionError(
+                    "vendor organization schema readiness self-test missing exact evidence: "
+                    + required_line
+                )
+
+        if sentinel_db.exists() or any(
+            Path(str(sentinel_db) + suffix).exists()
+            for suffix in ("-wal", "-shm", "-journal")
+        ):
+            raise AssertionError(
+                "vendor organization schema readiness checker created its APP_DB_PATH sentinel"
+            )
+
+    repository_db_after = {path.name: file_state(path) for path in repository_db_paths}
+    if repository_db_after != repository_db_before:
+        raise AssertionError(
+            "vendor organization schema readiness smoke changed repository DB or sidecar state"
+        )
+    print("vendor organization schema readiness smoke PASS")
+
+
 def run_identity_registry_discovery_smoke(temp_root: Path | None = None) -> None:
     owned_temp = None
     if temp_root is None:
@@ -26718,6 +26892,9 @@ def main() -> int:
         run_identity_registry_reconciliation_readiness_smoke(
             Path(tmpdir) / "identity-registry-reconciliation-readiness"
         )
+        run_vendor_organization_schema_readiness_smoke(
+            Path(tmpdir) / "vendor-organization-schema-readiness"
+        )
         run_identity_registry_discovery_smoke(
             Path(tmpdir) / "identity-registry-discovery"
         )
@@ -26971,6 +27148,9 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if len(sys.argv) == 2 and sys.argv[1] == "--internal-identity-registry-reconciliation-readiness":
         run_identity_registry_reconciliation_readiness_smoke()
+        raise SystemExit(0)
+    if len(sys.argv) == 2 and sys.argv[1] == "--internal-vendor-organization-schema-readiness":
+        run_vendor_organization_schema_readiness_smoke()
         raise SystemExit(0)
     if len(sys.argv) == 2 and sys.argv[1] == "--internal-identity-registry-discovery":
         run_identity_registry_discovery_smoke()
