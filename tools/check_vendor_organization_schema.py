@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
+import functools
 import hashlib
 import io
 import re
@@ -16,6 +17,12 @@ from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 CHECKER_PATH = Path("tools/check_vendor_organization_schema.py")
+DISCOVERY_READINESS_CHECKER_PATH = Path(
+    "tools/check_vendor_organization_discovery_readiness.py"
+)
+DISCOVERY_IMPLEMENTATION_PATH = Path(
+    "tools/discover_vendor_organization_readiness.py"
+)
 VENDOR_POLICY_PATH = Path(
     "docs/vendor_id_001_vendor_organization_owner_member_design.md"
 )
@@ -26,9 +33,9 @@ PASS_MARKER = "vendor organization schema readiness PASS"
 SELF_TEST_MARKER = "vendor organization schema readiness self-test PASS"
 
 APPROVED_VENDOR_POLICY_BLOB = "4c3f6c19415c5ea79c2bae0d2ff8c55f5e0f2b8e"
-APPROVED_SCHEMA_POLICY_BLOB = "c8ddd13fc3cc8b80cc7e8145ace31e6c1468afa8"
+APPROVED_SCHEMA_POLICY_BLOB = "f1d8c3064284a52e918c0d3e4b6872957ec15a83"
 APPROVED_SCHEMA_POLICY_SHA256 = (
-    "889FFA9AA2418DE5EA1C519B617F01262AAD8106BBD75D9FED2331B74897BBA2"
+    "225DFD2B817E26AC2C0FB7364BE83AE43B57AADDBACC31D15A950E17C4B59B04"
 )
 
 TARGET_TABLES = (
@@ -171,6 +178,171 @@ MANIFEST_ALLOWED_ISSUE_CODES = frozenset(
         "forbidden_vendor_schema_migration",
         "forbidden_vendor_schema_consumer",
     }
+)
+DISCOVERY_READINESS_KNOWN_ISSUE_CODES = (
+    "vendor_discovery_policy_document_missing",
+    "vendor_discovery_policy_marker_missing",
+    "vendor_discovery_policy_drift",
+    "forbidden_vendor_discovery_module_path",
+    "partial_vendor_discovery_implementation",
+    "forbidden_vendor_discovery_query",
+    "dynamic_vendor_discovery_sql",
+    "forbidden_vendor_discovery_sensitive_read",
+    "forbidden_vendor_discovery_raw_disclosure",
+    "forbidden_vendor_discovery_path_access",
+    "forbidden_vendor_discovery_transaction",
+    "forbidden_vendor_discovery_authorizer",
+    "forbidden_vendor_discovery_error_contract",
+    "forbidden_vendor_discovery_output_contract",
+    "forbidden_vendor_discovery_artifact",
+    "forbidden_vendor_discovery_selection",
+    "forbidden_vendor_discovery_mapping",
+    "forbidden_vendor_discovery_mutation",
+    "forbidden_vendor_discovery_consumer",
+    "forbidden_vendor_discovery_production_access",
+    "forbidden_vendor_discovery_backend_access",
+    "forbidden_vendor_discovery_environment_access",
+    "forbidden_vendor_discovery_app_import",
+    "checker_exemption_broadening",
+    "unresolved_vendor_discovery_capability",
+    "upstream_vendor_schema_guard_drift",
+    "source_read_error",
+    "source_parse_error",
+)
+DISCOVERY_READINESS_ALLOWED_V002_ISSUE_CODES = frozenset(
+    {
+        "forbidden_vendor_schema_table",
+        "forbidden_vendor_schema_index",
+        "forbidden_vendor_schema_trigger",
+        "forbidden_vendor_schema_migration",
+        "forbidden_vendor_schema_dml",
+        "forbidden_vendor_schema_consumer",
+        "forbidden_vendor_schema_executescript",
+        "forbidden_vendor_schema_dynamic_sql",
+        "forbidden_vendor_schema_backfill",
+        "forbidden_vendor_relationship_mutation",
+        "forbidden_vendor_authority_switch",
+        "forbidden_vendor_schema_backend",
+        "forbidden_vendor_schema_environment_access",
+        "unresolved_vendor_schema_capability",
+    }
+)
+DISCOVERY_READINESS_NODE_NAMES = (
+    "_ROOT_DIR",
+    "_CHECKER_PATH",
+    "_DISCOVERY_PATH",
+    "_POLICY_PATH",
+    "_UPSTREAM_CHECKER_PATH",
+    "_NON_VENDOR_OUTPUT_SOURCE_PATHS",
+    "_APPROVED_POLICY_SHA256",
+    "_PASS_MARKER",
+    "_SELF_TEST_MARKER",
+    "_NORMAL_SCOPE",
+    "_ISSUE_CODES",
+    "_POLICY_MARKERS",
+    "_POLICY_MARKER_COUNTS",
+    "_ANOMALY_CATEGORIES",
+    "_SOURCE_TABLES",
+    "_NEW_TABLES",
+    "_SENSITIVE_COLUMNS",
+    "_CANONICAL_SYMBOLS",
+    "_CANONICAL_CLI_OPTIONS",
+    "_CANONICAL_QUERIES",
+    "_NORMALIZED_CANONICAL_QUERIES",
+    "_UPSTREAM_SCHEMA_METADATA_QUERIES",
+    "_CANONICAL_QUERY_FRAGMENTS",
+    "_EXCLUDED_TOP_LEVELS",
+    "_SQL_SINKS",
+    "_WRITE_CALLS",
+    "_BACKEND_ROOTS",
+    "_PROJECT_IMPORT_ROOTS",
+    "_UPSTREAM_ALLOWED_NODE_NAMES",
+    "_EXPECTED_UPSTREAM_ALLOWED_V002_ISSUE_CODES",
+    "_UPSTREAM_STATIC_NODE_HASHES",
+    "_UPSTREAM_INTEGRATION_NODE_SPECS",
+    "_UPSTREAM_INTEGRATION_OWNER_HASHES",
+    "_EXACT_FIXTURE_NODE_HASHES",
+    "_SELF_AUDIT_NODE_NAMES",
+    "_SELF_AUDIT_AST_SHA256",
+    "_Issue",
+    "_Value",
+    "_Source",
+    "_Callable",
+    "_Repository",
+    "_normalized",
+    "_unique_strings",
+    "_merge_values",
+    "_dotted_name",
+    "_assignment_targets",
+    "_binding_path",
+    "_binding_names",
+    "_assign_binding",
+    "_merge_binding_maps",
+    "_module_name",
+    "_relative_import_module",
+    "_node_text",
+    "_has_partial_discovery_name",
+    "_has_discovery_target",
+    "_has_canonical_query",
+    "_has_canonical_query_shape",
+    "_has_static_boundary_text",
+    "_has_boundary_evidence",
+    "_is_fixed_unsupported_text",
+    "_has_source_reference",
+    "_has_new_table_reference",
+    "_is_select",
+    "_is_mutating_sql",
+    "_add_issue",
+    "_read_text",
+    "_read_python",
+    "_section",
+    "_check_policy",
+    "_top_level_name",
+    "_ast_sha256",
+    "_ast_bundle_sha256",
+    "_compact_ast_bundle_sha256",
+    "_literal_assignment",
+    "_assignment_value",
+    "_selected_named_nodes",
+    "_upstream_integration_node_ids",
+    "_v002_protected_node_ids",
+    "_check_upstream_guard",
+    "_runtime_paths",
+    "_collect_imports",
+    "_imported_class_candidates",
+    "_resolve_class_reference",
+    "_resolve_method",
+    "_call_return_value",
+    "_resolve_value",
+    "_prepare_repository",
+    "_resolve_callable",
+    "_call_leaf",
+    "_classify_sql",
+    "_classify_node",
+    "_bind_call",
+    "_scan_callable",
+    "_apply_container_mutation",
+    "_scan_call_node",
+    "_callable_for_node",
+    "_iterated_value",
+    "_bind_match_pattern",
+    "_direct_call_nodes",
+    "_scan_nodes",
+    "_self_audit",
+    "_apply_source_boundary_fallback",
+    "_scan_repository",
+    "_dedupe_issues",
+    "_analyze_repository",
+    "_render_normal",
+    "_parse_args",
+    "_write_text",
+    "_copy_baseline",
+    "_assert_negative",
+    "_run_self_test",
+    "_main",
+)
+DISCOVERY_READINESS_AST_SHA256 = (
+    "29D5F38EE1E7D8EA2F33C676F4917EEBF25F9E5383CB1FA09186662401BC162D"
 )
 VENDOR_SCHEMA_ERROR_CODES = (
     "invalid_connection",
@@ -505,6 +677,7 @@ class RepositoryContext:
     analyzers: dict[str, PythonSourceAnalyzer]
     active_calls: list[str]
     allowance: StructuralAllowance = field(default_factory=StructuralAllowance)
+    completed_bound_calls: set[tuple[Any, ...]] = field(default_factory=set)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -566,6 +739,7 @@ def git_blob_id(data: bytes) -> str:
     return hashlib.sha1(header + data).hexdigest()
 
 
+@functools.lru_cache(maxsize=16384)
 def normalized_identifier_text(value: str) -> str:
     lowered = value.lower()
     lowered = re.sub(r'["`\[\]]', "", lowered)
@@ -573,6 +747,7 @@ def normalized_identifier_text(value: str) -> str:
     return lowered.strip()
 
 
+@functools.lru_cache(maxsize=16384)
 def words(value: str) -> set[str]:
     tokens = re.findall(r"[a-z0-9_]+", value.lower())
     result = set(tokens)
@@ -581,6 +756,7 @@ def words(value: str) -> set[str]:
     return result
 
 
+@functools.lru_cache(maxsize=32768)
 def dotted_name(node: ast.AST | None) -> str:
     if isinstance(node, ast.Name):
         return node.id
@@ -833,6 +1009,7 @@ def resolve_value(
     return Value(dynamic=True)
 
 
+@functools.lru_cache(maxsize=32768)
 def node_structural_evidence(node: ast.AST) -> str:
     evidence: list[str] = []
     for child in ast.walk(node):
@@ -849,11 +1026,13 @@ def node_structural_evidence(node: ast.AST) -> str:
     return normalized_identifier_text(" ".join(evidence))
 
 
+@functools.lru_cache(maxsize=16384)
 def has_target(value: str) -> bool:
     normalized = normalized_identifier_text(value)
     return any(token in normalized for token in TARGET_TOKENS)
 
 
+@functools.lru_cache(maxsize=16384)
 def has_schema_verb(value: str) -> bool:
     normalized = normalized_identifier_text(value)
     return any(verb in normalized for verb in SCHEMA_VERBS)
@@ -899,12 +1078,7 @@ class PythonSourceAnalyzer:
         }
         self.instance_types: dict[str, str] = {}
         self.exported_scope_keys: set[str] = set()
-        self.function_defs = {
-            node.name: node
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-        self.active_calls: list[str] = []
+        self.target_scope_references: dict[ast.AST, bool] = {}
         self.prepared = False
 
     def _import_roots(self) -> set[str]:
@@ -1697,6 +1871,19 @@ class PythonSourceAnalyzer:
                     bindings[f"self.{attribute}"] = class_value
                     bindings[f"cls.{attribute}"] = class_value
                     bindings[key] = class_value
+        completed_key = (
+            info.qualified_name,
+            bound,
+            tuple(sorted(bindings.items())),
+            tuple(unresolved_call_values),
+            unresolved_shape,
+            tuple(self.context.active_calls),
+            tuple(sorted(self.module_scope.items())),
+            tuple(sorted(self.helper_returns.items())),
+            tuple(sorted(self.instance_types.items())),
+        )
+        if completed_key in self.context.completed_bound_calls:
+            return
         self.context.active_calls.append(info.qualified_name)
         try:
             owner = ".".join(
@@ -1714,6 +1901,34 @@ class PythonSourceAnalyzer:
             )
         finally:
             self.context.active_calls.pop()
+        self.context.completed_bound_calls.add(completed_key)
+
+    def _callable_references_target_scope(
+        self,
+        info: CallableInfo,
+    ) -> bool:
+        cached = self.target_scope_references.get(info.node)
+        if cached is not None:
+            return cached
+        referenced: set[str] = set()
+        for child in ast.walk(info.node):
+            if isinstance(child, ast.Name):
+                referenced.add(child.id)
+            elif isinstance(child, ast.Attribute):
+                name = dotted_name(child)
+                if name:
+                    referenced.add(name)
+                referenced.add(child.attr)
+        result = any(
+            has_target(value.evidence)
+            and (
+                key in referenced
+                or key.rsplit(".", 1)[-1] in referenced
+            )
+            for key, value in self.module_scope.items()
+        )
+        self.target_scope_references[info.node] = result
+        return result
 
     def _scan_call(
         self,
@@ -1830,7 +2045,30 @@ class PythonSourceAnalyzer:
             if self.context is None:
                 continue
             callee = self.context.analyzers.get(info.module_name)
-            if callee is not None:
+            boundary_has_target = has_target(aggregate.evidence)
+            default_values = [
+                resolve_value(
+                    default,
+                    [callee.module_scope],
+                    callee.helper_returns,
+                )
+                for default in (
+                    *info.node.args.defaults,
+                    *(
+                        default
+                        for default in info.node.args.kw_defaults
+                        if default is not None
+                    ),
+                )
+            ] if callee is not None and not boundary_has_target else []
+            if callee is not None and (
+                boundary_has_target
+                or callee._callable_references_target_scope(info)
+                or any(
+                    has_target(value.evidence)
+                    for value in default_values
+                )
+            ):
                 callee._scan_bound_callable(
                     info,
                     positional_values,
@@ -1985,8 +2223,18 @@ def read_source(path: Path, relative: Path) -> tuple[ast.Module | None, list[Iss
         source = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return None, [Issue("source_read_error", relative.as_posix(), 1, "-")]
+    cache = getattr(read_source, "_ast_cache", {})
+    cache_key = (
+        relative.as_posix(),
+        hashlib.sha256(source.encode("utf-8")).digest(),
+    )
+    cached = cache.get(cache_key)
+    if isinstance(cached, ast.Module):
+        cache.pop(cache_key)
+        cache[cache_key] = cached
+        return cached, []
     try:
-        return ast.parse(source, filename=relative.as_posix()), []
+        tree = ast.parse(source, filename=relative.as_posix())
     except SyntaxError as exc:
         return None, [
             Issue(
@@ -1996,6 +2244,12 @@ def read_source(path: Path, relative: Path) -> tuple[ast.Module | None, list[Iss
                 "-",
             )
         ]
+    if len(cache) >= 96:
+        oldest_key = next(iter(cache))
+        cache.pop(oldest_key)
+    cache[cache_key] = tree
+    setattr(read_source, "_ast_cache", cache)
+    return tree, []
 
 
 def check_policy_document(
@@ -2981,6 +3235,364 @@ def validate_exact_manifest_extension(
     return issues, candidate
 
 
+def validate_exact_discovery_readiness_checker(
+    tree: ast.Module,
+) -> tuple[list[Issue], StructuralAllowanceCandidate]:
+    path = DISCOVERY_READINESS_CHECKER_PATH.as_posix()
+    issue_code = "vendor_schema_discovery_checker_contract_drift"
+    issues: list[Issue] = []
+    candidate = StructuralAllowanceCandidate()
+    nodes, node_issues = _selected_top_level_nodes(
+        tree,
+        DISCOVERY_READINESS_NODE_NAMES,
+        path,
+        issue_code,
+    )
+    issues.extend(node_issues)
+
+    observed_names: list[str] = []
+    for node in tree.body:
+        name = ""
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            name = node.name
+        elif (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            name = node.targets[0].id
+        elif isinstance(node, ast.AnnAssign) and isinstance(
+            node.target, ast.Name
+        ):
+            name = node.target.id
+        if name:
+            observed_names.append(name)
+    if tuple(observed_names) != DISCOVERY_READINESS_NODE_NAMES:
+        issues.append(
+            Issue(
+                issue_code,
+                path,
+                1,
+                "top_level_named_node_inventory",
+            )
+        )
+
+    import_nodes = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+    ]
+    if (
+        _ast_bundle_sha256(import_nodes)
+        != "ACD31EB63EB0097B919704C9AD159CE0D6E41ED3FF7DD322DF5AFC391D2FFE4E"
+    ):
+        issues.append(
+            Issue(issue_code, path, 1, "import_ast")
+        )
+
+    selected_ids = {id(node) for node in nodes}
+    import_ids = {id(node) for node in import_nodes}
+    residual_nodes = [
+        node
+        for node in tree.body
+        if id(node) not in selected_ids and id(node) not in import_ids
+    ]
+    if (
+        _ast_bundle_sha256(residual_nodes)
+        != "2F40106DCD5D65CAAEF5ACBB5A0B225074EDE61594854F758C95C37E8B50FE78"
+    ):
+        issues.append(
+            Issue(issue_code, path, 1, "module_guard_ast")
+        )
+
+    if node_issues:
+        return issues, candidate
+    selected = dict(
+        zip(DISCOVERY_READINESS_NODE_NAMES, nodes, strict=True)
+    )
+    try:
+        observed_issue_codes = _literal_assignment(
+            selected, "_ISSUE_CODES"
+        )
+    except (ValueError, SyntaxError):
+        observed_issue_codes = None
+    if observed_issue_codes != DISCOVERY_READINESS_KNOWN_ISSUE_CODES:
+        issues.append(
+            Issue(issue_code, path, 1, "stable_issue_codes")
+        )
+
+    expected_paths = {
+        "_CHECKER_PATH": DISCOVERY_READINESS_CHECKER_PATH.as_posix(),
+        "_DISCOVERY_PATH": DISCOVERY_IMPLEMENTATION_PATH.as_posix(),
+        "_POLICY_PATH": (
+            "docs/vendor_id_003_read_only_vendor_discovery_baseline.md"
+        ),
+        "_UPSTREAM_CHECKER_PATH": CHECKER_PATH.as_posix(),
+    }
+    for name, expected_path in expected_paths.items():
+        observed = _assignment_value(selected[name])
+        expected = ast.parse(
+            f"Path({expected_path!r})",
+            mode="eval",
+        ).body
+        if (
+            observed is None
+            or ast.dump(
+                observed,
+                annotate_fields=True,
+                include_attributes=False,
+            )
+            != ast.dump(
+                expected,
+                annotate_fields=True,
+                include_attributes=False,
+            )
+        ):
+            issues.append(
+                Issue(issue_code, path, 1, name)
+            )
+
+    expected_literals = {
+        "_APPROVED_POLICY_SHA256": (
+            "BA780334D5CCFAA345733EE7C0320C95B1ADAB710289A1FA65D796A615325C0E"
+        ),
+    }
+    for name, expected_literal in expected_literals.items():
+        try:
+            observed_literal = _literal_assignment(selected, name)
+        except (ValueError, SyntaxError):
+            observed_literal = None
+        if observed_literal != expected_literal:
+            issues.append(
+                Issue(issue_code, path, 1, name)
+            )
+
+    try:
+        observed_self_audit_hash = _literal_assignment(
+            selected,
+            "_SELF_AUDIT_AST_SHA256",
+        )
+    except (ValueError, SyntaxError):
+        observed_self_audit_hash = None
+    self_audit_node = selected["_SELF_AUDIT_AST_SHA256"]
+    self_audit_payload = "\n".join(
+        ast.dump(
+            node,
+            annotate_fields=True,
+            include_attributes=False,
+            indent=2,
+        )
+        for node in tree.body
+        if node is not self_audit_node
+    ).encode("utf-8")
+    expected_self_audit_hash = hashlib.sha256(
+        self_audit_payload
+    ).hexdigest().upper()
+    if observed_self_audit_hash != expected_self_audit_hash:
+        issues.append(
+            Issue(
+                issue_code,
+                path,
+                1,
+                "_SELF_AUDIT_AST_SHA256",
+            )
+        )
+
+    forbidden_import_roots = {
+        "alembic",
+        "app",
+        "asyncpg",
+        "config",
+        "database",
+        "db_compat",
+        "flask",
+        "migrations",
+        "models",
+        "os",
+        "pg8000",
+        "postgres",
+        "postgresql",
+        "psycopg",
+        "psycopg2",
+        "psycopg_pool",
+        "routes",
+        "services",
+        "sqlalchemy",
+        "sqlite3",
+        "sqlite_db_path",
+        "subprocess",
+        "tools",
+    }
+    for node in import_nodes:
+        if isinstance(node, ast.Import):
+            roots = {
+                alias.name.split(".", 1)[0] for alias in node.names
+            }
+        else:
+            roots = (
+                {node.module.split(".", 1)[0]}
+                if node.module
+                else {"<relative>"}
+            )
+            if node.level:
+                roots.add("<relative>")
+        if roots & (forbidden_import_roots | {"<relative>"}):
+            issues.append(
+                Issue(
+                    issue_code,
+                    path,
+                    getattr(node, "lineno", 1),
+                    "forbidden_import",
+                )
+            )
+
+    fixture_write_owners = {
+        "_write_text",
+        "_copy_baseline",
+        "_run_self_test",
+    }
+    forbidden_call_leaves = {
+        "connect",
+        "create_engine",
+        "execute",
+        "executemany",
+        "executescript",
+    }
+    fixture_write_leaves = {
+        "copy",
+        "copy2",
+        "copyfile",
+        "copytree",
+        "mkdir",
+        "rmtree",
+        "unlink",
+        "write",
+        "write_bytes",
+        "write_text",
+    }
+    for owner, node in selected.items():
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            call_name = dotted_name(child.func)
+            leaf = call_name.rsplit(".", 1)[-1]
+            if call_name in {"__import__", "importlib.import_module"}:
+                issues.append(
+                    Issue(
+                        issue_code,
+                        path,
+                        getattr(child, "lineno", 1),
+                        f"dynamic_import:{owner}",
+                    )
+                )
+            if leaf in forbidden_call_leaves:
+                issues.append(
+                    Issue(
+                        issue_code,
+                        path,
+                        getattr(child, "lineno", 1),
+                        f"runtime_sink:{owner}:{leaf}",
+                    )
+                )
+            if (
+                leaf in fixture_write_leaves
+                and owner not in fixture_write_owners
+            ):
+                issues.append(
+                    Issue(
+                        issue_code,
+                        path,
+                        getattr(child, "lineno", 1),
+                        f"artifact_sink:{owner}:{leaf}",
+                    )
+                )
+            if call_name in {
+                "os.getenv",
+                "os.environ.get",
+            }:
+                issues.append(
+                    Issue(
+                        issue_code,
+                        path,
+                        getattr(child, "lineno", 1),
+                        f"environment_sink:{owner}",
+                    )
+                )
+
+    bundle_hash = _ast_bundle_sha256(nodes)
+    if bundle_hash != DISCOVERY_READINESS_AST_SHA256:
+        issues.append(
+            Issue(
+                issue_code,
+                path,
+                1,
+                f"ast={bundle_hash}",
+            )
+        )
+
+    selected_node_ids = {
+        id(child)
+        for node in nodes
+        for child in ast.walk(node)
+    }
+    for node in ast.walk(tree):
+        evidence = ""
+        if isinstance(node, ast.Name):
+            evidence = node.id
+        elif isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            evidence = node.name
+        elif isinstance(node, ast.arg):
+            evidence = node.arg
+        elif isinstance(node, ast.Attribute):
+            evidence = node.attr
+        elif isinstance(node, ast.Constant) and type(node.value) is str:
+            evidence = node.value
+        if (
+            evidence
+            and has_target(evidence)
+            and id(node) not in selected_node_ids
+        ):
+            issues.append(
+                Issue(
+                    issue_code,
+                    path,
+                    getattr(node, "lineno", 1),
+                    "unapproved_target_node",
+                )
+            )
+
+    if issues:
+        return issues, candidate
+    for node in nodes:
+        for child in ast.walk(node):
+            evidence = ""
+            if isinstance(child, ast.Name):
+                evidence = child.id
+            elif isinstance(
+                child,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+            ):
+                evidence = child.name
+            elif isinstance(child, ast.arg):
+                evidence = child.arg
+            elif isinstance(child, ast.Attribute):
+                evidence = child.attr
+            elif isinstance(child, ast.Constant) and type(child.value) is str:
+                evidence = child.value
+            if evidence and has_target(evidence):
+                candidate.approve_target_evidence_node(path, child)
+            for code in DISCOVERY_READINESS_ALLOWED_V002_ISSUE_CODES:
+                candidate.approve_issue(
+                    path,
+                    child,
+                    code,
+                    required=False,
+                )
+    return issues, candidate
+
+
 def validate_exact_helper_reference_inventory(
     parsed: dict[Path, ast.Module],
 ) -> list[Issue]:
@@ -3114,6 +3726,33 @@ def analyze_repository(root: Path) -> list[Issue]:
         )
         structural_issues.extend(manifest_issues)
         candidates.append(manifest_candidate)
+    discovery_checker_tree = parsed.get(DISCOVERY_READINESS_CHECKER_PATH)
+    if discovery_checker_tree is None:
+        structural_issues.append(
+            Issue(
+                "vendor_schema_discovery_checker_contract_drift",
+                DISCOVERY_READINESS_CHECKER_PATH.as_posix(),
+                1,
+                "missing_or_unparsed",
+            )
+        )
+    else:
+        discovery_issues, discovery_candidate = (
+            validate_exact_discovery_readiness_checker(
+                discovery_checker_tree
+            )
+        )
+        structural_issues.extend(discovery_issues)
+        candidates.append(discovery_candidate)
+    if DISCOVERY_IMPLEMENTATION_PATH in parsed:
+        structural_issues.append(
+            Issue(
+                "vendor_schema_discovery_checker_contract_drift",
+                DISCOVERY_IMPLEMENTATION_PATH.as_posix(),
+                1,
+                "canonical_discovery_module_present",
+            )
+        )
     issues.extend(structural_issues)
     allowance = (
         _combine_allowance_candidates(tuple(candidates))
@@ -3188,6 +3827,12 @@ def write_base_tree(root: Path) -> None:
     shutil.copyfile(
         ROOT_DIR / "tools/capture_schema_manifest.py",
         manifest,
+    )
+    discovery_checker = root / DISCOVERY_READINESS_CHECKER_PATH
+    discovery_checker.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        ROOT_DIR / DISCOVERY_READINESS_CHECKER_PATH,
+        discovery_checker,
     )
     checker = root / CHECKER_PATH
     checker.parent.mkdir(parents=True, exist_ok=True)
@@ -3873,6 +4518,148 @@ def implementation_mutation_cases() -> list[
             "vendor_schema_manifest_contract_drift",
         ),
     ]
+
+
+def _exercise_discovery_readiness_checker_contract(
+    baseline: Path,
+    temp_root: Path,
+) -> int:
+    issue_code = "vendor_schema_discovery_checker_contract_drift"
+    mutation_cases: tuple[tuple[str, Any], ...] = (
+        (
+            "discovery_checker_ast_bundle_hash_drift",
+            lambda source: _replace_exact_fragment(
+                source,
+                "static_source_and_frozen_policy_only",
+                "static_source_and_frozen_policy_only_drifted",
+            ),
+        ),
+        (
+            "discovery_checker_extra_executable_node",
+            lambda source: source
+            + "\nif True:\n"
+            + "    _UNREVIEWED_EXECUTABLE_NODE = 1\n",
+        ),
+        (
+            "discovery_checker_sql_sink_inserted",
+            lambda source: _replace_exact_fragment(
+                source,
+                "def _main(argv: Sequence[str] | None = None) -> int:\n",
+                (
+                    "def _main(argv: Sequence[str] | None = None) -> int:\n"
+                    "    DISCOVERY_READINESS_CHECKER_PATH\n"
+                    "    conn.execute("
+                    '"SELECT * FROM vendor_organizations")\n'
+                ),
+            ),
+        ),
+        (
+            "discovery_checker_sqlite_connection",
+            lambda source: source
+            + "\nimport sqlite3\n"
+            + '_UNREVIEWED_CONNECTION = sqlite3.connect("site.db")\n',
+        ),
+        (
+            "discovery_checker_app_import",
+            lambda source: source + "\nimport app\n",
+        ),
+        (
+            "discovery_checker_environment_backend_access",
+            lambda source: source
+            + "\nimport os\nimport psycopg\n"
+            + '_UNREVIEWED_DATABASE = os.getenv("DATABASE_URL")\n',
+        ),
+        (
+            "discovery_checker_dynamic_dunder_import",
+            lambda source: _replace_exact_fragment(
+                source,
+                (
+                    "def _main(argv: Sequence[str] | None = None) -> int:\n"
+                ),
+                (
+                    "def _main(argv: Sequence[str] | None = None) -> int:\n"
+                    "    __import__('sqlite3')\n"
+                ),
+            ),
+        ),
+        (
+            "discovery_checker_dynamic_importlib_import",
+            lambda source: _replace_exact_fragment(
+                source,
+                (
+                    "def _main(argv: Sequence[str] | None = None) -> int:\n"
+                ),
+                (
+                    "def _main(argv: Sequence[str] | None = None) -> int:\n"
+                    "    importlib.import_module('sqlite3')\n"
+                ),
+            ),
+        ),
+        (
+            "discovery_checker_whole_file_function_exemption",
+            lambda source: source
+            + "\n_VENDOR_DISCOVERY_WHOLE_FILE_EXEMPTION = True\n"
+            + "def _ignore_vendor_discovery_function():\n"
+            + "    return True\n",
+        ),
+        (
+            "discovery_checker_fixture_became_runtime_capability",
+            lambda source: source
+            + "\ndef _run_fixture_as_runtime(conn):\n"
+            + '    sql = "SELECT vendor_id FROM vendor_organizations"\n'
+            + "    return conn.execute(sql)\n",
+        ),
+    )
+    scenario_count = 0
+    for name, mutate in mutation_cases:
+        root = temp_root / f"negative-{name}"
+        shutil.copytree(baseline, root)
+        path = root / DISCOVERY_READINESS_CHECKER_PATH
+        source = path.read_text(encoding="utf-8")
+        mutated = mutate(source)
+        if mutated == source:
+            raise AssertionError(
+                f"discovery checker mutation made no change: {name}"
+            )
+        path.write_text(
+            mutated,
+            encoding="utf-8",
+            newline="\n",
+        )
+        assert_scenario(root, issue_code, name)
+        scenario_count += 1
+
+    path_drift = temp_root / "negative-discovery-checker-path-drift"
+    shutil.copytree(baseline, path_drift)
+    canonical = path_drift / DISCOVERY_READINESS_CHECKER_PATH
+    drifted = (
+        path_drift
+        / "tools/check_vendor_discovery_readiness.py"
+    )
+    canonical.rename(drifted)
+    assert_scenario(
+        path_drift,
+        issue_code,
+        "discovery_checker_path_drift",
+    )
+    scenario_count += 1
+
+    implementation_present = (
+        temp_root / "negative-canonical-discovery-falsely-allowed"
+    )
+    shutil.copytree(baseline, implementation_present)
+    add_source(
+        implementation_present,
+        DISCOVERY_IMPLEMENTATION_PATH.as_posix(),
+        "VALUE = 1\n",
+    )
+    assert_scenario(
+        implementation_present,
+        issue_code,
+        "canonical_discovery_falsely_allowed",
+    )
+    scenario_count += 1
+    return scenario_count
 
 
 def positive_cases() -> list[tuple[str, str, str]]:
@@ -5430,6 +6217,11 @@ def run_self_test() -> int:
             )
             assert_scenario(root, expected_code, name)
             scenario_count += 1
+
+        scenario_count += _exercise_discovery_readiness_checker_contract(
+            baseline,
+            temp_root,
+        )
 
         special: list[tuple[str, Path, str]] = []
 

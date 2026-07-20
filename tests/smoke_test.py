@@ -24948,6 +24948,334 @@ def run_vendor_organization_schema_readiness_smoke(
     print("vendor organization schema readiness smoke PASS")
 
 
+def run_vendor_organization_discovery_readiness_smoke(
+    temp_root: Path | None = None,
+) -> None:
+    import ast
+
+    checker_path = (
+        TOOLS_DIR / "check_vendor_organization_discovery_readiness.py"
+    )
+    discovery_path = TOOLS_DIR / "discover_vendor_organization_readiness.py"
+    if not checker_path.is_file():
+        raise AssertionError(
+            "vendor organization discovery readiness checker is missing"
+        )
+    if discovery_path.exists():
+        raise AssertionError(
+            "vendor organization discovery implementation must remain absent"
+        )
+
+    source = checker_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(checker_path))
+    imported_roots: set[str] = set()
+    forbidden_environment_imports: set[str] = set()
+    os_import_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_roots.update(
+                alias.name.split(".", 1)[0] for alias in node.names
+            )
+            os_import_aliases.update(
+                alias.asname or alias.name
+                for alias in node.names
+                if alias.name == "os"
+            )
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                imported_roots.add("<relative>")
+            elif node.module:
+                imported_roots.add(node.module.split(".", 1)[0])
+                if node.module == "os":
+                    forbidden_environment_imports.update(
+                        alias.name
+                        for alias in node.names
+                        if alias.name in {"environ", "getenv"}
+                    )
+
+    project_import_roots = {
+        path.stem for path in ROOT_DIR.glob("*.py")
+    } | {
+        "migrations",
+        "routes",
+        "services",
+        "tools",
+    } | {
+        path.stem
+        for path in TOOLS_DIR.glob("*.py")
+        if path.stem not in {
+            "__init__",
+            checker_path.stem,
+        }
+    }
+    forbidden_runtime_import_roots = {
+        "<relative>",
+        "asyncpg",
+        "flask",
+        "pg8000",
+        "postgres",
+        "postgresql",
+        "psycopg",
+        "psycopg2",
+        "psycopg_pool",
+        "sqlalchemy",
+        "sqlite3",
+        "subprocess",
+    } | project_import_roots
+    forbidden_imports = imported_roots & forbidden_runtime_import_roots
+    if forbidden_imports:
+        raise AssertionError(
+            "vendor organization discovery readiness checker has forbidden imports: "
+            + ", ".join(sorted(forbidden_imports))
+        )
+    if forbidden_environment_imports:
+        raise AssertionError(
+            "vendor organization discovery readiness checker imports environment accessors: "
+            + ", ".join(sorted(forbidden_environment_imports))
+        )
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and (
+                (
+                    isinstance(node.func, ast.Name)
+                    and node.func.id == "__import__"
+                )
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "importlib"
+                    and node.func.attr == "import_module"
+                )
+            )
+        ):
+            raise AssertionError(
+                "vendor organization discovery readiness checker uses dynamic imports"
+            )
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in os_import_aliases
+            and node.attr in {"environ", "getenv"}
+        ):
+            raise AssertionError(
+                "vendor organization discovery readiness checker accesses the environment"
+            )
+
+    def file_state(
+        path: Path,
+    ) -> tuple[bool, int | None, int | None, str | None]:
+        if not path.exists():
+            return (False, None, None, None)
+        stat = path.stat()
+        return (
+            True,
+            stat.st_size,
+            stat.st_mtime_ns,
+            hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+
+    def git_status() -> str:
+        result = subprocess.run(
+            ["git", "status", "--short", "--untracked-files=all"],
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if result.returncode != 0 or result.stderr:
+            raise AssertionError(
+                "vendor organization discovery readiness smoke could not inspect Git status: "
+                + (result.stderr or result.stdout)
+            )
+        return result.stdout
+
+    def tree_inventory(root: Path) -> tuple[tuple[str, str], ...]:
+        entries: list[tuple[str, str]] = []
+        for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+            relative = path.relative_to(root).as_posix()
+            if path.is_dir():
+                entries.append((relative, "directory"))
+            elif path.is_file():
+                entries.append(
+                    (relative, hashlib.sha256(path.read_bytes()).hexdigest())
+                )
+            else:
+                entries.append((relative, "other"))
+        return tuple(entries)
+
+    repository_db_paths = tuple(
+        ROOT_DIR / name
+        for name in ("site.db", "site.db-wal", "site.db-shm", "site.db-journal")
+    )
+    repository_db_before = {
+        path.name: file_state(path) for path in repository_db_paths
+    }
+    repository_status_before = git_status()
+
+    owns_temp_root = temp_root is None
+    temp_context = tempfile.TemporaryDirectory(
+        prefix="vendor-id-003a-discovery-readiness-smoke-"
+    ) if owns_temp_root else contextlib.nullcontext(str(temp_root))
+    with temp_context as temp_value:
+        effective_temp_root = Path(temp_value)
+        effective_temp_root.mkdir(parents=True, exist_ok=True)
+        sentinel_db = effective_temp_root / "must-not-be-created.db"
+        pycache_root = effective_temp_root / "pycache"
+        import_sentinel_root = effective_temp_root / "import-sentinels"
+        import_sentinel_root.mkdir(parents=True, exist_ok=True)
+        sentinel_modules = (
+            forbidden_runtime_import_roots
+            - {"<relative>"}
+            - {checker_path.stem}
+        )
+        for module_name in sorted(sentinel_modules):
+            (import_sentinel_root / f"{module_name}.py").write_text(
+                "raise AssertionError("
+                + repr(
+                    module_name
+                    + " import attempted by vendor discovery readiness checker"
+                )
+                + ")\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+
+        expected_temp_inventory = tree_inventory(effective_temp_root)
+        existing_pythonpath = os.environ.get("PYTHONPATH")
+        child_env = {
+            **os.environ,
+            "APP_DB_PATH": str(sentinel_db),
+            "DATABASE_URL": (
+                "postgresql://must-not-be-read.invalid/vendor-discovery"
+            ),
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPYCACHEPREFIX": str(pycache_root),
+            "PYTHONPATH": (
+                str(import_sentinel_root)
+                if not existing_pythonpath
+                else (
+                    str(import_sentinel_root)
+                    + os.pathsep
+                    + existing_pythonpath
+                )
+            ),
+            "TEMP": str(effective_temp_root),
+            "TMP": str(effective_temp_root),
+        }
+
+        normal = subprocess.run(
+            [sys.executable, "-B", str(checker_path)],
+            cwd=ROOT_DIR,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        normal_marker = "vendor organization discovery readiness PASS"
+        if normal.returncode != 0:
+            raise AssertionError(
+                "vendor organization discovery readiness normal child failed: "
+                + (normal.stderr or normal.stdout)
+            )
+        if normal.stderr:
+            raise AssertionError(
+                "vendor organization discovery readiness normal child stderr was not empty: "
+                + normal.stderr
+            )
+        normal_lines = normal.stdout.splitlines()
+        for required_line in (
+            "vendor_discovery_readiness_scope: static_source_and_frozen_policy_only",
+            "issues_count: 0",
+            "upstream_vendor_schema_guard_boundary: PASS",
+            "database_access: 0",
+            "app_imports: 0",
+            normal_marker,
+        ):
+            if normal_lines.count(required_line) != 1:
+                raise AssertionError(
+                    "vendor organization discovery readiness normal child missing exact evidence: "
+                    + required_line
+                )
+
+        self_test = subprocess.run(
+            [sys.executable, "-B", str(checker_path), "--self-test"],
+            cwd=ROOT_DIR,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self_test_marker = (
+            "vendor organization discovery readiness self-test PASS"
+        )
+        if self_test.returncode != 0:
+            raise AssertionError(
+                "vendor organization discovery readiness self-test child failed: "
+                + (self_test.stderr or self_test.stdout)
+            )
+        if self_test.stderr:
+            raise AssertionError(
+                "vendor organization discovery readiness self-test child stderr was not empty: "
+                + self_test.stderr
+            )
+        self_test_lines = self_test.stdout.splitlines()
+        if self_test_lines.count(self_test_marker) != 1:
+            raise AssertionError(
+                "vendor organization discovery readiness self-test marker count was not one"
+            )
+        if self_test_lines.count(normal_marker) != 0:
+            raise AssertionError(
+                "vendor organization discovery readiness self-test emitted the normal PASS marker"
+            )
+        scenario_matches = re.findall(
+            r"(?m)^self_test_scenarios: ([1-9][0-9]*)$",
+            self_test.stdout,
+        )
+        if len(scenario_matches) != 1:
+            raise AssertionError(
+                "vendor organization discovery readiness self-test scenario count was not exact"
+            )
+        for required_line in ("database_access: 0", "app_imports: 0"):
+            if self_test_lines.count(required_line) != 1:
+                raise AssertionError(
+                    "vendor organization discovery readiness self-test missing exact evidence: "
+                    + required_line
+                )
+
+        if sentinel_db.exists() or any(
+            Path(str(sentinel_db) + suffix).exists()
+            for suffix in ("-wal", "-shm", "-journal")
+        ):
+            raise AssertionError(
+                "vendor organization discovery readiness checker created its APP_DB_PATH sentinel"
+            )
+        if tree_inventory(effective_temp_root) != expected_temp_inventory:
+            raise AssertionError(
+                "vendor organization discovery readiness checker left an artifact, temp root, or pycache"
+            )
+
+    if discovery_path.exists():
+        raise AssertionError(
+            "vendor organization discovery implementation appeared during readiness smoke"
+        )
+    repository_db_after = {
+        path.name: file_state(path) for path in repository_db_paths
+    }
+    if repository_db_after != repository_db_before:
+        raise AssertionError(
+            "vendor organization discovery readiness smoke changed repository DB or sidecar state"
+        )
+    if git_status() != repository_status_before:
+        raise AssertionError(
+            "vendor organization discovery readiness checker changed repository files"
+        )
+    print("vendor organization discovery readiness smoke PASS")
+
+
 def run_identity_registry_discovery_smoke(temp_root: Path | None = None) -> None:
     owned_temp = None
     if temp_root is None:
@@ -30413,6 +30741,9 @@ def main() -> int:
         run_vendor_organization_schema_readiness_smoke(
             Path(tmpdir) / "vendor-organization-schema-readiness"
         )
+        run_vendor_organization_discovery_readiness_smoke(
+            Path(tmpdir) / "vendor-organization-discovery-readiness"
+        )
         run_vendor_organization_physical_schema_smoke(
             Path(tmpdir) / "vendor-organization-physical-schema"
         )
@@ -30672,6 +31003,13 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if len(sys.argv) == 2 and sys.argv[1] == "--internal-vendor-organization-schema-readiness":
         run_vendor_organization_schema_readiness_smoke()
+        raise SystemExit(0)
+    if (
+        len(sys.argv) == 2
+        and sys.argv[1]
+        == "--internal-vendor-organization-discovery-readiness"
+    ):
+        run_vendor_organization_discovery_readiness_smoke()
         raise SystemExit(0)
     if (
         len(sys.argv) == 2
