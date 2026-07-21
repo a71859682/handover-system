@@ -494,6 +494,42 @@ CLI exit = 3
 
 No invalid value is silently filtered from an eligible set.
 
+#### Opaque legacy-label values
+
+The selected label slot in each legacy account, task, contact, and work-entry
+tuple is an opaque source value at the tuple/result-contract layer. Exact tuple
+arity, field order, and every non-label field domain remain mandatory, but the
+Python type of the label slot alone never causes `result_contract_failed`.
+
+The closed label classification is:
+
+- only a value for which `type(value) is str` enters the frozen discovery
+  normalization and the subsequent blank, length, and prohibited-Unicode
+  checks;
+- `value is None` is an invalid legacy label; and
+- every value for which `type(value) is not str` is an invalid legacy label,
+  including an integer, float, bytes/blob value, boolean, or injected custom
+  object.
+
+The label value's classification contributes only to
+`legacy_vendor_label_blank_or_invalid`. It is never normalized, coerced or
+stringified; never becomes an `LG`; never enters any of the other thirteen
+categories' valid-label populations; and never exposes its value, bytes,
+numeric representation, type name, `repr`, or exception text in output,
+hashing, errors, or logs. An independent non-label fact on the same row, such
+as an unresolved sheet/site, remains eligible for its own non-label predicate;
+that predicate receives the `LR` but never the opaque label payload.
+
+Every selected legacy row receives its own `LR` token before this label
+classification. Each invalid-label row occurrence therefore counts exactly
+once under its existing `(source kind, source row occurrence)` key, and
+identical duplicate source rows continue to count as distinct occurrences.
+
+Row-level `result_contract_failed` remains reserved for tuple arity/order
+failure, a non-label field outside its exact domain, duplicate primary identity
+or another already frozen closed row-domain failure that is independent of the
+legacy label value's Python type.
+
 #### UUID domains
 
 The four distinct UUID domains are:
@@ -826,7 +862,7 @@ ORDER BY
 Tuple:
 
 ```text
-(exact positive int or null, exact str or null)
+(exact positive int or null, opaque legacy-label source value)
 ```
 
 ```sql
@@ -838,7 +874,7 @@ ORDER BY id;
 Tuple:
 
 ```text
-(exact positive int, exact str or null)
+(exact positive int, opaque legacy-label source value)
 ```
 
 ```sql
@@ -862,8 +898,14 @@ ORDER BY
 The last two tuple shapes are:
 
 ```text
-(exact positive int, exact str or null)
+(exact positive int, opaque legacy-label source value)
 ```
+
+In these four legacy query tuple declarations, `opaque legacy-label source
+value` means any Python value occupying that exact label position. It does not
+weaken tuple arity, tuple order, `sheet_id`, or account-ID validation. Section
+4.6 and Section 6.4 alone classify the opaque label value after those exact
+non-label checks succeed.
 
 ### 5.5 New-schema data queries
 
@@ -978,7 +1020,7 @@ After the ten metadata queries:
 - if that group is absent, partial, or incompatible, none of those four is
   prepared or executed.
 
-On the first SQLite/query/shape failure:
+On the first SQLite/query-result-shape/tuple-arity/non-label-domain failure:
 
 - no later query executes;
 - capture status is `incomplete`;
@@ -986,6 +1028,11 @@ On the first SQLite/query/shape failure:
 - every other anomaly is `indeterminate`;
 - no partial observed/not-observed claim survives; and
 - the operational incomplete result maps to exit `3`.
+
+The Python type of a legacy label slot is not a query-shape or row-domain
+failure. Null and non-string legacy labels continue through aggregate
+classification exactly as specified in Sections 4.6 and 6.4; they do not take
+this incomplete-result path.
 
 ## 6. Anomaly taxonomy, predicates and count units
 
@@ -1113,14 +1160,25 @@ The exact category formulas are:
 
 Participant-set construction order is:
 
-1. validate every row domain;
-2. build `LR`, `AC`, `OR`, `MR`, `AR`, `BR`, `SI`, and `SH` tokens;
-3. build normalized `LG` groups;
-4. evaluate predicates in the closed category order;
-5. build each `V_c`;
-6. derive participant sets from the table above;
-7. compute cardinalities; and
-8. discard every token payload before envelope construction.
+1. validate exact tuple arity/order, every non-label field domain, and every
+   already frozen new-schema row domain;
+2. build one `LR` for every selected legacy row occurrence and build the valid
+   `AC`, `OR`, `MR`, `AR`, `BR`, `SI`, and `SH` tokens;
+3. classify each opaque legacy label, sending null/non-string values directly
+   to the invalid-label predicate without normalization or stringification;
+4. build normalized `LG` groups only from exact-string labels that pass every
+   frozen normalization validity check;
+5. evaluate predicates in the closed category order;
+6. build each `V_c`;
+7. derive participant sets from the table above;
+8. compute cardinalities; and
+9. discard every token payload before envelope construction.
+
+This sequence excludes every null/non-string label from every other
+label-based population. It does not suppress a distinct non-label source,
+reference, sheet, or site defect carried by the same row; such a defect may
+contribute the row's `LR` to its independently defined category without
+normalizing, grouping, or otherwise consuming the opaque label.
 
 No raw grouping key enters output, canonical JSON, evidence hashing, error
 text, or logging.
@@ -1137,6 +1195,14 @@ text, or logging.
 - Aggregation key: `(source kind, source row occurrence)`.
 - Count unit: source rows.
 - Duplicate handling: every duplicate row counts.
+- Null and every non-string value produce one violating `LR` without calling
+  normalization. Non-string includes integer, float, bytes/blob, boolean, and
+  injected custom-object values.
+- A non-string value produces no `LG`, is excluded from all other thirteen
+  valid-label populations, and cannot cause `result_contract_failed` solely
+  because of its type.
+- Raw value, bytes, numeric representation, type name, `repr`, and exception
+  text are never output, hashed, included in errors, or logged.
 - New schema required: no.
 - Disposition: `review legacy label quality; do not rewrite`.
 
@@ -1227,10 +1293,12 @@ text, or logging.
 
 - Sources: memberships, accounts, and organizations.
 - Precondition: every selected membership value passed Section 4.6.
-- Predicate: a membership references a missing account or organization; is
-  `pending` or `active` while its legacy account label is invalid; or its
-  account label and valid organization display name have unequal
-  discovery-normalized values.
+- Predicate: a membership references a missing account or organization; or,
+  when both references exist, its legacy account label is an exact string that
+  passes every frozen label-validity check and its valid organization display
+  name has an unequal discovery-normalized value. A null/non-string/otherwise
+  invalid account label is classified only by the invalid-label category and
+  does not itself make the membership mismatched.
 - Aggregation key: membership UUID.
 - Count unit: violating membership rows.
 - Duplicate handling: every relationship row counts once.
@@ -1273,6 +1341,11 @@ text, or logging.
 - Predicate: a legacy row cannot resolve to exactly one valid sheet/site; one
   normalized legacy label spans multiple sites; or a binding/assignment
   relationship crosses the sheet's canonical site.
+- Label boundary: the unresolved-sheet/site clause is an independent
+  non-label predicate and may include the `LR` of a row whose label is null or
+  non-string. That row's opaque label value is neither consumed nor grouped;
+  the label itself contributes only to the invalid-label category. The
+  multi-site-label clause accepts only valid normalized `LG` values.
 - Aggregation key: violating legacy row occurrence or relationship UUID;
   multi-site label groups count as one group.
 - Count unit: violating evidence groups.
@@ -1331,7 +1404,7 @@ source_incomplete
 | New-schema group partial or incompatible | `incomplete` | `["new_schema_projection_incomplete"]` | Same dependency treatment as absent, without a physical-schema drift claim |
 | Connection-open, BEGIN, topology-query, or topology-tuple operational failure before topology proof | `incomplete` | Exact one of `connection_open_failed`, `begin_failed`, `topology_query_failed`, or `result_contract_failed`, plus `concurrent_source_change` only under the exact Section 12.1 composition rule; ASCII-sorted | Exact pre-topology projection in Section 9.2: all three topology fields null, every schema availability field incomplete, fingerprint null, source-unavailable observed, other 13 categories indeterminate, summary `1 / 0 / 13` |
 | First schema/metadata/row SQLite operational failure after successful topology proof | `incomplete` | Exact phase code from Section 11.5, plus `concurrent_source_change` only under the exact Section 12.1 composition rule; ASCII-sorted | Proven non-null topology survives; source-unavailable observed; all other categories indeterminate; schema fingerprint/availability survival follows the exact phase-specific Section 11.5 row, and no row/anomaly conclusion survives unless Section 4.5 or the new-schema dependency rule explicitly preserves it |
-| First tuple/value/result-contract failure after successful topology proof | `incomplete` | `["result_contract_failed"]`, with `concurrent_source_change` added and ASCII-sorted only under Section 12.1 | Proven non-null topology survives; source-unavailable observed; all other categories indeterminate; no earlier row/anomaly result survives, while a fully completed schema projection survives only as frozen in Section 11.5 |
+| First tuple arity/order, non-label value, or other frozen result-contract failure after successful topology proof | `incomplete` | `["result_contract_failed"]`, with `concurrent_source_change` added and ASCII-sorted only under Section 12.1 | Proven non-null topology survives; source-unavailable observed; all other categories indeterminate; no earlier row/anomaly result survives, while a fully completed schema projection survives only as frozen in Section 11.5 |
 | Concurrent size/mtime/hash change with successful rollback and no tool mutation and no earlier operational error | `incomplete` | `["concurrent_source_change"]` | Proven topology survives when topology proof completed; otherwise the exact pre-topology projection applies |
 | Programming/RuntimeError, authorizer invariant, cleanup, aggregation, post-close identity/no-touch, fingerprint, canonicalization, hash, or final self-validation failure | No envelope | Not emitted | Public exception; CLI exit 4 |
 
@@ -1585,6 +1658,14 @@ The callable returns exactly:
 
 There are no optional keys. JSON null appears only where explicitly shown.
 No additional property is allowed.
+
+An opaque legacy-label value never enters this envelope or the preimage of
+`evidence_sha256`. Its label classification retains only the aggregate
+invalid-label count and the already frozen participant cardinalities. An
+independent non-label defect on the same row may also affect its own aggregate
+category, but receives no label payload. The raw value, string conversion,
+bytes, numeric representation, type name, `repr`, and exception text are
+prohibited from every property, error, hash input, and log.
 
 ### 9.2 Fixed values
 
@@ -1872,18 +1953,30 @@ No connection factory, query factory, callback, serializer, writer, scanner
 registry, plugin, repository abstraction, ORM model, route, job, or other
 public symbol is allowed.
 
+The future module's two private type aliases use these exact imports:
+
+```python
+from pathlib import Path as _Path
+from typing import Sequence as _Sequence
+```
+
+`Path`, `Sequence`, `_Path`, `_Sequence`, and `_main` are not exports. The
+module does not use `from __future__ import annotations`: the annotation source
+below uses explicit string literals, so each raw `__annotations__` entry has
+exactly one string layer and remains resolvable through the private aliases.
+
 ### 10.2 Public callable
 
 The exact callable contract is:
 
-```text
+```python
 discover_vendor_organization_readiness(
     *,
-    db_path: pathlib.Path,
-    run_id: str,
-    captured_at: str,
-    tool_commit: str,
-) -> dict[str, object]
+    db_path: "_Path",
+    run_id: "str",
+    captured_at: "str",
+    tool_commit: "str",
+) -> "dict[str, object]"
 ```
 
 All four parameters are mandatory keyword-only. There are no positional
@@ -1898,6 +1991,17 @@ normalization. `tool_commit` is exactly 40 lowercase hexadecimal characters.
 The callable returns a complete or operationally incomplete canonical
 envelope. It raises the fixed public exception for input rejection or internal
 invariant failure.
+
+The raw annotations are exactly the five quoted strings shown above. Runtime
+`typing.get_type_hints()` must resolve them exactly as follows:
+
+```text
+db_path = pathlib.Path
+run_id = str
+captured_at = str
+tool_commit = str
+return = dict[str, object]
+```
 
 ### 10.3 Public exception
 
@@ -1922,6 +2026,32 @@ solely for CLI exit mapping.
 
 ### 10.4 CLI
 
+The only private CLI dispatcher has the exact signature:
+
+```python
+_main(argv: "_Sequence[str] | None" = None) -> "int"
+```
+
+Its raw annotations are exactly `"_Sequence[str] | None"` and `"int"`.
+Runtime `typing.get_type_hints()` resolves them to
+`typing.Sequence[str] | None` and `int`. When `argv is None`, `_main` uses
+exactly `sys.argv[1:]`. A non-null `argv` is accepted only when
+`type(argv) is list` or `type(argv) is tuple` and `type(item) is str` for every
+item. A string, bytes object, mapping, set, generator, custom `Sequence`, list
+or tuple subclass, or container containing any non-exact-string item is an
+internal contract failure: `_main` returns `4`, writes zero stdout bytes and
+the fixed internal marker, makes zero database connection attempts, and
+reveals no value, type, `repr`, or exception.
+
+`_main` is the sole CLI dispatcher. There is no second dispatcher, public CLI
+function, plugin entry point, or console-script abstraction. Module execution
+is limited to:
+
+```python
+if __name__ == "__main__":
+    raise SystemExit(_main())
+```
+
 The executable surface is only:
 
 ```text
@@ -1938,9 +2068,43 @@ option, unknown option, response file, config file, stdin input, environment
 input, `--output`, `--format`, `--limit`, `--site`, `--sheet`, `--label`,
 `--apply`, or `--production` mode is accepted.
 
-Help is the standard parser help path and exits `0` without opening a database.
-Parser rejection maps to exit `2` with the fixed input marker, not a
-value-bearing parser diagnostic.
+The parser uses `prog="discover_vendor_organization_readiness.py"`,
+`add_help=False`, and `allow_abbrev=False`. It explicitly registers only the
+long help token `--help`; `-h` is never registered and is always rejected. The
+four value metavars, in option-registration order, are exactly `DB_PATH`,
+`RUN_ID`, `CAPTURED_AT`, and `TOOL_COMMIT`.
+
+Help succeeds only when the argument vector is the single exact token
+`--help`. That path returns `0`, writes the frozen help bytes below to stdout,
+writes zero stderr bytes, and makes zero database connection attempts. These
+all map to input rejection and exit `2`: `--help` with any other token,
+duplicate `--help`, `--help=value`, `-h`, an abbreviated canonical option, a
+duplicate canonical option, an unknown option, a positional token, a combined
+option, a response-file token, or a missing mandatory option. Help does not
+take precedence over an otherwise invalid vector.
+
+The exact help byte payload is the UTF-8 strict encoding of the following
+ASCII block, including its displayed spaces and line breaks and exactly one
+terminal LF after the last line:
+
+```text
+usage: discover_vendor_organization_readiness.py --help
+       discover_vendor_organization_readiness.py --db-path DB_PATH --run-id RUN_ID
+       --captured-at CAPTURED_AT --tool-commit TOOL_COMMIT
+
+Read aggregate-only VENDOR-ID-003 evidence from one disposable SQLite database.
+
+options:
+  --help                    show this exact help and exit
+  --db-path DB_PATH         absolute disposable SQLite database path
+  --run-id RUN_ID           lowercase RFC 9562 UUID version 4
+  --captured-at CAPTURED_AT UTC seconds in YYYY-MM-DDTHH:MM:SSZ form
+  --tool-commit TOOL_COMMIT 40 lowercase hexadecimal characters
+```
+
+The code fence is not part of the payload. There is no BOM or CR byte. Parser
+rejection writes only the fixed input marker; raw parser diagnostics,
+usage-on-error, value-bearing errors, and tracebacks are prohibited.
 
 ### 10.5 No export
 
@@ -1961,15 +2125,28 @@ A future persistent report requires a separate privacy/access/retention gate.
 
 ### 11.1 CLI mapping
 
+Every nonempty CLI payload is encoded with UTF-8 strict and emitted in exactly
+one call to `sys.stdout.buffer.write` or `sys.stderr.buffer.write`. An exact
+private binary wrapper is allowed only when its final sink remains the
+applicable `.buffer.write` method and it preserves the payload byte-for-byte.
+No payload has a BOM or CR byte; every nonempty payload has exactly one
+terminal byte `0x0A`; and the CLI performs no second content write or explicit
+flush.
+
+`print`, `sys.stdout.write`, `sys.stderr.write`, text-mode newline translation,
+locale encoding, console code-page encoding, and environment-derived encoding
+are prohibited.
+
 | Condition | Callable | Exit | stdout | stderr |
 |---|---|---:|---|---|
-| Complete capture | Return canonical dict | `0` | Canonical JSON plus one LF | 0 bytes |
-| Operational incomplete capture | Return canonical dict with `capture_status = "incomplete"` | `3` | Canonical JSON plus one LF | 0 bytes |
-| Input rejection | Raise fixed public exception | `2` | 0 bytes | `VENDOR-ID-003 DISCOVERY INPUT REJECTED` plus one LF |
-| Internal invariant failure | Raise fixed public exception | `4` | 0 bytes | `VENDOR-ID-003 DISCOVERY INTERNAL FAILURE` plus one LF |
-| Help | Not invoked | `0` | Deterministic parser help plus one LF | 0 bytes |
+| Complete capture | Return canonical dict | `0` | canonical JSON UTF-8 bytes + `b"\n"` | 0 bytes |
+| Operational incomplete capture | Return canonical dict with `capture_status = "incomplete"` | `3` | canonical JSON UTF-8 bytes + `b"\n"` | 0 bytes |
+| Input rejection | Raise fixed public exception | `2` | 0 bytes | `b"VENDOR-ID-003 DISCOVERY INPUT REJECTED\n"` |
+| Internal invariant failure | Raise fixed public exception | `4` | 0 bytes | `b"VENDOR-ID-003 DISCOVERY INTERNAL FAILURE\n"` |
+| Help | Callable not invoked | `0` | exact Section 10.4 help bytes | 0 bytes |
 
-No traceback is emitted by the CLI.
+No traceback, parser diagnostic, error usage, value-bearing error, or other
+byte is emitted by the CLI.
 
 ### 11.2 Private error codes
 
@@ -2045,10 +2222,14 @@ After a connection is returned, `OSError` during identity/hash/sidecar checks
 is internal unless the exact concurrent-change case in Section 11.5 applies.
 
 The CLI catches `KeyboardInterrupt` after parsing and maps it to internal exit
-`4` after attempting the required cleanup. Parser-owned `SystemExit` is
-intercepted and normalized to help exit `0` or input exit `2`; it never leaks a
-traceback or parser diagnostic. No other `BaseException` is converted into a
-trusted envelope.
+`4` after attempting the required cleanup. Sole-token help is consumed only by
+the Section 10.4 pre-scan and never reaches the parser. Parser-owned
+`SystemExit` therefore maps only an invalid token vector to input exit `2`; it
+can never produce help exit `0`. A malformed parser namespace, an unexpected
+parser exception, a parser-returned help state, or any parser invariant drift
+is `internal_runtime_invariant`, emits the fixed internal bytes, and exits `4`.
+No parser path leaks a traceback or diagnostic. No other `BaseException` is
+converted into a trusted envelope.
 
 ### 11.5 Complete phase and failure decision table
 
@@ -2075,6 +2256,11 @@ cleanup failure is internal, suppresses every envelope, and maps to exit `4`.
 
 | Phase | Handled condition or exception | Private code / class | Envelope and earlier results | Required cleanup | CLI |
 |---|---|---|---|---|---|
+| Private `_main` argv container/item validation | Non-null object is not exact list/tuple, or any item is not exact string | `internal_runtime_invariant` / internal | No envelope; callable and parser not invoked | C0 | Exit `4`; zero stdout; fixed internal stderr; zero database attempts |
+| CLI token pre-scan | Exact sole `--help` | Help / control path | No envelope; callable and parser validation not invoked | C0 | Exit `0`; exact frozen help bytes; zero stderr; zero database attempts |
+| CLI token pre-scan/parser rejection | Mixed or duplicate help, `-h`, abbreviation, duplicate canonical option, unknown/positional/combined/response token, missing option, or any parser-owned `SystemExit` after pre-scan | Private non-sensitive `input` classification; no envelope error code | No envelope; callable not invoked | C0 | Exit `2`; zero stdout; fixed input stderr; zero database attempts |
+| Parser result/invariant | Malformed namespace, unexpected parser exception, parser-returned help namespace/state, second non-`SystemExit` help path, or any parser invariant drift | `internal_runtime_invariant` / internal | No envelope; callable not invoked | C0 | Exit `4`; zero stdout; fixed internal stderr; zero database attempts |
+| Public scalar input validation | Invalid UUID, calendar timestamp, commit, or callable argument type before path inspection | Private non-sensitive `input` classification; no envelope error code | No envelope | C0 | Exit `2`; zero stdout; fixed input stderr; zero database attempts |
 | Platform/architecture/Python/SQLite/Unicode check | Expected value differs; sqlite module import unavailable | `platform_unsupported` / input | No envelope | C0 | Exit `2`; fixed input stderr |
 | Platform check | Unexpected `Exception` or runtime object shape | `internal_runtime_invariant` / internal | No envelope | C0 | Exit `4`; fixed internal stderr |
 | Raw `db_path` type, absolute-path syntax, ADS/trailing component validation | `TypeError`, `ValueError`, rejected lexical rule | `input_path_invalid` / input | No envelope | C0 | Exit `2` |
@@ -2100,7 +2286,7 @@ cleanup failure is internal, suppresses every envelope, and maps to exit `4`.
 | New-schema group proof | All four absent | `source_projection_unavailable` / operational | Legacy conclusions survive; new dependencies unavailable | C2 after legacy queries | Exit `3` |
 | New-schema group proof | Partial/conflicting/incompatible | `new_schema_projection_incomplete` / operational | Legacy conclusions survive; new dependencies unavailable | C2 after legacy queries | Exit `3` |
 | Each legacy or new row query | Expected source-operational SQLite exception | `row_query_failed` / operational | Proven non-null topology and completed schema fingerprint survive; every earlier conclusive category is discarded | C2 | Exit `3` |
-| Row tuple shape/type/value vocabulary/UUID/integer/duplicate identity | Contract mismatch | `result_contract_failed` / operational | Proven non-null topology and completed schema fingerprint survive; every earlier conclusive category is discarded | C2 | Exit `3` |
+| Row tuple arity/order, non-label field domain, new-schema text vocabulary/UUID/integer, or duplicate primary identity | Contract mismatch | `result_contract_failed` / operational | Proven non-null topology and completed schema fingerprint survive; every earlier conclusive category is discarded | C2 | Exit `3` |
 | Result grouping/category/evidence/summary aggregation | Any unexpected exception, impossible state, or formula mismatch | `aggregation_invariant_failed` / internal | No envelope | C2 | Exit `4` |
 | Authorizer callback during any SQL phase | Denial, missing required callback, extra action/pair/function, or wrong phase | `internal_authorizer_invariant` / internal | No envelope, even if SQLite also reports an operational error | C2 | Exit `4` |
 | `ROLLBACK` | Any SQLite error, active-state mismatch, or unexpected exception | `rollback_failed` / internal | No envelope | Continue reset and close | Exit `4` |
@@ -2122,7 +2308,21 @@ No `ROLLBACK`, authorizer reset, close, internal invariant, canonicalization,
 fingerprint, hash, or no-touch failure may emit partial JSON or preserve a
 success/incomplete marker.
 
+Null or non-string values in a legacy label slot are deliberately excluded
+from the `result_contract_failed` row. Their label values are classified only
+by `legacy_vendor_label_blank_or_invalid` after exact tuple arity/order and
+non-label fields have passed. The row may independently participate in a
+Section 6 non-label predicate, such as an unresolved sheet/site conflict,
+without that predicate consuming the opaque label payload.
+
 ## 12. Snapshot, concurrency and no-touch checkpoints
+
+The exact private-argv check, sole-help recognition, parser token validation,
+public scalar validation, and pre-open path/header/sidecar gates all precede
+`sqlite3.connect`. Every help, parser rejection, public input rejection, and
+invalid-private-argv path therefore performs exactly zero database connection
+attempts. Help and parser rejection do not invoke the public callable; an
+invalid private `argv` does not invoke either the parser or callable.
 
 ### 12.1 Checkpoints
 
@@ -2316,13 +2516,28 @@ Its positive allowance is limited to:
 
 - the exact canonical discovery module path;
 - the exact two exports;
-- the exact callable and CLI;
+- the exact private `_Path`/`_Sequence` imports, absence of future-annotation
+  double stringification, raw annotations, resolved type hints, public callable,
+  sole `_main` dispatcher, and two-export surface;
+- exact private-argv list/tuple/item validation and its internal exit-4,
+  zero-connect behavior;
+- exact `argv is None` ownership: `_main` reads the current `sys.argv[1:]` at
+  entry, excluding `argv[0]`, with no empty/cached/alternate argument source;
+- the exact non-default help parser, token precedence, `prog`, metavars, frozen
+  help bytes, and parser-rejection behavior;
+- exact UTF-8 strict binary-buffer output sinks, payload bytes, and one-LF/no-CR
+  rules;
 - all 24 fixed query constants in Section 5;
 - exact ordinary-main-table identity proof from table-list, main/temp schema,
   and xinfo;
 - the exact source columns;
 - the exact UUID, status/role, display-name, integer, and duplicate-identity
   row domains;
+- opaque legacy-label handling: exact strings alone enter normalization, while
+  null/non-string values produce only the invalid-label label-classification
+  result without coercion, grouping, leakage, or result-contract failure;
+  independent non-label defects remain separately classifiable without label
+  consumption;
 - the exact platform/path/header/sidecar/topology gates;
 - the exact authorizer and transaction state machine;
 - every typed aggregation namespace, category count/evidence formula,
@@ -2357,6 +2572,27 @@ At minimum, self-test source mutations must cover:
 
 - third export or public factory;
 - optional/positional/variadic callable input;
+- missing/wrong/double-quoted raw annotation, unresolved type hint, public
+  `Path`/`Sequence` alias, exported private alias/dispatcher, second dispatcher,
+  non-exact `_main` signature, or module execution other than the one frozen
+  `raise SystemExit(_main())` guard;
+- private `argv` accepting string/bytes/mapping/set/generator/custom Sequence,
+  list/tuple subclass, or non-exact-string item, or mapping that rejection to
+  input instead of internal exit `4`;
+- `argv is None` replaced by an empty vector, full `sys.argv` including
+  `argv[0]`, a cached vector, environment/config input, or any source other than
+  the current `sys.argv[1:]` read at `_main` entry;
+- parser-owned `SystemExit` accepted as help instead of normalized to input
+  exit `2`, accepted `-h`, option abbreviation, mixed/duplicate or valued
+  help, noncanonical `prog`/metavar/order/text/wrapping/spacing, raw parser
+  diagnostic, or help/parser/input path that attempts a connection;
+- parser-returned help namespace/state or a second non-`SystemExit` help route
+  accepted instead of internal exit `4`;
+- malformed parser namespace, unexpected parser exception, or parser invariant
+  drift accepted as user input instead of internal exit `4`;
+- `print`, text-stream write, locale/code-page/environment encoding, BOM, CRLF,
+  missing/duplicate terminal LF, split output writes, explicit output flush, or
+  noncanonical JSON/help/error bytes;
 - public exception detail leakage;
 - output path, file write, log, upload, or environment destination;
 - dynamic SQL, f-string SQL, concatenated SQL, caller table/column, or
@@ -2385,6 +2621,9 @@ At minimum, self-test source mutations must cover:
 - authorizer removal, broad READ, broad function, or wrong-phase allowance;
 - raw label, normalized label, username, ID, path, SQL row, or mutation target
   in output/error/hash/log;
+- legacy non-string label normalization, stringification, grouping, entry into
+  another valid-label category, type/`repr`/value leakage, silent omission,
+  deduplication, or classification as `result_contract_failed`;
 - invalid UUID/status/role/display name/integer silently filtered or treated as
   ineligible; duplicate primary/relationship identity silently deduplicated;
 - AUTH-ID UUID validator reused as vendor semantic authority;
@@ -2436,7 +2675,11 @@ Positive controls must show that the checker does not reject:
 - canonical fixed SQL and its exact authorizer matrix;
 - aggregate count arithmetic with no raw output;
 - standard-library hashing/canonical JSON operations;
-- fixed parser help behavior; and
+- fixed parser help behavior;
+- exact private aliases/annotations and binary-buffer output behavior;
+- opaque non-string label values counted only through aggregate invalid-label
+  classification, while an independent non-label row defect remains separately
+  testable without consuming that value; and
 - explicit fixed unsupported-operation error text with no capability.
 
 ## 15. Disposable fixtures and acceptance matrix
@@ -2463,7 +2706,14 @@ Fixtures:
 | Exact required sources, all rows empty | Complete; all categories not observed; unknown count zero |
 | Representative legacy-only data, all new tables absent | Legacy-only categories deterministic; new-schema categories indeterminate; source-unavailable observed |
 | Exact new schema, empty, with clean legacy labels | Complete deterministic output |
-| Blank, null, overlength, mixed frozen whitespace, and prohibited-control labels | Invalid-label row count exact |
+| Exact null label | One invalid-label row occurrence observed; no normalization and no result-contract failure |
+| Exact blank string | Invalid-label row occurrence observed after frozen normalization |
+| Overlength or prohibited-Unicode exact string | Invalid-label row occurrence observed after frozen validity checks |
+| Integer, float, bytes/blob, boolean, or injected custom-object label | Each occurrence observed once as invalid-label; duplicate rows each count; no result-contract failure |
+| Non-string label alone with otherwise healthy references/scope | Excluded from every other label-based category, every valid-label population, and every `LG` |
+| Non-string account label plus pending/active membership with existing references | Invalid-label observed; label invalidity alone does not produce membership mismatch |
+| Non-string scoped-row label plus unresolved sheet/site | Invalid-label and independent cross-site row conflict may both be observed; no label normalization or `LG` occurs |
+| Non-string sensitive canary value, type, and `repr` | None appears in stdout, stderr, exception, hash input, or captured logs |
 | Two accounts with one normalized label | Ambiguous-account label group observed |
 | One normalized label across two sites | Cross-scope reuse and cross-site conflict observed without raw label |
 | One account label across incompatible sites | Conflicting operational scope observed |
@@ -2490,7 +2740,7 @@ Fixtures:
 | Any temp object | Input rejection |
 | Attached database | Input rejection |
 | Fixed query operational failure | Exit 3 canonical incomplete envelope |
-| Tuple shape/type failure | Exit 3 canonical incomplete envelope |
+| Tuple arity/order or non-label type failure | Exit 3 canonical incomplete envelope |
 | Connection-open operational failure before topology proof | Exit 3 exact all-null topology projection with sole error `connection_open_failed`; all schema fields incomplete; fingerprint null; source-unavailable observed; other 13 categories indeterminate; summary `1 / 0 / 13`; canonical reconstruction/hash passes |
 | BEGIN operational failure before topology proof | Same exact pre-topology projection with sole error `begin_failed`; canonical reconstruction/hash passes |
 | Topology-query operational failure | Same exact pre-topology projection with sole error `topology_query_failed`; canonical reconstruction/hash passes |
@@ -2525,7 +2775,19 @@ Fixtures:
 | Same fixture/input A/A | Byte-identical canonical JSON and evidence hash |
 | Meaningfully changed fixture A/B | Deterministic changed envelope/hash |
 | Evidence-hash reconstruction | Exact uppercase match after removing hash property |
-| CLI duplicate, abbreviated, positional, unknown, missing option | Exit 2 fixed marker, no database open |
+| Public callable and `_main` raw annotations/signatures | Exact single-layer strings; `typing.get_type_hints()` resolves the Section 10 types; four mandatory keyword-only public inputs; one optional private `argv` |
+| Public `Path`/`Sequence`, third export, second dispatcher, or future-annotation double stringification | Static checker and focused smoke fail closed |
+| Private `argv` is string, bytes, mapping, set, generator, custom Sequence, subclass, or contains non-string | Internal exit 4, exact internal bytes, zero stdout and zero database attempts |
+| `_main(argv=None)` with controlled process arguments | Consumes exactly the current `sys.argv[1:]`, excludes `argv[0]`, and uses no empty, cached, environment, config, or alternate source |
+| Sole exact `--help` | Exit 0; exact frozen help bytes; zero stderr and zero database attempts |
+| `-h`, help plus valid option, duplicate help, or `--help=value` | Exit 2 fixed input bytes; no help bytes, parser diagnostic, or database attempt |
+| CLI duplicate canonical option, abbreviated option, positional, unknown, response-file, combined, or missing option | Exit 2 fixed input bytes; no database attempt |
+| Parser-owned `SystemExit`, including status zero, after pre-scan | Input exit 2, fixed input bytes, no help bytes and zero database attempts |
+| Parser-returned help namespace/state or second non-`SystemExit` help route | Internal exit 4; no second help route and zero database attempts |
+| Malformed parser namespace or unexpected parser exception | Internal exit 4, exact internal bytes, zero stdout and zero database attempts |
+| Invalid calendar, UUID, commit, path, or containment | Exit 2 fixed input bytes; zero database attempts |
+| Complete/incomplete JSON, help, input error, and internal error binary capture | Exact UTF-8 payload; no BOM/CR; exactly one terminal LF; one applicable buffer write and no extra bytes |
+| Text-stream/`print`, CRLF translation, parser diagnostic, usage-on-error, or value-bearing error injection | Static checker and focused smoke fail closed |
 | Callable invalid input | Fixed public exception with no leaked context |
 | Sensitive canary values in prohibited columns | Canary absent from stdout, stderr, exception, and captured logs |
 | Raw label/ID canaries in allowed read columns | Canaries used only internally and absent from output/hash |
@@ -2673,7 +2935,13 @@ This document freezes:
 - the closed ordered anomaly taxonomy and count units;
 - aggregate-only privacy;
 - deterministic canonical JSON and evidence hashing;
-- exact callable, CLI, exception, exit, stdout, and stderr behavior;
+- opaque legacy-label classification, including non-string aggregate-only
+  handling without coercion or result-contract failure;
+- exact private aliases, raw/resolved callable annotations, sole `_main`
+  dispatcher, and private-argv validation;
+- sole-long-help token precedence and exact deterministic help bytes;
+- exact UTF-8 binary-buffer callable, CLI, exception, exit, stdout, and stderr
+  behavior;
 - transient-output-only policy;
 - read transaction, authorizer, checkpoints, and no-touch behavior;
 - future narrow static-checker responsibilities;
