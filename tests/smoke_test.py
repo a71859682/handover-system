@@ -243,6 +243,7 @@ def run_script(
     script_name: str,
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
+    encoding: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     merged_env = os.environ.copy()
     if env:
@@ -252,6 +253,8 @@ def run_script(
         cwd=ROOT_DIR,
         capture_output=True,
         text=True,
+        encoding=encoding,
+        errors="strict" if encoding is not None else None,
         check=True,
         env=merged_env,
     )
@@ -24956,6 +24959,10 @@ def run_vendor_organization_discovery_readiness_smoke(
     checker_path = (
         TOOLS_DIR / "check_vendor_organization_discovery_readiness.py"
     )
+    schema_checker_path = TOOLS_DIR / "check_vendor_organization_schema.py"
+    policy_path = (
+        ROOT_DIR / "docs/vendor_id_003_read_only_vendor_discovery_baseline.md"
+    )
     discovery_path = TOOLS_DIR / "discover_vendor_organization_readiness.py"
     if not checker_path.is_file():
         raise AssertionError(
@@ -24965,9 +24972,119 @@ def run_vendor_organization_discovery_readiness_smoke(
         raise AssertionError(
             "vendor organization discovery implementation must remain absent"
         )
+    if not schema_checker_path.is_file():
+        raise AssertionError("vendor organization schema checker is missing")
+
+    current_policy_sha256 = (
+        "DE97D2F4459E56FF9F7BE0C8411C2F8E1C897E1B0BD81EF9D8CD87A4475CBB20"
+    )
+    policy_payload = policy_path.read_bytes()
+    if hashlib.sha256(policy_payload).hexdigest().upper() != current_policy_sha256:
+        raise AssertionError("vendor discovery current policy SHA-256 drifted")
+    policy_text = policy_payload.decode("utf-8", errors="strict")
+    current_status = (
+        "DOCS-ONLY CONTRACT PRODUCTION-FROZEN / IMPLEMENTATION NOT STARTED"
+    )
+    if policy_text.count(current_status) != 1:
+        raise AssertionError("vendor discovery current policy status drifted")
+    headings = tuple(
+        int(value)
+        for value in re.findall(r"(?m)^## ([1-9][0-9]*)\.", policy_text)
+    )
+    if headings != tuple(range(1, 20)):
+        raise AssertionError("vendor discovery policy sections are not exact 1-19")
+    section_nineteen = policy_text.split(
+        "## 19. Production baseline freeze evidence", 1
+    )
+    if len(section_nineteen) != 2:
+        raise AssertionError("vendor discovery policy Section 19 title drifted")
+    section_nineteen_text = section_nineteen[1]
+    for marker in (
+        "DISCOVERY IMPLEMENTATION：NOT STARTED",
+        "WINDOWS-ONLY DISCOVERY TOOL：NOT EXECUTED",
+        (
+            "REPORT / ARTIFACT / MAPPING / BACKFILL："
+            "NOT IMPLEMENTED OR AUTHORIZED"
+        ),
+        (
+            "RUNTIME CONSUMER / AUTHORITY SWITCH："
+            "NOT IMPLEMENTED OR AUTHORIZED"
+        ),
+        "NO DATABASE OR ENVIRONMENT ACCESSED",
+    ):
+        if section_nineteen_text.count(marker) != 1:
+            raise AssertionError(
+                "vendor discovery policy Section 19 marker drifted: " + marker
+            )
 
     source = checker_path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(checker_path))
+    checker_constants = {
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    for scenario in (
+        "stale_policy_sha",
+        "old_policy_status",
+        "section_nineteen_missing",
+        "section_nineteen_reordered",
+        "section_nineteen_marker",
+    ):
+        if scenario not in checker_constants:
+            raise AssertionError(
+                "vendor discovery checker is missing current-policy negative scenario: "
+                + scenario
+            )
+
+    schema_source = schema_checker_path.read_text(encoding="utf-8")
+    schema_tree = ast.parse(schema_source, filename=str(schema_checker_path))
+    schema_constants = {
+        node.value
+        for node in ast.walk(schema_tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    for scenario in (
+        "discovery_checker_stale_approved_policy_literal",
+        "discovery_checker_ast_bundle_hash_drift",
+        "discovery_checker_self_audit_hash_drift",
+        "discovery_checker_sql_sink_inserted",
+    ):
+        if scenario not in schema_constants:
+            raise AssertionError(
+                "vendor schema checker is missing discovery-lock negative scenario: "
+                + scenario
+            )
+    validation_function = next(
+        (
+            node
+            for node in schema_tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "validate_exact_discovery_readiness_checker"
+        ),
+        None,
+    )
+    if validation_function is None:
+        raise AssertionError("vendor schema checker discovery validator is missing")
+    expected_literals = next(
+        (
+            ast.literal_eval(node.value)
+            for node in validation_function.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name)
+                and target.id == "expected_literals"
+                for target in node.targets
+            )
+        ),
+        None,
+    )
+    if expected_literals != {
+        "_APPROVED_POLICY_SHA256": current_policy_sha256,
+    }:
+        raise AssertionError(
+            "vendor schema checker approved-policy literal is not synchronized"
+        )
     imported_roots: set[str] = set()
     forbidden_environment_imports: set[str] = set()
     os_import_aliases: set[str] = set()
@@ -25174,6 +25291,23 @@ def run_vendor_organization_discovery_readiness_smoke(
             encoding="utf-8",
             check=False,
         )
+        repeated_normal = subprocess.run(
+            [sys.executable, "-B", str(checker_path)],
+            cwd=ROOT_DIR,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if (
+            repeated_normal.returncode,
+            repeated_normal.stdout,
+            repeated_normal.stderr,
+        ) != (normal.returncode, normal.stdout, normal.stderr):
+            raise AssertionError(
+                "vendor organization discovery readiness output was not deterministic"
+            )
         normal_marker = "vendor organization discovery readiness PASS"
         if normal.returncode != 0:
             raise AssertionError(
@@ -30423,6 +30557,7 @@ def run_schema_manifest_serializer_smoke(temp_root: Path) -> None:
             "capture_schema_manifest.py",
             args=["capture", "--db", str(db_path), "--output-dir", str(output_dir)],
             env=env,
+            encoding="utf-8",
         )
         if result.stderr:
             raise AssertionError(f"capture_schema_manifest.py capture stderr was not empty: {result.stderr}")
@@ -30436,6 +30571,7 @@ def run_schema_manifest_serializer_smoke(temp_root: Path) -> None:
             "capture_schema_manifest.py",
             args=["compare", "--pre-dir", str(pre_dir), "--post-dir", str(post_dir)],
             env=env,
+            encoding="utf-8",
         )
         if result.stderr:
             raise AssertionError(f"capture_schema_manifest.py compare stderr was not empty: {result.stderr}")
@@ -30535,6 +30671,7 @@ def run_schema_manifest_serializer_smoke(temp_root: Path) -> None:
         "capture_schema_manifest.py",
         args=["pack-transport", "--input-dir", str(registry_capture_dir), "--output-dir", str(transport_dir)],
         env=env,
+        encoding="utf-8",
     )
     if pack_result.stderr:
         raise AssertionError(f"capture_schema_manifest.py pack-transport stderr was not empty: {pack_result.stderr}")
@@ -30545,6 +30682,7 @@ def run_schema_manifest_serializer_smoke(temp_root: Path) -> None:
         "capture_schema_manifest.py",
         args=["reconstruct-transport", "--transport-file", str(transport_file), "--output-dir", str(reconstructed_dir)],
         env=env,
+        encoding="utf-8",
     )
     if reconstruct_result.stderr:
         raise AssertionError(f"capture_schema_manifest.py reconstruct-transport stderr was not empty: {reconstruct_result.stderr}")
@@ -30573,6 +30711,8 @@ def run_schema_manifest_serializer_smoke(temp_root: Path) -> None:
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="strict",
     )
     if corrupted_result.returncode == 0:
         raise AssertionError("corrupted transport unexpectedly reconstructed successfully")

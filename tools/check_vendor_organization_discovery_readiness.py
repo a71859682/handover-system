@@ -30,7 +30,7 @@ _NON_VENDOR_OUTPUT_SOURCE_PATHS = frozenset(
     )
 )
 _APPROVED_POLICY_SHA256 = (
-    "BA780334D5CCFAA345733EE7C0320C95B1ADAB710289A1FA65D796A615325C0E"
+    "DE97D2F4459E56FF9F7BE0C8411C2F8E1C897E1B0BD81EF9D8CD87A4475CBB20"
 )
 _PASS_MARKER = "vendor organization discovery readiness PASS"
 _SELF_TEST_MARKER = (
@@ -81,7 +81,7 @@ _POLICY_MARKERS = (
     ),
     (
         "| Status | "
-        "`DOCS-ONLY DESIGN BASELINE / IMPLEMENTATION NOT STARTED` |"
+        "`DOCS-ONLY CONTRACT PRODUCTION-FROZEN / IMPLEMENTATION NOT STARTED` |"
     ),
     "| Governing baselines | `VENDOR-ID-001`; `VENDOR-ID-002` |",
     "tools/discover_vendor_organization_readiness.py",
@@ -97,10 +97,19 @@ _POLICY_MARKERS = (
     "DEV / PRODUCTION DATABASE ACCESS：NOT AUTHORIZED",
 )
 _POLICY_MARKER_COUNTS = tuple(
-    (marker, 2 if marker in {
-        "tools/discover_vendor_organization_readiness.py",
-        "VendorOrganizationDiscoveryError",
-    } else 1)
+    (
+        marker,
+        2
+        if marker
+        in {
+            "tools/discover_vendor_organization_readiness.py",
+            "VendorOrganizationDiscoveryError",
+            "DISCOVERY IMPLEMENTATION：NOT STARTED",
+            "MAPPING / BACKFILL：NOT IMPLEMENTED OR AUTHORIZED",
+            "RUNTIME CONSUMER / AUTHORITY SWITCH：NOT IMPLEMENTED OR AUTHORIZED",
+        }
+        else 1,
+    )
     for marker in _POLICY_MARKERS
 )
 
@@ -473,10 +482,10 @@ _UPSTREAM_STATIC_NODE_HASHES = {
         "405320F6E86F34D3871CF2C515C8334946CC7BE38161E361DD781BBA9B84535D"
     ),
     "validate_exact_discovery_readiness_checker": (
-        "14F48EC295D6D4358BEF02CE46D19F853ACA29F4AA97CAC9380142275DE2AE12"
+        "70D84F1649D70062B47E6836127E5171152421B47DA7F2425ADD0D1A5775D798"
     ),
     "_exercise_discovery_readiness_checker_contract": (
-        "D70A8583D4963A6132DFE08BD517E5BF26D1E11F0B6B0D2410EE0BCECC1C679E"
+        "85986C074B417F6CD83CCBA49A03FA83E818076B2AB56423CB4960DFBE37356B"
     ),
 }
 _UPSTREAM_INTEGRATION_NODE_SPECS = (
@@ -656,7 +665,7 @@ _SELF_AUDIT_NODE_NAMES = (
     "_main",
 )
 _SELF_AUDIT_AST_SHA256 = (
-    "31FD6E59C997FF8768F3CE61FE42EB4EB66A0B18BE777F492E2FB2FD5F4B3C4E"
+    "131804DFD7B54E60F399B9F8E93B66C4BD89370B2E4D83F3F4882FE68F70E884"
 )
 
 
@@ -1275,13 +1284,46 @@ def _check_policy(root: Path) -> list[_Issue]:
         int(value)
         for value in re.findall(r"(?m)^## ([1-9][0-9]*)\.", text)
     )
-    if headings != tuple(range(1, 19)):
+    if headings != tuple(range(1, 20)):
         _add_issue(
             issues,
             "vendor_discovery_policy_drift",
             _POLICY_PATH,
             symbol="section_order",
         )
+    section_nineteen = _section(text, 19)
+    if not section_nineteen.startswith(
+        "## 19. Production baseline freeze evidence\n"
+    ):
+        _add_issue(
+            issues,
+            "vendor_discovery_policy_drift",
+            _POLICY_PATH,
+            symbol="section_19_title",
+        )
+    for marker in (
+        "DISCOVERY IMPLEMENTATION：NOT STARTED",
+        "WINDOWS-ONLY DISCOVERY TOOL：NOT EXECUTED",
+        (
+            "REPORT / ARTIFACT / MAPPING / BACKFILL："
+            "NOT IMPLEMENTED OR AUTHORIZED"
+        ),
+        (
+            "RUNTIME CONSUMER / AUTHORITY SWITCH："
+            "NOT IMPLEMENTED OR AUTHORIZED"
+        ),
+        "NO DATABASE OR ENVIRONMENT ACCESSED",
+    ):
+        if section_nineteen.count(marker) != 1:
+            _add_issue(
+                issues,
+                "vendor_discovery_policy_marker_missing",
+                _POLICY_PATH,
+                symbol=(
+                    "section_19_"
+                    + hashlib.sha256(marker.encode()).hexdigest()[:12]
+                ),
+            )
     section_five = _section(text, 5)
     policy_queries = tuple(
         _normalized(match)
@@ -6458,6 +6500,109 @@ def _run_self_test() -> int:
             policy_missing,
             "vendor_discovery_policy_document_missing",
             "policy_missing",
+        )
+        scenario_count += 1
+
+        stale_policy_sha = temp_root / "negative-stale-policy-sha"
+        shutil.copytree(baseline, stale_policy_sha)
+        policy_path = stale_policy_sha / _POLICY_PATH
+        policy_path.write_text(
+            policy_path.read_text(encoding="utf-8") + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        _assert_negative(
+            stale_policy_sha,
+            "vendor_discovery_policy_drift",
+            "stale_policy_sha",
+        )
+        scenario_count += 1
+
+        old_policy_status = temp_root / "negative-old-policy-status"
+        shutil.copytree(baseline, old_policy_status)
+        policy_path = old_policy_status / _POLICY_PATH
+        policy_path.write_text(
+            policy_path.read_text(encoding="utf-8").replace(
+                "DOCS-ONLY CONTRACT PRODUCTION-FROZEN / IMPLEMENTATION NOT STARTED",
+                "DOCS-ONLY DESIGN BASELINE / IMPLEMENTATION NOT STARTED",
+                1,
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        _assert_negative(
+            old_policy_status,
+            "vendor_discovery_policy_marker_missing",
+            "old_policy_status",
+        )
+        scenario_count += 1
+
+        section_nineteen_missing = (
+            temp_root / "negative-section-nineteen-missing"
+        )
+        shutil.copytree(baseline, section_nineteen_missing)
+        policy_path = section_nineteen_missing / _POLICY_PATH
+        policy_text = policy_path.read_text(encoding="utf-8")
+        policy_path.write_text(
+            policy_text.split(
+                "## 19. Production baseline freeze evidence", 1
+            )[0],
+            encoding="utf-8",
+            newline="\n",
+        )
+        _assert_negative(
+            section_nineteen_missing,
+            "vendor_discovery_policy_drift",
+            "section_nineteen_missing",
+        )
+        scenario_count += 1
+
+        section_nineteen_reordered = (
+            temp_root / "negative-section-nineteen-reordered"
+        )
+        shutil.copytree(baseline, section_nineteen_reordered)
+        policy_path = section_nineteen_reordered / _POLICY_PATH
+        policy_text = policy_path.read_text(encoding="utf-8")
+        before_eighteen, section_eighteen = policy_text.split("## 18.", 1)
+        section_eighteen_body, section_nineteen = section_eighteen.split(
+            "## 19.", 1
+        )
+        policy_path.write_text(
+            (
+                before_eighteen
+                + "## 19."
+                + section_nineteen
+                + "## 18."
+                + section_eighteen_body
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        _assert_negative(
+            section_nineteen_reordered,
+            "vendor_discovery_policy_drift",
+            "section_nineteen_reordered",
+        )
+        scenario_count += 1
+
+        section_nineteen_marker = (
+            temp_root / "negative-section-nineteen-marker"
+        )
+        shutil.copytree(baseline, section_nineteen_marker)
+        policy_path = section_nineteen_marker / _POLICY_PATH
+        policy_path.write_text(
+            policy_path.read_text(encoding="utf-8").replace(
+                "NO DATABASE OR ENVIRONMENT ACCESSED",
+                "DATABASE OR ENVIRONMENT BOUNDARY DRIFTED",
+                1,
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        _assert_negative(
+            section_nineteen_marker,
+            "vendor_discovery_policy_marker_missing",
+            "section_nineteen_marker",
         )
         scenario_count += 1
 

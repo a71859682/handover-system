@@ -342,7 +342,7 @@ DISCOVERY_READINESS_NODE_NAMES = (
     "_main",
 )
 DISCOVERY_READINESS_AST_SHA256 = (
-    "29D5F38EE1E7D8EA2F33C676F4917EEBF25F9E5383CB1FA09186662401BC162D"
+    "B8E4343E0B11BFE8D4D78EBA3D1D94537BAE95E94AB1699B2769B1BD60B87A5B"
 )
 VENDOR_SCHEMA_ERROR_CODES = (
     "invalid_connection",
@@ -3354,7 +3354,7 @@ def validate_exact_discovery_readiness_checker(
 
     expected_literals = {
         "_APPROVED_POLICY_SHA256": (
-            "BA780334D5CCFAA345733EE7C0320C95B1ADAB710289A1FA65D796A615325C0E"
+            "DE97D2F4459E56FF9F7BE0C8411C2F8E1C897E1B0BD81EF9D8CD87A4475CBB20"
         ),
     }
     for name, expected_literal in expected_literals.items():
@@ -4527,11 +4527,36 @@ def _exercise_discovery_readiness_checker_contract(
     issue_code = "vendor_schema_discovery_checker_contract_drift"
     mutation_cases: tuple[tuple[str, Any], ...] = (
         (
+            "discovery_checker_stale_approved_policy_literal",
+            lambda source: _replace_exact_fragment(
+                source,
+                (
+                    "DE97D2F4459E56FF9F7BE0C8411C2F8E1C897E1B0BD81EF9D8CD87A4475CBB20"
+                ),
+                (
+                    "BA780334D5CCFAA345733EE7C0320C95B1ADAB710289A1FA65D796A615325C0E"
+                ),
+            ),
+        ),
+        (
             "discovery_checker_ast_bundle_hash_drift",
             lambda source: _replace_exact_fragment(
                 source,
                 "static_source_and_frozen_policy_only",
                 "static_source_and_frozen_policy_only_drifted",
+            ),
+        ),
+        (
+            "discovery_checker_self_audit_hash_drift",
+            lambda source: re.sub(
+                (
+                    r'(_SELF_AUDIT_AST_SHA256 = \(\n    ")'
+                    r"[0-9A-F]{64}"
+                ),
+                r"\g<1>"
+                + "0000000000000000000000000000000000000000000000000000000000000000",
+                source,
+                count=1,
             ),
         ),
         (
