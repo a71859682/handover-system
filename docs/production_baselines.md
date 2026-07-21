@@ -1016,3 +1016,58 @@
 
 - Product OS v1.x can be formally marked Production Live
 - Work Hub is now frozen at the M1 Product Freeze baseline
+
+## VENDOR-ID-003 Production Baseline Freeze
+
+### 1. Baseline Identity
+
+- Date: `2026-07-21`
+- Slice: `VENDOR-ID-003`
+- Live commit: `12b8458a68ce0e194820c5b4573d3d6eb876baad`
+- Deploy: `dep-d9fg4ad7vvec73e98bog`
+- Service: `handover-system`
+- Trigger: `new_commit`
+- Status: `Live`
+- Latest effective deploy: yes; no newer deploy superseded it
+
+### 2. Verification
+
+- Deployment verification: PASS
+- Bootstrap health: PASS
+- Public read-only runtime: PASS after contract re-adjudication
+- Exact checkout, successful build, Gunicorn startup/listener/worker, `HEAD /`
+  healthcheck `302`, and live marker were present
+- No Traceback, `ERROR`, schema/migration failure, crash, restart loop,
+  port-binding failure, missing configuration, OOM, build failure, or deploy
+  failure was present
+- The old instance's single `TERM`/worker-exit/master-shutdown sequence was a
+  graceful deployment replacement
+
+### 3. Public Runtime and Dashboard Contract
+
+- Direct observations:
+  - `GET /` -> `302 /login`
+  - `GET /login` -> `200`
+  - `GET /sheet` -> `302 /login`
+  - bare `GET /api/dashboard` -> `400 invalid_sheet_id`
+- Bare dashboard `400` is the established missing-`sheet_id` request-validation
+  contract and is not an authentication response
+- `GET /api/dashboard?sheet_id=<valid>` without authentication ->
+  `403 auth_required`, established by frozen contract evidence and not
+  re-executed in this gate
+- The previous bare-request `403` checklist expectation was incorrect
+- Application regression: no evidence
+- Authentication-order defect: not confirmed
+- Fix implementation: not required
+
+### 4. Freeze Boundary
+
+- Target change type: docs only; runtime source unchanged
+- VENDOR-ID-003 discovery CLI/legacy-label contract: Production-frozen
+- Windows-only discovery tool: not executed
+- Canonical discovery implementation: not started
+- No mapping, report, artifact, backfill, runtime consumer, or authority was
+  created
+- No database, persistent disk, snapshot, secret, or environment value was
+  accessed
+- Runtime, schema, permission, and workflow behavior remain unchanged

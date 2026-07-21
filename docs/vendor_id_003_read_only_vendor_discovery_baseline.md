@@ -5,7 +5,7 @@
 | Slice ID | `VENDOR-ID-003` |
 | Canonical title | `VENDOR-ID-003 Read-only vendor discovery design baseline` |
 | Canonical path | `docs/vendor_id_003_read_only_vendor_discovery_baseline.md` |
-| Status | `DOCS-ONLY DESIGN BASELINE / IMPLEMENTATION NOT STARTED` |
+| Status | `DOCS-ONLY CONTRACT PRODUCTION-FROZEN / IMPLEMENTATION NOT STARTED` |
 | Governing baselines | `VENDOR-ID-001`; `VENDOR-ID-002` |
 | Baseline commit | `66522e95e263edbc2e485a7e602106437ef3dd07` |
 | Owner boundary | Read-only source projection, bounded anomaly classification, deterministic aggregate evidence, ambiguity preservation, and privacy-safe transient output only |
@@ -2965,6 +2965,10 @@ docs-aligned static readiness checker gate before discovery implementation.
 
 ### 18.3 Final status
 
+This subsection records the pre-deployment design-freeze status. Section 19.5
+supersedes it for Production deployment-evidence status without changing any
+discovery implementation or authority boundary.
+
 ```text
 VENDOR-ID-003 DOCS-ONLY READ-ONLY VENDOR DISCOVERY DESIGN BASELINE COMPLETE
 DISCOVERY CONTRACT：FROZEN
@@ -2975,4 +2979,121 @@ RUNTIME CONSUMER / AUTHORITY SWITCH：NOT IMPLEMENTED OR AUTHORIZED
 DEV / PRODUCTION DATABASE ACCESS：NOT AUTHORIZED
 VENDOR-ID-003 OVERALL：OPEN — NOT CLOSED
 READY FOR FINAL DIFF REVIEW
+```
+
+## 19. Production baseline freeze evidence
+
+### 19.1 Production target and deployment identity
+
+The Production baseline evidence recorded on 2026-07-21 is:
+
+- service: `handover-system`;
+- commit: `12b8458a68ce0e194820c5b4573d3d6eb876baad`;
+- commit message: `Reconcile vendor discovery CLI and legacy label contract`;
+- deploy: `dep-d9fg4ad7vvec73e98bog`;
+- trigger: `new_commit`;
+- final status: `Live`; and
+- latest effective deploy: yes, with no newer deploy superseding it.
+
+### 19.2 Build and bootstrap evidence
+
+The complete target build and startup log window was obtained with
+`hasMore=false`. It showed:
+
+- checkout of exact commit
+  `12b8458a68ce0e194820c5b4573d3d6eb876baad` on `main`;
+- `Build successful`;
+- `Running 'gunicorn app:app'`;
+- Gunicorn 23.0.0 starting and listening at `0.0.0.0:10000`;
+- worker boot;
+- healthcheck `HEAD /` returning `302`; and
+- `Your service is live`.
+
+The same complete window contained no Traceback, unhandled exception, `ERROR`,
+schema or migration failure, worker crash, restart loop, port-binding failure,
+missing required configuration, OOM, build failure, or deploy failure. One old
+instance received `TERM`, its worker exited, and its master shut down before the
+new instance became healthy. That single sequence is a graceful deployment
+replacement, not a crash or restart loop.
+
+### 19.3 Public runtime evidence and dashboard contract adjudication
+
+The following requests were directly observed without cookies or credentials
+and without following redirects:
+
+| Request | Direct result |
+|---|---|
+| `GET /` | `302`, `Location: /login` |
+| `GET /login` | `200` |
+| `GET /sheet` | `302`, `Location: /login` |
+| Bare `GET /api/dashboard` | `400`, missing required `sheet_id` / `invalid_sheet_id` request-validation contract |
+
+The bare dashboard result is not an authentication response. The route parses
+and validates `sheet_id` before opening a database connection, resolving an
+actor or current site, or invoking authorization. A missing or invalid
+`sheet_id` therefore returns the established `400 invalid_sheet_id` contract.
+
+For a valid-input unauthenticated request,
+`GET /api/dashboard?sheet_id=<valid>`, the route proceeds to authorization and
+returns `403 auth_required`. That result is established by frozen tests, the
+existing Production baseline, and runtime source that is unchanged between the
+target and its parent. It was not re-executed during this Production gate and is
+not recorded as a direct observation here.
+
+The earlier checklist expectation that bare `GET /api/dashboard` return `403`
+omitted the required `sheet_id` and was incorrect. Re-adjudication therefore
+records:
+
+- application regression: no evidence;
+- authentication-order defect: not confirmed;
+- fix implementation: not required;
+- Production deployment verification: PASS after re-adjudication; and
+- public read-only runtime check: PASS after re-adjudication.
+
+### 19.4 Repository integrity and frozen boundary
+
+The deployed target is a single-parent, non-merge commit whose direct parent is
+`28cec03db2b1f488064b4022522f52cae01c34cf`. Its original committed scope was
+only this VENDOR-ID-003 document, with 311 insertions and 43 deletions. The
+committed document evidence was:
+
+- Git blob: `c195116e1ebc9d189d0e706aef41438ece9aa623`; and
+- raw SHA-256:
+  `8E839C2DB53616786285A4C6CB09797DAECF8DC818D5B345AE19595F93A9F51E`.
+
+This Production freeze records only the docs-only discovery CLI and
+legacy-label contract and its deployment evidence. It preserves these strict
+boundaries:
+
+- Windows-only discovery tool: NOT EXECUTED;
+- canonical discovery implementation: NOT STARTED;
+- mapping, report, artifact, backfill, runtime consumer, and authority: not
+  created or authorized;
+- database, persistent disk, snapshot, secret, and environment value: not
+  accessed; and
+- runtime, schema, permission, and workflow behavior: unchanged.
+
+Production-frozen source and deployment evidence do not mean that discovery
+implementation or execution is complete. Any implementation requires a new,
+independently authorized implementation slice and gate.
+
+### 19.5 Production-frozen status
+
+```text
+VENDOR-ID-003 DOCS-ONLY DISCOVERY CLI / LEGACY-LABEL CONTRACT：PRODUCTION-FROZEN
+PRODUCTION LIVE COMMIT：12b8458a68ce0e194820c5b4573d3d6eb876baad
+PRODUCTION DEPLOY：dep-d9fg4ad7vvec73e98bog
+PRODUCTION DEPLOYMENT VERIFICATION：PASS
+APP BOOTSTRAP HEALTH：PASS
+PUBLIC READ-ONLY RUNTIME CHECK：PASS AFTER RE-ADJUDICATION
+BARE DASHBOARD CONTRACT：400 invalid_sheet_id
+VALID-INPUT UNAUTHENTICATED CONTRACT：403 auth_required — FROZEN EVIDENCE, NOT RE-EXECUTED
+APPLICATION REGRESSION：NO EVIDENCE
+DISCOVERY IMPLEMENTATION：NOT STARTED
+WINDOWS-ONLY DISCOVERY TOOL：NOT EXECUTED
+REPORT / ARTIFACT / MAPPING / BACKFILL：NOT IMPLEMENTED OR AUTHORIZED
+RUNTIME CONSUMER / AUTHORITY SWITCH：NOT IMPLEMENTED OR AUTHORIZED
+RUNTIME / SCHEMA / PERMISSION / WORKFLOW：UNCHANGED
+NO DATABASE OR ENVIRONMENT ACCESSED
+VENDOR-ID-003 OVERALL：OPEN — NOT CLOSED
 ```
