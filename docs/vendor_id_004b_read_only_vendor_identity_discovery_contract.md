@@ -116,8 +116,11 @@ No later step becomes authorized merely because this contract is frozen.
 
 `docs/vendor_id_003_read_only_vendor_discovery_baseline.md` continues to own
 the aggregate-only readiness surface. Its canonical path, CLI, public callable,
-canonical envelope, evidence hash, static checker, fixed queries, anomaly
-taxonomy, transient-output rules, and privacy rules remain unchanged.
+canonical envelope, evidence hash, static-checker fail-closed semantics, fixed
+queries, anomaly taxonomy, transient-output rules, and privacy rules remain
+unchanged. Only the exact checker-composition plumbing frozen in Section 15
+may change under the separately authorized 004B0S gate; that change cannot
+alter a VENDOR-ID-003 product or aggregate semantic.
 
 VENDOR-ID-003 does not produce candidate mapping evidence and cannot substitute
 for the VENDOR-ID-004B surface. VENDOR-ID-004B does not implement, replace,
@@ -1320,6 +1323,13 @@ The future canonical implementation path is exactly:
 tools/discover_vendor_identity_evidence.py
 ```
 
+At the separately authorized `004B1` stage this exact path may exist only as a
+non-executable pure-core source: it has no `__main__`, CLI parser, stdout,
+SQLite, filesystem, environment, or runtime capability. The CLI obligations
+below become mandatory only when the separately authorized `004B2` stage adds
+the first executable integration at this same path. This staged source rule
+does not create an alternate implementation path or relax the final CLI.
+
 Its V1 CLI accepts only these mandatory options, exactly once each:
 
 ```text
@@ -1357,7 +1367,8 @@ are rejected before connection.
 
 ### 6.3 Output and exits
 
-The first implementation emits only canonical JSON to stdout. It creates no
+The first executable implementation at `004B2` emits only canonical JSON to
+stdout. It creates no
 artifact, report, cache, temporary output, clipboard data, upload, network
 request, database table, log file, or sidecar.
 
@@ -2209,15 +2220,19 @@ This document runs none of those commands and does not authorize them.
 
 VENDOR-ID-004B V1 does not include or authorize:
 
-- modification or implementation of VENDOR-ID-003;
+- modification or implementation of the VENDOR-ID-003 product, canonical
+  implementation, query family, envelope, taxonomy, runtime behavior, or
+  authority; only the exact Section 15 checker-composition plumbing may change
+  under a separately authorized 004B0S gate;
 - schema, migration, schema initialization, or physical projection changes;
 - API, UI, route, scheduler, job, webhook, or runtime consumer;
 - login, credential, session, role, permission, workflow, site isolation, or
   vendor routing changes;
 - raw identity, raw key, raw label, contact/person, credential, or secret
   disclosure;
-- approved mappings, mapping-package approval, candidate selection, winner
-  selection, deduplication, merge, or identity repair;
+- approved mappings, mapping-package approval, ranking/suppressing/choosing an
+  approved, canonical, or winning candidate, deduplication, merge, or identity
+  repair;
 - vendor/global ID generation or persistence;
 - report, artifact, audit-record, cache, or evidence-package persistence;
 - controlled apply, backfill, reconciliation, recovery, or authority switch;
@@ -2231,10 +2246,11 @@ VENDOR-ID-004B V1 does not include or authorize:
 The sequence remains:
 
 ```text
-004B contract freeze
--> separately authorized 004B implementation
--> focused review and commit gates
--> disposable synthetic verification
+004B0D exact guard-composition contract
+-> 004B0S static guard and upstream composition
+-> 004B1 pure candidate/safe-reference/envelope core
+-> 004B2 exact CLI and synthetic read-only SQLite discovery
+-> 004B3 disposable acceptance matrix and freeze
 -> 004C mapping review package
 -> 004D controlled apply contract and implementation
 -> later environment-specific discovery, review, authorization, apply,
@@ -2270,4 +2286,353 @@ CONTROLLED BACKFILL: NOT AUTHORIZED
 RECONCILIATION: NOT AUTHORIZED
 RUNTIME AUTHORITY SWITCH: NOT AUTHORIZED
 DEV / STAGING / PRODUCTION DISCOVERY: NOT AUTHORIZED
+```
+
+## 15. VENDOR-ID-004B0D exact static-guard composition decision
+
+### 15.1 Ownership and non-equivalence
+
+This section resolves only the static-guard ownership conflict between
+VENDOR-ID-003 and the future VENDOR-ID-004B implementation. It changes no
+runtime, schema, data, product, or authority behavior.
+
+VENDOR-ID-003 continues to own only its aggregate-only vendor-organization
+readiness discovery, canonical implementation, fixed query family, aggregate
+envelope, anomaly taxonomy, classifications, projections, and forbidden
+capabilities.
+
+VENDOR-ID-004B continues to own only candidate evidence, safe references,
+closed reason-code and classification validation, the canonical
+candidate-evidence envelope, synthetic-only read-only SQLite discovery, and
+no-touch evidence. Its evidence is not a mapping approval, canonical identity,
+backfill authorization, reconciliation result, runtime authority, runtime
+consumer, or VENDOR-ID-003 aggregate discovery result.
+
+### 15.2 Exact canonical path and closed routing inventory
+
+The sole implementation path covered by this composition decision is exactly:
+
+```text
+tools/discover_vendor_identity_evidence.py
+```
+
+The sole VENDOR-ID-004B static-guard path permitted to adjudicate routed
+findings is exactly:
+
+```text
+tools/check_vendor_identity_evidence.py
+```
+
+An alternate checker, alias, wrapper, re-export, renamed copy, or dynamically
+selected checker cannot satisfy the composition. The generic VENDOR-ID-004B
+static-checker references in Section 11 mean this exact path.
+
+The exact guard file itself remains fully parsed and enumerated by the
+VENDOR-ID-003 and VENDOR-ID-002 guards. They may structurally accept only the
+exact top-level node inventory, callable signatures, immutable policy/issue
+vocabulary, deterministic output nodes, self-audit AST bundle, and exact
+negative-fixture node hashes frozen by 004B0S. VENDOR-ID-004B markers or SQL
+bytes may occur there only in exact pinned policy constants or negative
+fixture nodes, never in executable SQL, database, environment, mutation,
+runtime, or discovery capability. Its only filesystem authority is exact
+read-only repository-source inspection required for static analysis; writes
+and non-source reads are forbidden. Every extra, missing, reordered, unparsed,
+or hash-drifted node, and every marker moved outside its exact pinned node,
+fails closed. A whole-guard-file, whole-function, or subtree exemption is
+forbidden.
+
+No directory wildcard, filename prefix or suffix, generic allowlist, renamed
+substitute, hidden path, alias, symlink, generated path, dynamically
+constructed identifier, or whole-`tools/` exemption is permitted.
+
+At that path, the only findings eligible for bounded VENDOR-ID-004B routing
+are individual AST nodes whose literal, identifier, query identity, field set,
+and use are exact members of this closed inventory:
+
+| VENDOR-ID-004B-owned family | Exact definition in this document | Sole permitted use |
+|---|---|---|
+| Normalization | `VENDOR_DISCOVERY_EVIDENCE_NORMALIZATION_V1`; Sections 4.7 and 7.3 | Candidate-evidence label normalization only |
+| Safe references | `HMAC_SHA256_SAFE_REFERENCE_V1`, `hmac-sha256-v1:`, closed domains, and exact byte recipes; Section 5 | Non-reversible evidence references only |
+| Sources and candidates | The five source kinds and exact candidate-item and relation keys, values, cardinalities, and ordering; Sections 4 and 7.3-7.4 | Unresolved candidate evidence only |
+| Envelope | The exact fifteen top-level keys and nested closed shapes; Section 7 | Canonical evidence output only |
+| Classification and reasons | The ordered eleven classes, closed reason vocabulary, and exact mapping; Section 8 | Validation and unresolved evidence classification only |
+| CLI and failures | The exact CLI options, fixed stderr markers, exits, stdout rules, and synthetic-only lifecycle; Section 6 | The VENDOR-ID-004B CLI only |
+| Queries and no-touch proof | Exact query IDs, SQL bytes, result contracts, bounds, mode-`ro` lifecycle, authorizer, transaction, and post-close proof; Sections 4.8-4.9 and 9 | Synthetic VENDOR-ID-004B evidence capture only |
+
+The routing unit is one specifically identified finding at one exact AST node,
+not a file, function, class, module, or broad vocabulary family. Mere use of
+`vendor`, `discovery`, `candidate`, `identity`, `mapping`, `classification`, or
+`evidence` is never sufficient.
+
+VENDOR-ID-003 canonical queries, aggregate categories, output and projection
+semantics, and canonical symbols are never delegated. For a SQL statement
+common to both frozen inventories, the exact VENDOR-ID-004B query ID, result
+contract, bounded data flow, and VENDOR-ID-004B-only use must all pass the
+VENDOR-ID-004B guard. Literal equality alone does not establish ownership;
+aggregate or mixed flow fails closed.
+
+### 15.3 No whole-file exemption and exact fail-closed predicates
+
+The VENDOR-ID-003 checker must scan the complete canonical VENDOR-ID-004B file
+and must independently reject:
+
+- aggregate vendor discovery or a VENDOR-ID-003 canonical query/result family;
+- VENDOR-ID-003-owned anomaly, classification, projection, envelope, or output
+  semantics;
+- mapping approval; ranking, suppressing, or choosing an approved, canonical,
+  or winning candidate; merge, reconciliation, or identity authority;
+- schema creation, mutation, migration, repair, conformance-PASS, or
+  schema-authority capability;
+- write, apply, repair, backfill, or persistence capability;
+- runtime route, API, UI, job, consumer, or authority behavior; and
+- every other VENDOR-ID-003 frozen forbidden behavior.
+
+Complete deterministic construction and retention of the unresolved
+VENDOR-ID-004B candidate set is candidate-evidence projection, not candidate
+selection under this prohibition. Exact read-only table-list, xinfo, and
+schema-fingerprint evidence frozen by this document is evidence capture, not
+schema capability or conformance authority.
+
+An individual finding may be routed only when all of these predicates hold:
+
+1. its path is byte-for-byte the exact canonical path in Section 15.2;
+2. its marker and AST use are exact members of the closed VENDOR-ID-004B
+   inventory;
+3. its use is solely evidence-only VENDOR-ID-004B behavior;
+4. the exact frozen VENDOR-ID-004B guard exists, completes successfully, emits
+   deterministic PASS, and validates that node;
+5. the VENDOR-ID-003 checker independently finds no VENDOR-ID-003-owned or
+   otherwise forbidden behavior; and
+6. the VENDOR-ID-002 schema guard accepts the frozen composition structure.
+
+Unknown paths or markers, unrecognized AST shapes, mixed ownership, ambiguous
+query flow, missing or renamed guard, invocation failure, nonzero exit, empty
+or malformed guard output, guard FAIL, or inability to classify must fail the
+combined result. None may be suppressed or treated as PASS.
+
+### 15.3.1 Source-bound composition proof
+
+004B0S freezes one composition protocol only. VENDOR-ID-003 invokes exactly
+one isolated child process with `subprocess.run`, `shell=False`, no dynamic
+command construction, repository root as `cwd`, a 30-second timeout, and this
+exact argument vector:
+
+```text
+[sys.executable, "-I", "-B",
+ <absolute-repository-path-to-tools/check_vendor_identity_evidence.py>,
+ "--composition-proof",
+ "tools/discover_vendor_identity_evidence.py",
+ <UPPERCASE-SOURCE-SHA256-or-ABSENT>]
+```
+
+No other subprocess, direct/dynamic import, alternate callable, module cache,
+file-based or cached proof, shell, retry, or caller-supplied PASS value may
+replace it. The guard source path, raw-byte SHA-256, parsed AST identity, and
+absence of repository bytecode/cache artifacts are checked immediately before
+and after the sole invocation. `-I -B` is mandatory; stdin, stdout, and stderr
+are binary pipes and no repository file is created.
+
+For a present implementation, VENDOR-ID-003 reads and parses the exact source
+bytes, computes their uppercase 64-hex SHA-256, supplies that digest as the
+final argument, and supplies only those bytes on stdin. The VENDOR-ID-004B
+guard recomputes the stdin digest and parses stdin; it never opens, imports, or
+substitutes the implementation source.
+
+For the 004B0S absence state, VENDOR-ID-003 proves the canonical path absent
+before invocation, supplies exact `ABSENT` and zero stdin bytes, and proves the
+path remains absent after return. The proof is exactly:
+
+```json
+{"canonical_path":"tools/discover_vendor_identity_evidence.py","covered_node_keys":[],"implementation_stage":"not_started","issue_codes":[],"result":"PASS","source_sha256":null}
+```
+
+For a present source, canonical JSON contains exactly the same six keys:
+
+- `canonical_path`;
+- `source_sha256`;
+- `implementation_stage`;
+- `covered_node_keys`;
+- `issue_codes`; and
+- `result`.
+
+The proof uses UTF-8, sorted keys, compact separators, `ensure_ascii=False`,
+`allow_nan=False`, and exactly one terminal LF. Child exit is `0` and stderr
+is empty. The path is exact, source digest is the expected uppercase value,
+stage is derived, `issue_codes` is an empty list, and `result` is exact `PASS`.
+
+Each covered-node key is the exact seven-member tuple
+`(lineno, col_offset, end_lineno, end_col_offset, node_type, marker_family,
+node_ast_sha256)`. `node_ast_sha256` is uppercase SHA-256 over UTF-8 bytes of
+the node's canonical `ast.dump(..., annotate_fields=True,
+include_attributes=False)` text. Keys are unique and ordered by source
+position, node type, marker family, and digest.
+
+VENDOR-ID-003 independently computes every routeable node key. Its ordered set
+must equal `covered_node_keys` exactly, with no missing, duplicate, overlapping,
+extra, or unbound node. It then re-reads the source and requires unchanged path
+state and digest before emitting its normal PASS marker.
+
+The structural stage is exact `not_started` when the implementation path is
+absent. When present, it is derived only from the sole literal module constant
+`_VENDOR_ID_004B_IMPLEMENTATION_STAGE`, whose value is exactly `004B1`,
+`004B2`, or `004B3`. Environment, CLI, branch, config, or dynamically composed
+stage input is forbidden. Missing, duplicate, nonliteral, contradictory,
+stale, or capability-incompatible stage evidence fails closed. Recognition is
+structural evidence only, never authorization.
+
+Any guard identity, command, invocation, timeout, exit, exception, proof-shape,
+path, digest, stage, coverage, issue, result, stdout/stderr, cache/artifact, or
+post-call source mismatch must add
+the exact VENDOR-ID-003 issue code
+`downstream_vendor_identity_evidence_guard_drift`, return nonzero, and suppress
+the VENDOR-ID-003 normal PASS marker.
+
+### 15.4 Future checker-composition slice
+
+The separately authorized `004B0S` slice must:
+
+- create a dedicated VENDOR-ID-004B static guard;
+- create it only at `tools/check_vendor_identity_evidence.py`;
+- validate exact-path positive and negative source cases;
+- change the VENDOR-ID-003 checker only enough to implement individual-node,
+  exact-path, exact-marker bounded routing while retaining its full
+  forbidden-behavior scan;
+- change the VENDOR-ID-002 schema checker only enough to freeze and validate
+  the explicit cross-guard structure and identities;
+- preserve all existing VENDOR-ID-003 aggregate and VENDOR-ID-002 schema
+  semantics and negative guarantees;
+- require every participating guard to pass; and
+- fail closed if any guard is absent, renamed, incomplete, failing, silent, or
+  unclassifiable.
+
+Its exact code scope is:
+
+```text
+A tools/check_vendor_identity_evidence.py
+M tools/check_vendor_organization_discovery_readiness.py
+M tools/check_vendor_organization_schema.py
+M tests/smoke_test.py
+```
+
+The canonical implementation file is absent from that scope. Any additional
+file requires a new docs decision and explicit authorization.
+
+Execution and downstream delegation are one-way from the VENDOR-ID-003 guard
+to the exact VENDOR-ID-004B composition-proof process. The VENDOR-ID-004B guard must
+never invoke either upstream guard. VENDOR-ID-002 independently validates the
+VENDOR-ID-003 composition nodes; the pre-existing reciprocal VENDOR-ID-002 /
+VENDOR-ID-003 static AST-integrity attestations remain unchanged and are not
+downstream invocation. A VENDOR-ID-004B-to-upstream call, recursive execution,
+or delegated-result cycle fails closed.
+
+The Section 12 exclusion on modification or implementation of VENDOR-ID-003
+continues to prohibit changes to its product, aggregate tool, query family,
+output, and authority. The narrowly authorized checker-composition enforcement
+above is not VENDOR-ID-003 product implementation and may occur only in the
+separate 004B0S gate.
+
+### 15.5 Staged implementation states
+
+| Stage | Sole legal state |
+|---|---|
+| `004B0D` | Docs only; every checker and implementation remains unchanged. Because the existing VENDOR-ID-003 guard pins the pre-004B0D policy bytes, this transitional feature state makes no normal checker-PASS claim and may fail closed with `vendor_discovery_policy_drift` if run. It must not be merged or deployed without 004B0S atomically refreshing the exact checker pins. |
+| `004B0S` | The exact four-file guard scope in Section 15.4 implements composition and self-tests first; the canonical implementation path remains absent. Normal mode emits exact `implementation_state: not_started` and PASS only for that absence state, rejecting partial, wrong-path, hidden, or uncontrolled implementation. |
+| `004B1` | After 004B0S passes and a separate gate authorizes it, the canonical path may be created only as non-executable pure candidate/safe-reference/envelope source with sole literal stage marker `_VENDOR_ID_004B_IMPLEMENTATION_STAGE = "004B1"` and zero CLI, I/O, SQL, filesystem, environment, or runtime capability. |
+| `004B2` | After 004B1 passes and a separate gate authorizes it, the marker becomes exact `"004B2"` and the exact CLI plus synthetic-only read-only SQLite discovery lifecycle may be added at the same canonical path. |
+| `004B3` | After 004B2 passes and a separate gate authorizes it, the marker becomes exact `"004B3"` and the disposable acceptance matrix and freeze may be completed. |
+
+Guard recognition never grants stage authorization. Each stage requires its
+own exact changed-file scope, review, and explicit authorization.
+
+### 15.6 Preserved VENDOR-ID-003 and VENDOR-ID-004B contracts
+
+The composition leaves all of the following VENDOR-ID-003 properties
+unchanged:
+
+- aggregate-only ownership and scope;
+- canonical implementation absence until independently authorized;
+- canonical query family;
+- output, anomaly, count, classification, and projection semantics;
+- prohibitions on schema creation/mutation/authority, mapping approval,
+  ranking/suppressing/choosing a canonical or winning candidate, write,
+  VENDOR-ID-003 aggregate-projection drift, runtime consumer, and runtime
+  authority behavior;
+- fail-closed checking; and
+- existing VENDOR-ID-003 and VENDOR-ID-002 negative guarantees.
+
+Apart from resolving this static-guard ownership conflict, it also leaves all
+of the following VENDOR-ID-004B properties unchanged:
+
+- exact CLI surface;
+- exact source kinds and source contracts;
+- candidate-item and candidate-relation shapes;
+- the fifteen-key canonical envelope;
+- the safe-reference HMAC profile and exact byte recipe;
+- the eleven-class taxonomy and closed reason vocabulary;
+- V1 unresolved items and empty exclusions;
+- the synthetic-only lifecycle;
+- exactly one SQLite `mode=ro` connection and explicit read transaction;
+- bounded evidence and post-close filesystem-only no-touch verification;
+- canonical JSON, exit-code, and zero-stdout failure rules;
+- the unchanged VENDOR-ID-003 aggregate contract; and
+- the prohibition on canonical identity, mapping approval, apply, backfill,
+  reconciliation, and runtime authority.
+
+### 15.7 Required 004B0S positive and negative matrix
+
+The 004B0S self-test contract must include at least:
+
+| Case | Required result | Exact issue code when failing |
+|---|---|---|
+| Same filename in a different directory | FAIL | `vendor_identity_evidence_path_drift` |
+| Canonical directory with a different filename | FAIL | `vendor_identity_evidence_path_drift` |
+| Extra, missing, early, duplicate, case-aliased, wrapped, re-exported, or otherwise invalid stage path combination | FAIL | `vendor_identity_evidence_stage_drift` |
+| Unauthorized vendor/discovery marker outside the exact canonical path or closed inventory | FAIL | `vendor_identity_evidence_unresolved_target` |
+| VENDOR-ID-003 aggregate query, canonical symbol, category, or aggregate result flow added to the VENDOR-ID-004B file | FAIL | `vendor_identity_evidence_ownership_conflict` |
+| Mapping approval; ranking, suppressing, or choosing an approved/canonical/winning candidate; merge, write, apply, repair, backfill, consumer, or authority behavior | FAIL | `vendor_identity_evidence_forbidden_capability` |
+| Whole-file, whole-function, subtree, directory, wildcard, prefix, suffix, generic allowlist, or generic issue-suppression exemption | FAIL | `vendor_identity_evidence_checker_exemption` |
+| Canonical path added to a runtime-path exclusion, non-vendor-output suppression set, ignore list, or exact-path early `continue` | FAIL | `vendor_identity_evidence_checker_exemption` |
+| Guard file skipped wholesale or permitted without its exact inventory, signatures, AST bundle, self-audit, and fixture-node hashes | FAIL | `vendor_identity_evidence_checker_exemption` |
+| Guard top-level inventory, callable signature, AST bundle, self-audit, fixture-node hash, or deterministic-output contract drifts | FAIL | `vendor_identity_evidence_guard_contract_drift` |
+| A guarded marker or SQL value moves outside its exact pinned policy or fixture node | FAIL | `vendor_identity_evidence_guard_contract_drift` |
+| VENDOR-ID-004B checker missing, renamed, failing, silent, malformed, forged, multi-PASS, or emitting unexpected stdout/stderr | FAIL | `downstream_vendor_identity_evidence_guard_drift` |
+| Any subprocess, argument, shell, cwd, timeout, input, output, retry, or invocation count other than the exact Section 15.3.1 protocol | FAIL | `downstream_vendor_identity_evidence_guard_drift` |
+| Wrong, stale, duplicate, or changed source digest; source changes between parse, delegated result, and post-call check | FAIL | `downstream_vendor_identity_evidence_guard_drift` |
+| Missing, duplicate, overlapping, extra, or unbound routed-node coverage | FAIL | `downstream_vendor_identity_evidence_guard_drift` |
+| VENDOR-ID-004B checker invokes an upstream guard, recursively executes composition, or creates a delegated-result cycle | FAIL | `downstream_vendor_identity_evidence_guard_drift` |
+| Mixed VENDOR-ID-003/VENDOR-ID-004B ownership or ambiguous common-query flow | FAIL | `vendor_identity_evidence_ownership_conflict` |
+| Dynamic string, identifier, import, path, SQL, `eval`, `exec`, generated code, or reflective construction used to evade detection | FAIL | `vendor_identity_evidence_unresolved_target` |
+| Imported, module-qualified, or relative constant; inherited attribute; default/return propagation; cross-file or bound-method forwarding; or starred positional/keyword forwarding reaches a guarded sink unresolved | FAIL | `vendor_identity_evidence_unresolved_target` |
+| Recursion, cycle, fifth-level forwarding, or depth exhaustion reaches guarded evidence unresolved | FAIL | `vendor_identity_evidence_unresolved_target` |
+| Missing, duplicate, nonliteral, stale, contradictory, or capability-incompatible stage marker | FAIL | `vendor_identity_evidence_stage_drift` |
+| Partial implementation or capability appears before its separately authorized stage | FAIL | `vendor_identity_evidence_stage_drift` |
+| `004B0S` contains the canonical implementation or any DB, environment, mutation, discovery CLI/output, artifact, or runtime capability beyond exact read-only source inspection and deterministic guard output | FAIL | `vendor_identity_evidence_forbidden_capability` |
+| `004B1` contains CLI, SQL/SQLite, filesystem/path access, environment, clock/random input, stdout, artifact, app/project bootstrap, DB, or write capability | FAIL | `vendor_identity_evidence_forbidden_capability` |
+| `004B2` contains nonliteral/dynamic SQL, wildcard or sensitive reads, mutation, ATTACH/DETACH, writable PRAGMA, multiple connections, or post-close SQLite access | FAIL | `vendor_identity_evidence_forbidden_capability` |
+| VENDOR-ID-003 checker changes outside exact composition nodes or VENDOR-ID-002 no longer pins the revised VENDOR-ID-003 composition | FAIL | `vendor_schema_discovery_checker_contract_drift` |
+| VENDOR-ID-002 guard identity required by VENDOR-ID-003 drifts | FAIL | `upstream_vendor_schema_guard_drift` |
+| Exact VENDOR-ID-003 canonical implementation path appears | FAIL | `forbidden_vendor_discovery_module_path` |
+| Exact frozen guard and self-test corpus at the 004B0S absence state | PASS | none |
+| Exact-path, exact-shape, VENDOR-ID-004B-only marker routing with every guard and proof invariant passing in a disposable fixture | PASS | none |
+| Existing VENDOR-ID-003 and VENDOR-ID-002 regression suites remain unchanged and pass | PASS | none |
+
+The PASS cases do not authorize creation of an implementation during 004B0S.
+Every FAIL row must return nonzero, emit its listed exact issue code, and emit
+no normal PASS marker. Positive routing exists only in disposable self-test
+source; it is not an implementation in 004B0S.
+
+### 15.8 Frozen composition markers
+
+```text
+VENDOR-ID-004B0D STATIC GUARD COMPOSITION: FROZEN
+COMPOSITION: EXACT-PATH / INDIVIDUAL-NODE / BOUNDED / FAIL-CLOSED
+CANONICAL VENDOR-ID-004B PATH: tools/discover_vendor_identity_evidence.py
+CANONICAL VENDOR-ID-004B GUARD: tools/check_vendor_identity_evidence.py
+WHOLE-FILE EXEMPTION: FORBIDDEN
+VENDOR-ID-003 AGGREGATE CONTRACT: UNCHANGED
+VENDOR-ID-004B PRODUCT CONTRACT: UNCHANGED
+VENDOR-ID-004B0S: REQUIRED BEFORE IMPLEMENTATION
+CURRENT COMPOSITION STAGE: 004B0D
+VENDOR-ID-004B STATIC GUARD: NOT IMPLEMENTED
+VENDOR-ID-004B IMPLEMENTATION: NOT STARTED
 ```
