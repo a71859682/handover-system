@@ -26,7 +26,7 @@ APPROVED_LIFECYCLE_CHECKER_SHA256 = (
     "5651BDC56222399816941D9BFF25A1BAAA7F8EEFBFC18B01B70FEFC3697466F1"
 )
 APPROVED_LINKING_CHECKER_SHA256 = (
-    "BA87AABC3A5B47BBE51DB5308B509013053842B74495A29A06ED68FE5C39143A"
+    "9BB343A1F43B709E4374D8AB3B7C9B9710D7A22C25A99BF6BFE53245DFB65DC2"
 )
 
 H_POLICY_MARKERS = (
@@ -995,6 +995,23 @@ def check_owner_boundaries(root: Path) -> list[Issue]:
     return issues
 
 
+def canonical_fingerprint_bytes(payload: bytes) -> bytes | None:
+    if b"\r" not in payload:
+        return payload
+    index = 0
+    while index < len(payload):
+        value = payload[index]
+        if value == 13:
+            if index + 1 >= len(payload) or payload[index + 1] != 10:
+                return None
+            index += 2
+            continue
+        if value == 10:
+            return None
+        index += 1
+    return payload.replace(b"\r\n", b"\n")
+
+
 def check_upstream_fingerprint(
     root: Path,
     relative: Path,
@@ -1013,7 +1030,12 @@ def check_upstream_fingerprint(
             )
         ]
     try:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest().upper()
+        canonical = canonical_fingerprint_bytes(path.read_bytes())
+        digest = (
+            hashlib.sha256(canonical).hexdigest().upper()
+            if canonical is not None
+            else "<invalid-line-endings>"
+        )
     except OSError:
         digest = "<unreadable>"
     if digest != expected_sha256:
@@ -2621,6 +2643,122 @@ def run_self_test() -> int:
             ("linking_drift", linking_drift, "upstream_linking_guard_drift")
         )
 
+        representation_scenario_names: list[str] = []
+
+        def exercise_upstream_representations(
+            prefix: str,
+            relative: Path,
+            expected_sha256: str,
+            issue_code: str,
+        ) -> None:
+            nonlocal scenario_count
+            canonical_payload = canonical_fingerprint_bytes(
+                (baseline / relative).read_bytes()
+            )
+            if canonical_payload is None:
+                raise AssertionError(
+                    f"baseline {prefix} source is not canonicalizable"
+                )
+            if (
+                hashlib.sha256(canonical_payload).hexdigest().upper()
+                != expected_sha256
+            ):
+                raise AssertionError(
+                    f"baseline {prefix} canonical fingerprint drifted"
+                )
+            representation_scenarios = (
+                (f"{prefix}_canonical_lf", canonical_payload, False),
+                (
+                    f"{prefix}_mechanical_crlf",
+                    canonical_payload.replace(b"\n", b"\r\n"),
+                    False,
+                ),
+                (f"{prefix}_standalone_cr", canonical_payload + b"\r", True),
+                (
+                    f"{prefix}_mixed_lf_crlf",
+                    canonical_payload.replace(b"\n", b"\r\n", 1),
+                    True,
+                ),
+                (
+                    f"{prefix}_malformed_cr_sequence",
+                    canonical_payload + b"\rX",
+                    True,
+                ),
+                (f"{prefix}_crcrlf", canonical_payload + b"\r\r\n", True),
+                (
+                    f"{prefix}_semantic_byte_drift",
+                    canonical_payload + b"# semantic drift\n",
+                    True,
+                ),
+            )
+            for name, payload, must_fail in representation_scenarios:
+                root = temp_root / f"representation-{name}"
+                shutil.copytree(baseline, root)
+                (root / relative).write_bytes(payload)
+                issues = check_upstream_fingerprint(
+                    root, relative, expected_sha256, issue_code
+                )
+                status, output = render_normal(issues)
+                if must_fail:
+                    if (
+                        status == 0
+                        or issue_code not in {issue.code for issue in issues}
+                        or PASS_MARKER in output
+                    ):
+                        raise AssertionError(
+                            f"representation scenario {name} did not fail closed: "
+                            f"{issues}"
+                        )
+                elif issues or status != 0:
+                    raise AssertionError(
+                        f"representation scenario {name} did not pass: {issues}"
+                    )
+                representation_scenario_names.append(name)
+                scenario_count += 1
+
+            canonical_digest = hashlib.sha256(canonical_payload).hexdigest().upper()
+            mechanical_payload = canonical_fingerprint_bytes(
+                canonical_payload.replace(b"\n", b"\r\n")
+            )
+            if mechanical_payload is None:
+                raise AssertionError(f"{prefix} mechanical CRLF was rejected")
+            mechanical_digest = hashlib.sha256(mechanical_payload).hexdigest().upper()
+            if canonical_digest != mechanical_digest:
+                raise AssertionError(f"{prefix} LF/CRLF fingerprint parity failed")
+            representation_scenario_names.append(f"{prefix}_lf_crlf_parity")
+            scenario_count += 1
+
+            pin_root = temp_root / f"representation-{prefix}-expected-pin-drift"
+            shutil.copytree(baseline, pin_root)
+            (pin_root / relative).write_bytes(canonical_payload)
+            pin_issues = check_upstream_fingerprint(
+                pin_root, relative, "0" * 64, issue_code
+            )
+            pin_status, pin_output = render_normal(pin_issues)
+            if (
+                pin_status == 0
+                or issue_code not in {issue.code for issue in pin_issues}
+                or PASS_MARKER in pin_output
+            ):
+                raise AssertionError(
+                    f"{prefix} expected-pin drift did not fail closed: {pin_issues}"
+                )
+            representation_scenario_names.append(f"{prefix}_expected_pin_drift")
+            scenario_count += 1
+
+        exercise_upstream_representations(
+            "lifecycle",
+            LIFECYCLE_CHECKER_PATH,
+            APPROVED_LIFECYCLE_CHECKER_SHA256,
+            "upstream_lifecycle_guard_drift",
+        )
+        exercise_upstream_representations(
+            "linking",
+            LINKING_CHECKER_PATH,
+            APPROVED_LINKING_CHECKER_SHA256,
+            "upstream_linking_guard_drift",
+        )
+
         read_error = temp_root / "negative-read-error"
         shutil.copytree(baseline, read_error)
         path = read_error / "services" / "unreadable.py"
@@ -2644,6 +2782,10 @@ def run_self_test() -> int:
             if PASS_MARKER in output:
                 raise AssertionError(f"special scenario {name} emitted normal PASS marker")
 
+    print(
+        "representation_self_test_scenarios: "
+        + ",".join(representation_scenario_names)
+    )
     print(f"self_test_scenarios: {scenario_count}")
     print("database_access: 0")
     print("app_imports: 0")

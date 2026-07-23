@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
+import gc
 import hashlib
 import io
+import json
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -23,6 +26,13 @@ _POLICY_PATH = Path(
     "docs/vendor_id_003_read_only_vendor_discovery_baseline.md"
 )
 _UPSTREAM_CHECKER_PATH = Path("tools/check_vendor_organization_schema.py")
+_DOWNSTREAM_CHECKER_PATH = Path("tools/check_vendor_identity_evidence.py")
+_DOWNSTREAM_IMPLEMENTATION_PATH = Path(
+    "tools/discover_vendor_identity_evidence.py"
+)
+_DOWNSTREAM_POLICY_PATH = Path(
+    "docs/vendor_id_004b_read_only_vendor_identity_discovery_contract.md"
+)
 _NON_VENDOR_OUTPUT_SOURCE_PATHS = frozenset(
     (
         Path("tools/check_identity_registry_reconciliation_readiness.py"),
@@ -30,7 +40,53 @@ _NON_VENDOR_OUTPUT_SOURCE_PATHS = frozenset(
     )
 )
 _APPROVED_POLICY_SHA256 = (
-    "DE97D2F4459E56FF9F7BE0C8411C2F8E1C897E1B0BD81EF9D8CD87A4475CBB20"
+    "17363C85B514FA0A66E4A22A8A870F5B92C7AF1248105EC4E8A9076792F6A5F0"
+)
+_APPROVED_DOWNSTREAM_POLICY_SHA256 = (
+    "226C4672F600028320F9395887D28BF9D7FDEF6A3C4BBC7B986C19368C95D414"
+)
+_APPROVED_DOWNSTREAM_CHECKER_SHA256 = (
+    "49EB8FBCCBBE5C9105503EC42BDDB9145715619E25E02A312FA838229CF47663"
+)
+_DOWNSTREAM_PROOF_KEYS = (
+    "canonical_path",
+    "covered_node_keys",
+    "implementation_stage",
+    "issue_codes",
+    "result",
+    "source_sha256",
+)
+_DOWNSTREAM_ROUTED_MARKERS = (
+    "VENDOR_DISCOVERY_EVIDENCE_NORMALIZATION_V1",
+    "HMAC_SHA256_SAFE_REFERENCE_V1",
+    "hmac-sha256-v1:",
+)
+_DOWNSTREAM_GUARD_NODE_NAMES = (
+    "_ROOT_DIR", "_CHECKER_PATH", "_IMPLEMENTATION_PATH",
+    "_V003_POLICY_PATH", "_V004B_POLICY_PATH", "_V003_POLICY_SHA256",
+    "_V004B_POLICY_SHA256", "_PASS_MARKER", "_SELF_TEST_MARKER",
+    "_NORMAL_SCOPE", "_ISSUE_CODES", "_ALLOWED_STAGES",
+    "_ROUTED_MARKERS", "_V003_OWNED_MARKERS", "_FORBIDDEN_WORDS",
+    "_FORBIDDEN_CALLS", "_FORBIDDEN_IMPORTS", "_SELF_AUDIT_NODE_NAMES",
+    "_SELF_AUDIT_AST_SHA256", "_Issue", "_top_level_name",
+    "_ast_sha256", "_ast_bundle_sha256", "_node_text", "_node_key",
+    "_add_issue", "_read_bytes", "_policy_issues", "_stage_nodes",
+    "_routed_nodes", "_inspect_source", "_self_audit",
+    "_repository_issues", "_proof_payload", "_canonical_json",
+    "_render_normal", "_parse_args", "_write_fixture", "_assert_fixture",
+    "_run_self_test", "_main",
+)
+_DOWNSTREAM_GUARD_AST_SHA256 = (
+    "8611D00A7F679FC59C21D03524A403AB9E9C9C6660BFCFA33F3F0BF6664874F9"
+)
+_DOWNSTREAM_GUARD_IMPORT_AST_SHA256 = (
+    "66E1F523A04A592880D19B4378DF53BBD9BCF0DBBFC062FE914EDF7761D11E24"
+)
+_DOWNSTREAM_GUARD_MODULE_AST_SHA256 = (
+    "2F40106DCD5D65CAAEF5ACBB5A0B225074EDE61594854F758C95C37E8B50FE78"
+)
+_DOWNSTREAM_COMPOSITION_AST_SHA256 = (
+    "532E7AD716B62756995FE262327032CAE521082ADDD2690E1ABEEACA3F4348CD"
 )
 _PASS_MARKER = "vendor organization discovery readiness PASS"
 _SELF_TEST_MARKER = (
@@ -68,6 +124,7 @@ _ISSUE_CODES = (
     "checker_exemption_broadening",
     "unresolved_vendor_discovery_capability",
     "upstream_vendor_schema_guard_drift",
+    "downstream_vendor_identity_evidence_guard_drift",
     "source_read_error",
     "source_parse_error",
 )
@@ -95,14 +152,18 @@ _POLICY_MARKERS = (
     "MAPPING / BACKFILL：NOT IMPLEMENTED OR AUTHORIZED",
     "RUNTIME CONSUMER / AUTHORITY SWITCH：NOT IMPLEMENTED OR AUTHORIZED",
     "DEV / PRODUCTION DATABASE ACCESS：NOT AUTHORIZED",
+    "## 20. VENDOR-ID-004B0D exact static-guard composition decision",
+    "VENDOR-ID-004B0D STATIC GUARD COMPOSITION: FROZEN",
+    "VENDOR-ID-004B0S: REQUIRED BEFORE IMPLEMENTATION",
 )
 _POLICY_MARKER_COUNTS = tuple(
     (
         marker,
-        2
+        3
+        if marker == "tools/discover_vendor_organization_readiness.py"
+        else 2
         if marker
         in {
-            "tools/discover_vendor_organization_readiness.py",
             "VendorOrganizationDiscoveryError",
             "DISCOVERY IMPLEMENTATION：NOT STARTED",
             "MAPPING / BACKFILL：NOT IMPLEMENTED OR AUTHORIZED",
@@ -385,6 +446,7 @@ _PROJECT_IMPORT_ROOTS = frozenset(
     }
 )
 _UPSTREAM_ALLOWED_NODE_NAMES = (
+        "StructuralAllowanceCandidate",
         "APP_IMPLEMENTATION_NODE_NAMES",
         "APP_IMPLEMENTATION_AST_SHA256",
         "MANIFEST_EXTENSION_NODE_NAMES",
@@ -401,11 +463,26 @@ _UPSTREAM_ALLOWED_NODE_NAMES = (
         "validate_exact_manifest_extension",
         "DISCOVERY_READINESS_CHECKER_PATH",
         "DISCOVERY_IMPLEMENTATION_PATH",
+        "IDENTITY_EVIDENCE_CHECKER_PATH",
+        "IDENTITY_EVIDENCE_IMPLEMENTATION_PATH",
+        "IDENTITY_EVIDENCE_POLICY_PATH",
+        "APPROVED_DISCOVERY_POLICY_SHA256",
+        "APPROVED_IDENTITY_EVIDENCE_POLICY_SHA256",
+        "APPROVED_IDENTITY_EVIDENCE_CHECKER_SHA256",
         "DISCOVERY_READINESS_KNOWN_ISSUE_CODES",
         "DISCOVERY_READINESS_ALLOWED_V002_ISSUE_CODES",
         "DISCOVERY_READINESS_NODE_NAMES",
         "DISCOVERY_READINESS_AST_SHA256",
+        "IDENTITY_EVIDENCE_KNOWN_ISSUE_CODES",
+        "IDENTITY_EVIDENCE_NODE_NAMES",
+        "IDENTITY_EVIDENCE_AST_SHA256",
+        "IDENTITY_EVIDENCE_IMPORT_AST_SHA256",
+        "IDENTITY_EVIDENCE_MODULE_AST_SHA256",
         "validate_exact_discovery_readiness_checker",
+        "validate_exact_identity_evidence_checker",
+        "analyze_repository",
+        "write_base_tree",
+        "run_self_test",
         "_exercise_discovery_readiness_checker_contract",
 )
 _EXPECTED_UPSTREAM_ALLOWED_V002_ISSUE_CODES = frozenset(
@@ -427,6 +504,9 @@ _EXPECTED_UPSTREAM_ALLOWED_V002_ISSUE_CODES = frozenset(
     }
 )
 _UPSTREAM_STATIC_NODE_HASHES = {
+    "StructuralAllowanceCandidate": (
+        "E49DA25ED40B459DCB0C0705ABE2787AC504A7F536DB25DA20F4E3BB58DDA526"
+    ),
     "APP_IMPLEMENTATION_NODE_NAMES": (
         "CF67080ED4ADE3763F30760C2070959D6311938969BD5DD0DC04F189C8AF5FD3"
     ),
@@ -455,7 +535,7 @@ _UPSTREAM_STATIC_NODE_HASHES = {
         "55A03B617CF9E1024517C25C1A947F11518B047C4625647874063AE1871AD5DF"
     ),
     "check_policy_document": (
-        "404C54DD5C37845AE8DCF3AD1D1DBE7A74BD625642311DD5C526807136F56D87"
+        "D496C7ECB589E3FCE95A5F82A73DE7434843B1EFA95E44AD6AD3F0DBF58FC79F"
     ),
     "_replace_exact_fragment": (
         "CDB4158781204EA126F05DAEC149D37F0697E55BB37E66199FBCFFB91C3F0F0F"
@@ -475,67 +555,79 @@ _UPSTREAM_STATIC_NODE_HASHES = {
     "DISCOVERY_IMPLEMENTATION_PATH": (
         "387FDAA868138DD238337BB3F7A0B6D32A53624E048C06AE14088C4DC67923DC"
     ),
+    "IDENTITY_EVIDENCE_CHECKER_PATH": (
+        "2150CB8BBBBFC5148ED6403A6E6436BBFD69A3CFCDFFE23D360F2F9DA9D2517E"
+    ),
+    "IDENTITY_EVIDENCE_IMPLEMENTATION_PATH": (
+        "74345DD38580A73319FBBEF68FE0473338CBDDDBCF4A1653ED83686CF31AB3A5"
+    ),
+    "IDENTITY_EVIDENCE_POLICY_PATH": (
+        "66095CB47E08F4A7295A5B2ED6DD092F33309B001A0AA569882D9122DFBDF6B7"
+    ),
+    "APPROVED_DISCOVERY_POLICY_SHA256": (
+        "55631FE1B1980F9CAD25BF77218F302582846FC8204691D4F944EE4702E0BD99"
+    ),
+    "APPROVED_IDENTITY_EVIDENCE_POLICY_SHA256": (
+        "3682EDF50D10092439348AB429554A12B9579208FDB637037EEA6BDEECBDFF0D"
+    ),
+    "APPROVED_IDENTITY_EVIDENCE_CHECKER_SHA256": (
+        "9DDC515450D06B7759CE392EF6928A6408CF778A23078CA278EF1AD6B6F54E42"
+    ),
+    "IDENTITY_EVIDENCE_KNOWN_ISSUE_CODES": (
+        "2D44AA334BF8582FEF45A882B86A123E04B2B05AD539E9A7D98740F437123163"
+    ),
+    "IDENTITY_EVIDENCE_NODE_NAMES": (
+        "E903E66AFF5CC715714E68BD62BBDF598DDBF12198D2EDC7DA1FFCCB91562900"
+    ),
+    "IDENTITY_EVIDENCE_AST_SHA256": (
+        "5943A5956E5C7A65EAAAE4CC2E1276E6E2DB5E2477814D81F52409D211597B6E"
+    ),
+    "IDENTITY_EVIDENCE_IMPORT_AST_SHA256": (
+        "D0CB852B396F6621984E1BA7950B7C9323D007F8353A43684657C28EC10F7368"
+    ),
+    "IDENTITY_EVIDENCE_MODULE_AST_SHA256": (
+        "FDFDEA7D1C9F99EDF9A8FE1EFF10C2342E3B5D857BF195B81DB96256161A8B41"
+    ),
     "DISCOVERY_READINESS_KNOWN_ISSUE_CODES": (
-        "3DA90B815A92F5FB4262D0CE06A6467B4D440F5A511A095F7F37096D04932828"
+        "28CC0D81D640B1D7F238BE84BF70C140138936CA84E0C916222B1134ABC78D5F"
     ),
     "DISCOVERY_READINESS_ALLOWED_V002_ISSUE_CODES": (
         "405320F6E86F34D3871CF2C515C8334946CC7BE38161E361DD781BBA9B84535D"
     ),
     "validate_exact_discovery_readiness_checker": (
-        "70D84F1649D70062B47E6836127E5171152421B47DA7F2425ADD0D1A5775D798"
+        "6C923F6D48FF2336CF46BB03E9873BFAA06D575B9BD03AFA889B3704CADE53F1"
     ),
-    "_exercise_discovery_readiness_checker_contract": (
-        "85986C074B417F6CD83CCBA49A03FA83E818076B2AB56423CB4960DFBE37356B"
+    "validate_exact_identity_evidence_checker": (
+        "E6AED95CDB605E6A8B98FAC895B1AC71874A77B66F7165CD69BC09EE9B5F6B35"
     ),
-}
-_UPSTREAM_INTEGRATION_NODE_SPECS = (
-    (
-        "analyze_repository",
-        (("body", 16),),
-        "79E5377B617F25B4454603F193897C00C94884B09F06890C9C631122D58D0791",
-    ),
-    (
-        "analyze_repository",
-        (("body", 17),),
-        "39CF24EB3B8DCD3937D6E5660F2CE498EA045AD519FA41D4DF58467E9A731CC9",
-    ),
-    (
-        "analyze_repository",
-        (("body", 18),),
-        "5AD8B3944FC3224BDF81D5F3871953760D051B692F2BFA46F78472CF754EA01D",
-    ),
-    (
-        "write_base_tree",
-        (("body", 5),),
-        "3699622D2E7D518F649FD380C8B590E636713DE0CC3DAA4230532B6E0D6D2A1F",
-    ),
-    (
-        "write_base_tree",
-        (("body", 6),),
-        "871D37D2D51328090DC00FA263205535C0B99A290C967051EBB6EA7EADAA9781",
-    ),
-    (
-        "write_base_tree",
-        (("body", 7),),
-        "1AD720F4845747500566754D49F2976DD46C3023BD3847C7570E767FE38F87D9",
-    ),
-    (
-        "run_self_test",
-        (("body", 1), ("body", 8)),
-        "ABDF5B6C884880E78783EF0A72B2B21BC90043F118BD86F4024E809021016E05",
-    ),
-)
-_UPSTREAM_INTEGRATION_OWNER_HASHES = {
     "analyze_repository": (
-        "078A15779DAC3E0C3DF645258DA7CB05FA363A9A2076E47C795E82E3DCCE2BA0"
+        "08DCAEEAAEF43247215AF7EE87B5161F4AB56F4B4CCCBBBCB68F984FCAD712E1"
     ),
     "write_base_tree": (
-        "AF58C54263B82B186D18E1B99372F282A6D61B52422404D007E40ED8616853A9"
+        "0EBCE652232A51C514FF40745FD98B66E2BE0EDC9BF5667F555FFBDC8923262B"
     ),
     "run_self_test": (
-        "70EA657D8489E8E7A6D4F643D5DFA1178D6DE63CE4C2396CE5731A550FF6E4E1"
+        "32BFE08A6D84817E912F5FF9F2928CF3437C25F5C9A96E26C460816A451FBB26"
+    ),
+    "_exercise_discovery_readiness_checker_contract": (
+        "1D97FCCC19A86E18C0369E277A6D66687DDB5F3900093D2ECCDCFD40658B009F"
     ),
 }
+_UPSTREAM_INTEGRATION_NODE_SPECS = ()
+_UPSTREAM_INTEGRATION_OWNER_HASHES = {
+    "analyze_repository": (
+        "08DCAEEAAEF43247215AF7EE87B5161F4AB56F4B4CCCBBBCB68F984FCAD712E1"
+    ),
+    "write_base_tree": (
+        "0EBCE652232A51C514FF40745FD98B66E2BE0EDC9BF5667F555FFBDC8923262B"
+    ),
+    "run_self_test": (
+        "32BFE08A6D84817E912F5FF9F2928CF3437C25F5C9A96E26C460816A451FBB26"
+    ),
+}
+_UPSTREAM_MODULE_GUARD_AST_SHA256 = (
+    "F0EA0BE627EBD2887D7F161DE9C610E749CBD38D176E8EFFFEFBC0424D175C46"
+)
 _EXACT_FIXTURE_NODE_HASHES = {
     (
         "tools/check_vendor_organization_schema.py",
@@ -556,8 +648,20 @@ _SELF_AUDIT_NODE_NAMES = (
     "_DISCOVERY_PATH",
     "_POLICY_PATH",
     "_UPSTREAM_CHECKER_PATH",
+    "_DOWNSTREAM_CHECKER_PATH",
+    "_DOWNSTREAM_IMPLEMENTATION_PATH",
+    "_DOWNSTREAM_POLICY_PATH",
     "_NON_VENDOR_OUTPUT_SOURCE_PATHS",
     "_APPROVED_POLICY_SHA256",
+    "_APPROVED_DOWNSTREAM_POLICY_SHA256",
+    "_APPROVED_DOWNSTREAM_CHECKER_SHA256",
+    "_DOWNSTREAM_PROOF_KEYS",
+    "_DOWNSTREAM_ROUTED_MARKERS",
+    "_DOWNSTREAM_GUARD_NODE_NAMES",
+    "_DOWNSTREAM_GUARD_AST_SHA256",
+    "_DOWNSTREAM_GUARD_IMPORT_AST_SHA256",
+    "_DOWNSTREAM_GUARD_MODULE_AST_SHA256",
+    "_DOWNSTREAM_COMPOSITION_AST_SHA256",
     "_PASS_MARKER",
     "_SELF_TEST_MARKER",
     "_NORMAL_SCOPE",
@@ -584,6 +688,7 @@ _SELF_AUDIT_NODE_NAMES = (
     "_UPSTREAM_STATIC_NODE_HASHES",
     "_UPSTREAM_INTEGRATION_NODE_SPECS",
     "_UPSTREAM_INTEGRATION_OWNER_HASHES",
+    "_UPSTREAM_MODULE_GUARD_AST_SHA256",
     "_EXACT_FIXTURE_NODE_HASHES",
     "_SELF_AUDIT_NODE_NAMES",
     "_SELF_AUDIT_AST_SHA256",
@@ -630,6 +735,9 @@ _SELF_AUDIT_NODE_NAMES = (
     "_upstream_integration_node_ids",
     "_v002_protected_node_ids",
     "_check_upstream_guard",
+    "_downstream_node_keys",
+    "_check_downstream_guard",
+    "_downstream_guard_node_ids",
     "_runtime_paths",
     "_collect_imports",
     "_imported_class_candidates",
@@ -651,10 +759,12 @@ _SELF_AUDIT_NODE_NAMES = (
     "_bind_match_pattern",
     "_direct_call_nodes",
     "_scan_nodes",
+    "_should_scan_source_node",
     "_self_audit",
     "_apply_source_boundary_fallback",
     "_scan_repository",
     "_dedupe_issues",
+    "_clear_analysis_caches",
     "_analyze_repository",
     "_render_normal",
     "_parse_args",
@@ -665,7 +775,7 @@ _SELF_AUDIT_NODE_NAMES = (
     "_main",
 )
 _SELF_AUDIT_AST_SHA256 = (
-    "131804DFD7B54E60F399B9F8E93B66C4BD89370B2E4D83F3F4882FE68F70E884"
+    "0B8670DCC6697E08521198B172A1CF5C81D4C173381E0C07B2B61B1A03F2766A"
 )
 
 
@@ -1263,6 +1373,17 @@ def _check_policy(root: Path) -> list[_Issue]:
     text = _read_text(path, _POLICY_PATH, issues)
     if text is None:
         return issues
+    text_without_crlf = text.replace("\r\n", "")
+    if "\r" in text_without_crlf or (
+        "\r\n" in text and "\n" in text_without_crlf
+    ):
+        _add_issue(
+            issues,
+            "vendor_discovery_policy_drift",
+            _POLICY_PATH,
+            symbol="line_endings",
+        )
+    text = text.replace("\r\n", "\n")
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest().upper()
     if digest != _APPROVED_POLICY_SHA256:
         _add_issue(
@@ -1284,7 +1405,7 @@ def _check_policy(root: Path) -> list[_Issue]:
         int(value)
         for value in re.findall(r"(?m)^## ([1-9][0-9]*)\.", text)
     )
-    if headings != tuple(range(1, 20)):
+    if headings != tuple(range(1, 21)):
         _add_issue(
             issues,
             "vendor_discovery_policy_drift",
@@ -1323,6 +1444,21 @@ def _check_policy(root: Path) -> list[_Issue]:
                     "section_19_"
                     + hashlib.sha256(marker.encode()).hexdigest()[:12]
                 ),
+            )
+    section_twenty = _section(text, 20)
+    for marker in (
+        "tools/discover_vendor_identity_evidence.py",
+        "tools/check_vendor_identity_evidence.py",
+        "downstream_vendor_identity_evidence_guard_drift",
+        "VENDOR-ID-004B0D STATIC GUARD COMPOSITION: FROZEN",
+        "VENDOR-ID-004B0S: REQUIRED BEFORE IMPLEMENTATION",
+    ):
+        if marker not in section_twenty:
+            _add_issue(
+                issues,
+                "vendor_discovery_policy_marker_missing",
+                _POLICY_PATH,
+                symbol="section_20_" + hashlib.sha256(marker.encode()).hexdigest()[:12],
             )
     section_five = _section(text, 5)
     policy_queries = tuple(
@@ -1836,6 +1972,244 @@ def _check_upstream_guard(root: Path) -> list[_Issue]:
                     f"runtime_sink={leaf}",
                 )
     return issues
+
+
+def _downstream_node_keys(tree: ast.Module) -> list[list[object]]:
+    keys: list[list[object]] = []
+    for node in tree.body:
+        text = _node_text(node)
+        families = tuple(
+            marker for marker in _DOWNSTREAM_ROUTED_MARKERS if marker in text
+        )
+        if len(families) != 1:
+            continue
+        payload = ast.dump(
+            node,
+            annotate_fields=True,
+            include_attributes=False,
+        ).encode("utf-8")
+        keys.append(
+            [
+                int(getattr(node, "lineno", 0)),
+                int(getattr(node, "col_offset", 0)),
+                int(getattr(node, "end_lineno", 0)),
+                int(getattr(node, "end_col_offset", 0)),
+                type(node).__name__,
+                families[0],
+                hashlib.sha256(payload).hexdigest().upper(),
+            ]
+        )
+    keys.sort(key=lambda key: tuple(key))
+    return keys
+
+
+def _check_downstream_guard(root: Path) -> tuple[list[_Issue], str]:
+    issues: list[_Issue] = []
+    issue_code = "downstream_vendor_identity_evidence_guard_drift"
+    checker = root / _DOWNSTREAM_CHECKER_PATH
+    checker_payload = _read_text(checker, _DOWNSTREAM_CHECKER_PATH, issues)
+    if checker_payload is None:
+        _add_issue(
+            issues,
+            issue_code,
+            _DOWNSTREAM_CHECKER_PATH,
+            symbol="missing_or_unreadable",
+        )
+        return issues, "invalid"
+    checker_digest = hashlib.sha256(checker_payload.encode("utf-8")).hexdigest().upper()
+    if checker_digest != _APPROVED_DOWNSTREAM_CHECKER_SHA256:
+        _add_issue(
+            issues,
+            issue_code,
+            _DOWNSTREAM_CHECKER_PATH,
+            symbol=f"sha256={checker_digest}",
+        )
+        return issues, "invalid"
+    checker_tree = _read_python(checker, _DOWNSTREAM_CHECKER_PATH, issues)
+    if checker_tree is None:
+        _add_issue(
+            issues,
+            issue_code,
+            _DOWNSTREAM_CHECKER_PATH,
+            symbol="unparsed",
+        )
+        return issues, "invalid"
+    policy_payload = _read_text(
+        root / _DOWNSTREAM_POLICY_PATH, _DOWNSTREAM_POLICY_PATH, issues
+    )
+    if (
+        policy_payload is None
+        or hashlib.sha256(
+            policy_payload.replace("\r\n", "\n").encode("utf-8")
+        ).hexdigest().upper()
+        != _APPROVED_DOWNSTREAM_POLICY_SHA256
+    ):
+        _add_issue(
+            issues,
+            issue_code,
+            _DOWNSTREAM_POLICY_PATH,
+            symbol="policy_sha256",
+        )
+        return issues, "invalid"
+    implementation = root / _DOWNSTREAM_IMPLEMENTATION_PATH
+    before_exists = implementation.is_file()
+    payload = b""
+    digest = "ABSENT"
+    tree: ast.Module | None = None
+    if before_exists:
+        try:
+            payload = implementation.read_bytes()
+            tree = ast.parse(payload, filename=_DOWNSTREAM_IMPLEMENTATION_PATH.as_posix())
+        except (OSError, SyntaxError, UnicodeError):
+            _add_issue(
+                issues,
+                issue_code,
+                _DOWNSTREAM_IMPLEMENTATION_PATH,
+                symbol="source_read_or_parse",
+            )
+            return issues, "invalid"
+        digest = hashlib.sha256(payload).hexdigest().upper()
+    before_artifacts = tuple(
+        sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+            and (path.suffix == ".pyc" or "__pycache__" in path.parts)
+        )
+    )
+    command = [
+        sys.executable,
+        "-I",
+        "-B",
+        str(checker.resolve()),
+        "--composition-proof",
+        _DOWNSTREAM_IMPLEMENTATION_PATH.as_posix(),
+        digest,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=root,
+            timeout=30,
+            check=False,
+            shell=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        _add_issue(
+            issues,
+            issue_code,
+            _DOWNSTREAM_CHECKER_PATH,
+            symbol="invocation",
+        )
+        return issues, "invalid"
+    after_exists = implementation.is_file()
+    after_payload = implementation.read_bytes() if after_exists else b""
+    after_checker = checker.read_bytes() if checker.is_file() else b""
+    after_artifacts = tuple(
+        sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+            and (path.suffix == ".pyc" or "__pycache__" in path.parts)
+        )
+    )
+    if (
+        completed.returncode != 0
+        or completed.stderr != b""
+        or before_exists != after_exists
+        or payload != after_payload
+        or hashlib.sha256(after_checker).hexdigest().upper()
+        != _APPROVED_DOWNSTREAM_CHECKER_SHA256
+        or before_artifacts != after_artifacts
+    ):
+        _add_issue(
+            issues,
+            issue_code,
+            _DOWNSTREAM_CHECKER_PATH,
+            symbol="execution_boundary",
+        )
+        return issues, "invalid"
+    try:
+        output_text = completed.stdout.decode("utf-8", errors="strict")
+        proof = json.loads(output_text)
+    except (UnicodeError, json.JSONDecodeError):
+        _add_issue(
+            issues,
+            issue_code,
+            _DOWNSTREAM_CHECKER_PATH,
+            symbol="proof_json",
+        )
+        return issues, "invalid"
+    canonical_output = (
+        json.dumps(
+            proof,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    expected_keys = list(_DOWNSTREAM_PROOF_KEYS)
+    expected_coverage = _downstream_node_keys(tree) if tree is not None else []
+    if (
+        completed.stdout != canonical_output
+        or sorted(proof) != expected_keys
+        or proof.get("canonical_path") != _DOWNSTREAM_IMPLEMENTATION_PATH.as_posix()
+        or proof.get("source_sha256") != (None if digest == "ABSENT" else digest)
+        or proof.get("covered_node_keys") != expected_coverage
+        or proof.get("issue_codes") != []
+        or proof.get("result") != "PASS"
+        or proof.get("implementation_stage")
+        != ("not_started" if digest == "ABSENT" else proof.get("implementation_stage"))
+    ):
+        _add_issue(
+            issues,
+            issue_code,
+            _DOWNSTREAM_CHECKER_PATH,
+            symbol="proof_contract",
+        )
+        return issues, "invalid"
+    return issues, str(proof["implementation_stage"])
+
+
+def _downstream_guard_node_ids(source: _Source) -> set[int]:
+    if source.path != _DOWNSTREAM_CHECKER_PATH:
+        return set()
+    selected, valid = _selected_named_nodes(
+        source.tree, _DOWNSTREAM_GUARD_NODE_NAMES
+    )
+    imports = tuple(
+        node
+        for node in source.tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+    )
+    residual = tuple(
+        node
+        for node in source.tree.body
+        if not _top_level_name(node)
+        and not isinstance(node, (ast.Import, ast.ImportFrom))
+    )
+    observed_names = tuple(
+        _top_level_name(node)
+        for node in source.tree.body
+        if _top_level_name(node)
+    )
+    if (
+        not valid
+        or observed_names != _DOWNSTREAM_GUARD_NODE_NAMES
+        or _compact_ast_bundle_sha256(selected)
+        != _DOWNSTREAM_GUARD_AST_SHA256
+        or _compact_ast_bundle_sha256(imports)
+        != _DOWNSTREAM_GUARD_IMPORT_AST_SHA256
+        or _compact_ast_bundle_sha256(residual)
+        != _DOWNSTREAM_GUARD_MODULE_AST_SHA256
+    ):
+        return set()
+    return {id(node) for node in (*selected, *imports, *residual)}
 
 
 def _runtime_paths(root: Path) -> tuple[Path, ...]:
@@ -2604,11 +2978,18 @@ def _resolve_value(
 def _prepare_repository(
     root: Path,
     issues: list[_Issue],
+    fixture_mode: bool = False,
 ) -> _Repository:
     sources: dict[str, _Source] = {}
     callables: dict[str, _Callable] = {}
     class_nodes: list[tuple[_Source, ast.ClassDef, str]] = []
     for relative in _runtime_paths(root):
+        if fixture_mode and relative in {
+            _CHECKER_PATH,
+            _UPSTREAM_CHECKER_PATH,
+            _DOWNSTREAM_CHECKER_PATH,
+        }:
+            continue
         tree = _read_python(root / relative, relative, issues)
         if tree is None:
             continue
@@ -4687,6 +5068,18 @@ def _scan_nodes(
             _merge_binding_maps(bindings, *branch_bindings)
 
 
+def _should_scan_source_node(node: ast.AST) -> bool:
+    evidence = _node_text(node)
+    return (
+        _has_discovery_target(evidence)
+        or _has_canonical_query(evidence)
+        or _has_canonical_query_shape(evidence)
+        or _has_static_boundary_text(evidence)
+        or _has_source_reference(evidence)
+        or _has_new_table_reference(evidence)
+    )
+
+
 def _self_audit(root: Path, repository: _Repository) -> set[int]:
     source = repository.sources.get(_module_name(_CHECKER_PATH))
     if source is None:
@@ -4704,12 +5097,12 @@ def _self_audit(root: Path, repository: _Repository) -> set[int]:
                 alias.name.split(".", 1)[0]
                 for alias in node.names
                 if alias.name.split(".", 1)[0]
-                in _BACKEND_ROOTS | _PROJECT_IMPORT_ROOTS | {"subprocess"}
+                in _BACKEND_ROOTS | _PROJECT_IMPORT_ROOTS
             )
         elif isinstance(node, ast.ImportFrom) and node.module:
             root_name = node.module.split(".", 1)[0]
             if root_name in (
-                _BACKEND_ROOTS | _PROJECT_IMPORT_ROOTS | {"subprocess"}
+                _BACKEND_ROOTS | _PROJECT_IMPORT_ROOTS
             ):
                 forbidden_imports.add(root_name)
     if forbidden_imports:
@@ -4757,6 +5150,22 @@ def _self_audit(root: Path, repository: _Repository) -> set[int]:
         for node in source.tree.body
         if _top_level_name(node) != "_SELF_AUDIT_AST_SHA256"
     )
+    composition_nodes = tuple(
+        node
+        for node in source.tree.body
+        if _top_level_name(node) == "_check_downstream_guard"
+    )
+    if (
+        len(composition_nodes) != 1
+        or _ast_sha256(composition_nodes[0])
+        != _DOWNSTREAM_COMPOSITION_AST_SHA256
+    ):
+        _add_issue(
+            repository.issues,
+            "downstream_vendor_identity_evidence_guard_drift",
+            _CHECKER_PATH,
+            symbol="composition_ast",
+        )
     if _ast_bundle_sha256(hash_nodes) != _SELF_AUDIT_AST_SHA256:
         _add_issue(
             repository.issues,
@@ -4812,8 +5221,9 @@ def _scan_repository(
     repository: _Repository,
     root: Path,
     upstream_valid: bool,
+    fixture_mode: bool = False,
 ) -> None:
-    self_allowed = _self_audit(root, repository)
+    self_allowed = set() if fixture_mode else _self_audit(root, repository)
     source_allowances: dict[str, set[int]] = {}
     for source in repository.sources.values():
         allowed_nodes: set[int] = set()
@@ -4830,6 +5240,17 @@ def _scan_repository(
                 )
                 if integration_valid:
                     allowed_nodes.update(integration_ids)
+            residual = tuple(
+                node
+                for node in source.tree.body
+                if not _top_level_name(node)
+                and not isinstance(node, (ast.Import, ast.ImportFrom))
+            )
+            if (
+                _compact_ast_bundle_sha256(residual)
+                == _UPSTREAM_MODULE_GUARD_AST_SHA256
+            ):
+                allowed_nodes.update(id(node) for node in residual)
         elif source.path == _UPSTREAM_CHECKER_PATH:
             selected, valid = _selected_named_nodes(
                 source.tree, _UPSTREAM_ALLOWED_NODE_NAMES
@@ -4849,6 +5270,7 @@ def _scan_repository(
             )
             if expected_hash and _ast_sha256(node) == expected_hash:
                 allowed_nodes.add(id(node))
+        allowed_nodes.update(_downstream_guard_node_ids(source))
         allowed_nodes.update(_v002_protected_node_ids(repository, source))
         source_allowances[source.module_name] = allowed_nodes
         repository.allowed_node_ids.update(allowed_nodes)
@@ -4856,6 +5278,13 @@ def _scan_repository(
         allowed_nodes = source_allowances[source.module_name]
         module_context = source.path.as_posix()
         module_bindings: dict[str, _Value] = {}
+        scan_module = fixture_mode or any(
+            _should_scan_source_node(node)
+            for node in source.tree.body
+            if id(node) not in allowed_nodes
+        ) or _has_discovery_target(module_context)
+        if not scan_module:
+            continue
         for node in source.tree.body:
             if id(node) in allowed_nodes:
                 continue
@@ -4920,11 +5349,34 @@ def _dedupe_issues(issues: Iterable[_Issue]) -> tuple[_Issue, ...]:
     return tuple(sorted(set(issues)))
 
 
-def _analyze_repository(root: Path, /) -> tuple[_Issue, ...]:
-    issues = _check_policy(root)
-    upstream_issues = _check_upstream_guard(root)
+def _clear_analysis_caches() -> None:
+    for function in (
+        _read_python,
+        _ast_sha256,
+        _ast_bundle_sha256,
+        _compact_ast_bundle_sha256,
+    ):
+        setattr(function, "_cache", {})
+    gc.collect()
+
+
+def _analyze_repository(
+    root: Path,
+    /,
+    downstream_state: list[str] | None = None,
+    check_downstream: bool = True,
+    fixture_mode: bool = False,
+) -> tuple[_Issue, ...]:
+    _clear_analysis_caches()
+    issues = [] if fixture_mode else _check_policy(root)
+    upstream_issues = [] if fixture_mode else _check_upstream_guard(root)
     issues.extend(upstream_issues)
-    repository = _prepare_repository(root, issues)
+    if check_downstream and not fixture_mode:
+        downstream_issues, observed_state = _check_downstream_guard(root)
+        issues.extend(downstream_issues)
+        if downstream_state is not None:
+            downstream_state.append(observed_state)
+    repository = _prepare_repository(root, issues, fixture_mode=fixture_mode)
     for source in repository.sources.values():
         if (
             (
@@ -4939,7 +5391,12 @@ def _analyze_repository(root: Path, /) -> tuple[_Issue, ...]:
                 source.path,
                 symbol="wrong_path",
             )
-    _scan_repository(repository, root, not upstream_issues)
+    _scan_repository(
+        repository,
+        root,
+        not upstream_issues,
+        fixture_mode=fixture_mode,
+    )
     if (root / _DISCOVERY_PATH).exists():
         _add_issue(
             repository.issues,
@@ -4950,9 +5407,14 @@ def _analyze_repository(root: Path, /) -> tuple[_Issue, ...]:
     return _dedupe_issues(repository.issues)
 
 
-def _render_normal(issues: Sequence[_Issue]) -> tuple[int, str]:
+def _render_normal(
+    issues: Sequence[_Issue],
+    implementation_state: str | None = None,
+) -> tuple[int, str]:
+    state = implementation_state or ("invalid" if issues else "not_started")
     lines = (
         _NORMAL_SCOPE,
+        f"implementation_state: {state}",
         f"issues_count: {len(issues)}",
         (
             "upstream_vendor_schema_guard_boundary: "
@@ -5011,7 +5473,9 @@ def _write_text(root: Path, relative: str, text: str) -> None:
 def _copy_baseline(root: Path) -> None:
     for relative in (
         _POLICY_PATH,
+        _DOWNSTREAM_POLICY_PATH,
         _UPSTREAM_CHECKER_PATH,
+        _DOWNSTREAM_CHECKER_PATH,
         _CHECKER_PATH,
     ):
         target = root / relative
@@ -5024,7 +5488,42 @@ def _assert_negative(
     expected_code: str,
     name: str,
 ) -> None:
-    issues = _analyze_repository(root)
+    if expected_code.startswith("vendor_discovery_policy_"):
+        issues = tuple(_check_policy(root))
+    elif expected_code == "upstream_vendor_schema_guard_drift":
+        issues = tuple(_check_upstream_guard(root))
+    elif (
+        expected_code == "downstream_vendor_identity_evidence_guard_drift"
+        and name.startswith("composition_")
+    ):
+        checker_issues: list[_Issue] = []
+        tree = _read_python(
+            root / _CHECKER_PATH,
+            _CHECKER_PATH,
+            checker_issues,
+        )
+        if tree is not None:
+            module = _module_name(_CHECKER_PATH)
+            source = _Source(_CHECKER_PATH, module, tree)
+            repository = _Repository(
+                {module: source},
+                {},
+                checker_issues,
+            )
+            _self_audit(root, repository)
+        issues = tuple(checker_issues)
+    elif expected_code == "downstream_vendor_identity_evidence_guard_drift":
+        issues = tuple(_check_downstream_guard(root)[0])
+    elif expected_code == "checker_exemption_broadening" and name.startswith(
+        "checker_"
+    ):
+        issues = _analyze_repository(root, check_downstream=False)
+    else:
+        issues = _analyze_repository(
+            root,
+            check_downstream=False,
+            fixture_mode=True,
+        )
     if expected_code not in {issue.code for issue in issues}:
         rendered = _render_normal(issues)[1]
         raise AssertionError(
@@ -5057,6 +5556,207 @@ def _run_self_test() -> int:
                 + _render_normal(baseline_issues)[1]
             )
         scenario_count += 1
+
+        baseline_policy_path = baseline / _POLICY_PATH
+        canonical_policy = baseline_policy_path.read_bytes().replace(
+            b"\r\n", b"\n"
+        )
+        if b"\r" in canonical_policy:
+            raise AssertionError(
+                "canonical policy fixture contains standalone CR"
+            )
+        for name, payload in (
+            ("policy_lf", canonical_policy),
+            ("policy_crlf", canonical_policy.replace(b"\n", b"\r\n")),
+        ):
+            root = temp_root / f"positive-{name}"
+            shutil.copytree(baseline, root)
+            (root / _POLICY_PATH).write_bytes(payload)
+            policy_issues = tuple(_check_policy(root))
+            if policy_issues:
+                raise AssertionError(
+                    f"positive scenario {name} failed:\n"
+                    + _render_normal(policy_issues)[1]
+                )
+            scenario_count += 1
+
+        canonical_policy_text = canonical_policy.decode(
+            "utf-8", errors="strict"
+        )
+        policy_semantic_mutations = (
+            (
+                "section_19_title",
+                "## 19. Production baseline freeze evidence",
+                "## 19. Production baseline freeze record",
+            ),
+            (
+                "fixed_select_contract",
+                "SELECT seq, name, file\nFROM pragma_database_list",
+                "SELECT name, seq, file\nFROM pragma_database_list",
+            ),
+            (
+                "anomaly_order",
+                (
+                    "1. `legacy_vendor_label_blank_or_invalid`\n"
+                    "2. `legacy_label_cross_scope_reuse`"
+                ),
+                (
+                    "1. `legacy_label_cross_scope_reuse`\n"
+                    "2. `legacy_vendor_label_blank_or_invalid`"
+                ),
+            ),
+        )
+        for expected_symbol, old, new in policy_semantic_mutations:
+            mutated = canonical_policy_text.replace(old, new, 1)
+            if mutated == canonical_policy_text:
+                raise AssertionError(
+                    f"policy mutation fragment drift: {expected_symbol}"
+                )
+            for line_ending, payload in (
+                ("lf", mutated.encode("utf-8")),
+                (
+                    "crlf",
+                    mutated.replace("\n", "\r\n").encode("utf-8"),
+                ),
+            ):
+                name = f"policy_{expected_symbol}_{line_ending}"
+                root = temp_root / f"negative-{name}"
+                shutil.copytree(baseline, root)
+                (root / _POLICY_PATH).write_bytes(payload)
+                policy_issues = tuple(_check_policy(root))
+                if not any(
+                    issue.code == "vendor_discovery_policy_drift"
+                    and issue.symbol == expected_symbol
+                    for issue in policy_issues
+                ):
+                    raise AssertionError(
+                        f"negative scenario {name} missing exact drift"
+                    )
+                status, rendered = _render_normal(policy_issues)
+                if status == 0 or _PASS_MARKER in rendered:
+                    raise AssertionError(
+                        f"negative scenario {name} emitted normal PASS"
+                    )
+                scenario_count += 1
+
+        crlf_policy = canonical_policy.replace(b"\n", b"\r\n")
+        malformed_line_endings = (
+            (
+                "policy_standalone_cr",
+                canonical_policy.replace(b"\n", b"\r", 1),
+            ),
+            (
+                "policy_mixed_lf_crlf",
+                crlf_policy.replace(b"\r\n", b"\n", 1),
+            ),
+        )
+        for name, payload in malformed_line_endings:
+            root = temp_root / f"negative-{name}"
+            shutil.copytree(baseline, root)
+            (root / _POLICY_PATH).write_bytes(payload)
+            policy_issues = tuple(_check_policy(root))
+            if not any(
+                issue.code == "vendor_discovery_policy_drift"
+                and issue.symbol == "line_endings"
+                for issue in policy_issues
+            ):
+                raise AssertionError(
+                    f"negative scenario {name} missing line-ending drift"
+                )
+            status, rendered = _render_normal(policy_issues)
+            if status == 0 or _PASS_MARKER in rendered:
+                raise AssertionError(
+                    f"negative scenario {name} emitted normal PASS"
+                )
+            scenario_count += 1
+
+        downstream_missing = temp_root / "negative-downstream-missing"
+        shutil.copytree(baseline, downstream_missing)
+        (downstream_missing / _DOWNSTREAM_CHECKER_PATH).unlink()
+        _assert_negative(
+            downstream_missing,
+            "downstream_vendor_identity_evidence_guard_drift",
+            "downstream_missing",
+        )
+        scenario_count += 1
+
+        downstream_renamed = temp_root / "negative-downstream-renamed"
+        shutil.copytree(baseline, downstream_renamed)
+        checker_path = downstream_renamed / _DOWNSTREAM_CHECKER_PATH
+        checker_path.rename(checker_path.with_name("identity_evidence_guard.py"))
+        _assert_negative(
+            downstream_renamed,
+            "downstream_vendor_identity_evidence_guard_drift",
+            "downstream_renamed",
+        )
+        scenario_count += 1
+
+        downstream_mutations = (
+            ("failing", "\nraise SystemExit(1)\n"),
+            ("silent", "\ndef _main(argv=None):\n    return 0\n"),
+            ("forged", "\nprint('vendor identity evidence readiness PASS')\n"),
+            ("multi_pass", "\nprint('vendor identity evidence readiness PASS')\nprint('vendor identity evidence readiness PASS')\n"),
+            ("unexpected_stderr", "\nprint('unexpected', file=sys.stderr)\n"),
+            ("upstream_cycle", "\nimport tools.check_vendor_organization_discovery_readiness\n"),
+        )
+        for name, suffix in downstream_mutations:
+            root = temp_root / f"negative-downstream-{name}"
+            shutil.copytree(baseline, root)
+            path = root / _DOWNSTREAM_CHECKER_PATH
+            path.write_text(
+                path.read_text(encoding="utf-8") + suffix,
+                encoding="utf-8",
+                newline="\n",
+            )
+            _assert_negative(
+                root,
+                "downstream_vendor_identity_evidence_guard_drift",
+                f"downstream_{name}",
+            )
+            scenario_count += 1
+
+        downstream_malformed = temp_root / "negative-downstream-malformed"
+        shutil.copytree(baseline, downstream_malformed)
+        (downstream_malformed / _DOWNSTREAM_CHECKER_PATH).write_text(
+            "def broken(:\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        _assert_negative(
+            downstream_malformed,
+            "downstream_vendor_identity_evidence_guard_drift",
+            "downstream_malformed",
+        )
+        scenario_count += 1
+
+        protocol_mutations = (
+            ("timeout", "timeout=30", "timeout=31"),
+            ("shell", "shell=False", "shell=True"),
+            ("check", "check=False", "check=True"),
+            ("cwd", "cwd=root", "cwd=checker.parent"),
+            ("input", "input=payload", "input=b''"),
+            ("isolated", '"-I",\n        "-B",', '"-B",\n        "-I",'),
+        )
+        for name, old, new in protocol_mutations:
+            root = temp_root / f"negative-composition-{name}"
+            shutil.copytree(baseline, root)
+            path = root / _CHECKER_PATH
+            source = path.read_text(encoding="utf-8")
+            if old not in source:
+                raise AssertionError(
+                    f"composition mutation fragment drift: {name}"
+                )
+            path.write_text(
+                source.replace(old, new, 1),
+                encoding="utf-8",
+                newline="\n",
+            )
+            _assert_negative(
+                root,
+                "downstream_vendor_identity_evidence_guard_drift",
+                f"composition_{name}",
+            )
+            scenario_count += 1
 
         positive_sources = (
             (
@@ -5125,7 +5825,7 @@ def _run_self_test() -> int:
             root = temp_root / f"positive-{name}"
             shutil.copytree(baseline, root)
             _write_text(root, relative, source)
-            issues = _analyze_repository(root)
+            issues = _analyze_repository(root, fixture_mode=True)
             if issues:
                 raise AssertionError(
                     f"positive scenario {name} failed:\n"
@@ -5148,7 +5848,7 @@ def _run_self_test() -> int:
             "tests/vendor_discovery_fixture.py",
             "SQL = 'SELECT * FROM vendor_organizations'\n",
         )
-        if _analyze_repository(docs_control):
+        if _analyze_repository(docs_control, fixture_mode=True):
             raise AssertionError("docs/tests positive control failed")
         scenario_count += 1
 
@@ -6856,8 +7556,12 @@ def _main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     if args.self_test:
         return _run_self_test()
-    issues = _analyze_repository(_ROOT_DIR)
-    status, output = _render_normal(issues)
+    downstream_state: list[str] = []
+    issues = _analyze_repository(_ROOT_DIR, downstream_state=downstream_state)
+    status, output = _render_normal(
+        issues,
+        downstream_state[0] if downstream_state else "invalid",
+    )
     print(output, end="")
     return status
 

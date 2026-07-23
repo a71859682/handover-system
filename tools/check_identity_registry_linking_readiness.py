@@ -975,6 +975,23 @@ def check_owner_boundaries(root: Path) -> list[Issue]:
     return issues
 
 
+def canonical_fingerprint_bytes(payload: bytes) -> bytes | None:
+    if b"\r" not in payload:
+        return payload
+    index = 0
+    while index < len(payload):
+        value = payload[index]
+        if value == 13:
+            if index + 1 >= len(payload) or payload[index + 1] != 10:
+                return None
+            index += 2
+            continue
+        if value == 10:
+            return None
+        index += 1
+    return payload.replace(b"\r\n", b"\n")
+
+
 def check_lifecycle_guard(root: Path) -> list[Issue]:
     path = root / LIFECYCLE_CHECKER_PATH
     if not path.is_file():
@@ -988,7 +1005,12 @@ def check_lifecycle_guard(root: Path) -> list[Issue]:
             )
         ]
     try:
-        digest = hashlib.sha256(path.read_bytes()).hexdigest().upper()
+        canonical = canonical_fingerprint_bytes(path.read_bytes())
+        digest = (
+            hashlib.sha256(canonical).hexdigest().upper()
+            if canonical is not None
+            else "<invalid-line-endings>"
+        )
     except OSError:
         digest = "<unreadable>"
     if digest != APPROVED_LIFECYCLE_CHECKER_SHA256:
@@ -1909,6 +1931,99 @@ def run_self_test() -> int:
             )
         )
 
+        lifecycle_payload = canonical_fingerprint_bytes(
+            (base / LIFECYCLE_CHECKER_PATH).read_bytes()
+        )
+        if lifecycle_payload is None:
+            raise AssertionError("baseline lifecycle source is not canonicalizable")
+        if (
+            hashlib.sha256(lifecycle_payload).hexdigest().upper()
+            != APPROVED_LIFECYCLE_CHECKER_SHA256
+        ):
+            raise AssertionError("baseline lifecycle canonical fingerprint drifted")
+        representation_scenarios = (
+            ("lifecycle_canonical_lf", lifecycle_payload, False),
+            (
+                "lifecycle_mechanical_crlf",
+                lifecycle_payload.replace(b"\n", b"\r\n"),
+                False,
+            ),
+            ("lifecycle_standalone_cr", lifecycle_payload + b"\r", True),
+            (
+                "lifecycle_mixed_lf_crlf",
+                lifecycle_payload.replace(b"\n", b"\r\n", 1),
+                True,
+            ),
+            (
+                "lifecycle_malformed_cr_sequence",
+                lifecycle_payload + b"\rX",
+                True,
+            ),
+            ("lifecycle_crcrlf", lifecycle_payload + b"\r\r\n", True),
+            (
+                "lifecycle_semantic_byte_drift",
+                lifecycle_payload + b"# semantic drift\n",
+                True,
+            ),
+        )
+        representation_scenario_names: list[str] = []
+        for name, payload, must_fail in representation_scenarios:
+            case_root = Path(temp) / f"representation-{name}"
+            shutil.copytree(base, case_root)
+            (case_root / LIFECYCLE_CHECKER_PATH).write_bytes(payload)
+            issues = check_lifecycle_guard(case_root)
+            status, output = render_normal(issues)
+            if must_fail:
+                if (
+                    status == 0
+                    or "upstream_lifecycle_guard_drift"
+                    not in {issue.code for issue in issues}
+                    or PASS_MARKER in output
+                ):
+                    raise AssertionError(
+                        f"representation scenario {name} did not fail closed: {issues}"
+                    )
+            elif issues or status != 0:
+                raise AssertionError(
+                    f"representation scenario {name} did not pass: {issues}"
+                )
+            representation_scenario_names.append(name)
+            scenario_count += 1
+
+        canonical_digest = hashlib.sha256(lifecycle_payload).hexdigest().upper()
+        mechanical_digest = hashlib.sha256(
+            canonical_fingerprint_bytes(
+                lifecycle_payload.replace(b"\n", b"\r\n")
+            )
+        ).hexdigest().upper()
+        if canonical_digest != mechanical_digest:
+            raise AssertionError("lifecycle LF/CRLF fingerprint parity failed")
+        representation_scenario_names.append("lifecycle_lf_crlf_parity")
+        scenario_count += 1
+
+        pin_drift_root = Path(temp) / "representation-lifecycle-expected-pin-drift"
+        shutil.copytree(base, pin_drift_root)
+        (pin_drift_root / LIFECYCLE_CHECKER_PATH).write_bytes(lifecycle_payload)
+        original_pin = globals()["APPROVED_LIFECYCLE_CHECKER_SHA256"]
+        try:
+            globals()["APPROVED_LIFECYCLE_CHECKER_SHA256"] = "0" * 64
+            pin_drift_issues = check_lifecycle_guard(pin_drift_root)
+        finally:
+            globals()["APPROVED_LIFECYCLE_CHECKER_SHA256"] = original_pin
+        pin_drift_status, pin_drift_output = render_normal(pin_drift_issues)
+        if (
+            pin_drift_status == 0
+            or "upstream_lifecycle_guard_drift"
+            not in {issue.code for issue in pin_drift_issues}
+            or PASS_MARKER in pin_drift_output
+        ):
+            raise AssertionError(
+                "lifecycle expected-pin drift did not fail closed: "
+                f"{pin_drift_issues}"
+            )
+        representation_scenario_names.append("lifecycle_expected_pin_drift")
+        scenario_count += 1
+
         for name, case_root, expected_code in special_cases:
             issues = analyze_repository(case_root)
             codes = {issue.code for issue in issues}
@@ -1919,6 +2034,10 @@ def run_self_test() -> int:
                 )
             scenario_count += 1
 
+    print(
+        "representation_self_test_scenarios: "
+        + ",".join(representation_scenario_names)
+    )
     print(f"self_test_scenarios: {scenario_count}")
     print("database_access: 0")
     print("app_imports: 0")

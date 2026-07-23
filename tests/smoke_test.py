@@ -24568,7 +24568,7 @@ def run_identity_registry_linking_readiness_smoke(temp_root: Path | None = None)
                 [sys.executable, "-B", str(checker_path), "--self-test"],
                 "identity registry linking readiness self-test PASS",
                 (
-                    "self_test_scenarios: 98",
+                    "self_test_scenarios: 107",
                     "database_access: 0",
                     "app_imports: 0",
                 ),
@@ -24723,7 +24723,7 @@ def run_identity_registry_reconciliation_readiness_smoke(
                 [sys.executable, "-B", str(checker_path), "--self-test"],
                 "identity registry reconciliation readiness self-test PASS",
                 (
-                    "self_test_scenarios: 130",
+                    "self_test_scenarios: 148",
                     "database_access: 0",
                     "app_imports: 0",
                 ),
@@ -24964,6 +24964,10 @@ def run_vendor_organization_discovery_readiness_smoke(
         ROOT_DIR / "docs/vendor_id_003_read_only_vendor_discovery_baseline.md"
     )
     discovery_path = TOOLS_DIR / "discover_vendor_organization_readiness.py"
+    identity_guard_path = TOOLS_DIR / "check_vendor_identity_evidence.py"
+    identity_implementation_path = (
+        TOOLS_DIR / "discover_vendor_identity_evidence.py"
+    )
     if not checker_path.is_file():
         raise AssertionError(
             "vendor organization discovery readiness checker is missing"
@@ -24974,12 +24978,23 @@ def run_vendor_organization_discovery_readiness_smoke(
         )
     if not schema_checker_path.is_file():
         raise AssertionError("vendor organization schema checker is missing")
+    if not identity_guard_path.is_file():
+        raise AssertionError("vendor identity evidence guard is missing")
+    if identity_implementation_path.exists():
+        raise AssertionError(
+            "vendor identity evidence implementation must remain absent"
+        )
 
     current_policy_sha256 = (
-        "DE97D2F4459E56FF9F7BE0C8411C2F8E1C897E1B0BD81EF9D8CD87A4475CBB20"
+        "17363C85B514FA0A66E4A22A8A870F5B92C7AF1248105EC4E8A9076792F6A5F0"
     )
     policy_payload = policy_path.read_bytes()
-    if hashlib.sha256(policy_payload).hexdigest().upper() != current_policy_sha256:
+    if (
+        hashlib.sha256(policy_payload.replace(b"\r\n", b"\n"))
+        .hexdigest()
+        .upper()
+        != current_policy_sha256
+    ):
         raise AssertionError("vendor discovery current policy SHA-256 drifted")
     policy_text = policy_payload.decode("utf-8", errors="strict")
     current_status = (
@@ -24991,14 +25006,17 @@ def run_vendor_organization_discovery_readiness_smoke(
         int(value)
         for value in re.findall(r"(?m)^## ([1-9][0-9]*)\.", policy_text)
     )
-    if headings != tuple(range(1, 20)):
-        raise AssertionError("vendor discovery policy sections are not exact 1-19")
+    if headings != tuple(range(1, 21)):
+        raise AssertionError("vendor discovery policy sections are not exact 1-20")
     section_nineteen = policy_text.split(
         "## 19. Production baseline freeze evidence", 1
     )
     if len(section_nineteen) != 2:
         raise AssertionError("vendor discovery policy Section 19 title drifted")
-    section_nineteen_text = section_nineteen[1]
+    section_nineteen_text = section_nineteen[1].split(
+        "## 20. VENDOR-ID-004B0D exact static-guard composition decision",
+        1,
+    )[0]
     for marker in (
         "DISCOVERY IMPLEMENTATION：NOT STARTED",
         "WINDOWS-ONLY DISCOVERY TOOL：NOT EXECUTED",
@@ -25081,6 +25099,12 @@ def run_vendor_organization_discovery_readiness_smoke(
     )
     if expected_literals != {
         "_APPROVED_POLICY_SHA256": current_policy_sha256,
+        "_APPROVED_DOWNSTREAM_POLICY_SHA256": (
+            "226C4672F600028320F9395887D28BF9D7FDEF6A3C4BBC7B986C19368C95D414"
+        ),
+        "_APPROVED_DOWNSTREAM_CHECKER_SHA256": (
+            "49EB8FBCCBBE5C9105503EC42BDDB9145715619E25E02A312FA838229CF47663"
+        ),
     }:
         raise AssertionError(
             "vendor schema checker approved-policy literal is not synchronized"
@@ -25137,13 +25161,25 @@ def run_vendor_organization_discovery_readiness_smoke(
         "psycopg_pool",
         "sqlalchemy",
         "sqlite3",
-        "subprocess",
     } | project_import_roots
     forbidden_imports = imported_roots & forbidden_runtime_import_roots
     if forbidden_imports:
         raise AssertionError(
             "vendor organization discovery readiness checker has forbidden imports: "
             + ", ".join(sorted(forbidden_imports))
+        )
+    subprocess_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+        and node.func.attr == "run"
+    ]
+    if len(subprocess_calls) != 1:
+        raise AssertionError(
+            "vendor organization discovery readiness checker must use one exact downstream subprocess"
         )
     if forbidden_environment_imports:
         raise AssertionError(
@@ -25322,6 +25358,7 @@ def run_vendor_organization_discovery_readiness_smoke(
         normal_lines = normal.stdout.splitlines()
         for required_line in (
             "vendor_discovery_readiness_scope: static_source_and_frozen_policy_only",
+            "implementation_state: not_started",
             "issues_count: 0",
             "upstream_vendor_schema_guard_boundary: PASS",
             "database_access: 0",
@@ -25380,6 +25417,54 @@ def run_vendor_organization_discovery_readiness_smoke(
                     + required_line
                 )
 
+        identity_normal = subprocess.run(
+            [sys.executable, "-B", str(identity_guard_path)],
+            cwd=ROOT_DIR,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if identity_normal.returncode != 0 or identity_normal.stderr:
+            raise AssertionError(
+                "vendor identity evidence guard normal mode failed: "
+                + (identity_normal.stderr or identity_normal.stdout)
+            )
+        for required_line in (
+            "vendor_identity_evidence_guard_scope: exact_path_individual_node_source_bound_fail_closed",
+            "implementation_state: not_started",
+            "issues_count: 0",
+            "database_access: 0",
+            "app_imports: 0",
+            "vendor identity evidence readiness PASS",
+        ):
+            if identity_normal.stdout.splitlines().count(required_line) != 1:
+                raise AssertionError(
+                    "vendor identity evidence guard missing exact evidence: "
+                    + required_line
+                )
+        identity_self_test = subprocess.run(
+            [sys.executable, "-B", str(identity_guard_path), "--self-test"],
+            cwd=ROOT_DIR,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        if identity_self_test.returncode != 0 or identity_self_test.stderr:
+            raise AssertionError(
+                "vendor identity evidence guard self-test failed: "
+                + (identity_self_test.stderr or identity_self_test.stdout)
+            )
+        if identity_self_test.stdout.splitlines().count(
+            "vendor identity evidence readiness self-test PASS"
+        ) != 1:
+            raise AssertionError(
+                "vendor identity evidence guard self-test marker drifted"
+            )
+
         if sentinel_db.exists() or any(
             Path(str(sentinel_db) + suffix).exists()
             for suffix in ("-wal", "-shm", "-journal")
@@ -25395,6 +25480,10 @@ def run_vendor_organization_discovery_readiness_smoke(
     if discovery_path.exists():
         raise AssertionError(
             "vendor organization discovery implementation appeared during readiness smoke"
+        )
+    if identity_implementation_path.exists():
+        raise AssertionError(
+            "vendor identity evidence implementation appeared during readiness smoke"
         )
     repository_db_after = {
         path.name: file_state(path) for path in repository_db_paths

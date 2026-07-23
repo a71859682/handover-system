@@ -23,6 +23,15 @@ DISCOVERY_READINESS_CHECKER_PATH = Path(
 DISCOVERY_IMPLEMENTATION_PATH = Path(
     "tools/discover_vendor_organization_readiness.py"
 )
+IDENTITY_EVIDENCE_CHECKER_PATH = Path(
+    "tools/check_vendor_identity_evidence.py"
+)
+IDENTITY_EVIDENCE_IMPLEMENTATION_PATH = Path(
+    "tools/discover_vendor_identity_evidence.py"
+)
+IDENTITY_EVIDENCE_POLICY_PATH = Path(
+    "docs/vendor_id_004b_read_only_vendor_identity_discovery_contract.md"
+)
 VENDOR_POLICY_PATH = Path(
     "docs/vendor_id_001_vendor_organization_owner_member_design.md"
 )
@@ -36,6 +45,15 @@ APPROVED_VENDOR_POLICY_BLOB = "4c3f6c19415c5ea79c2bae0d2ff8c55f5e0f2b8e"
 APPROVED_SCHEMA_POLICY_BLOB = "f1d8c3064284a52e918c0d3e4b6872957ec15a83"
 APPROVED_SCHEMA_POLICY_SHA256 = (
     "225DFD2B817E26AC2C0FB7364BE83AE43B57AADDBACC31D15A950E17C4B59B04"
+)
+APPROVED_DISCOVERY_POLICY_SHA256 = (
+    "17363C85B514FA0A66E4A22A8A870F5B92C7AF1248105EC4E8A9076792F6A5F0"
+)
+APPROVED_IDENTITY_EVIDENCE_POLICY_SHA256 = (
+    "226C4672F600028320F9395887D28BF9D7FDEF6A3C4BBC7B986C19368C95D414"
+)
+APPROVED_IDENTITY_EVIDENCE_CHECKER_SHA256 = (
+    "49EB8FBCCBBE5C9105503EC42BDDB9145715619E25E02A312FA838229CF47663"
 )
 
 TARGET_TABLES = (
@@ -206,6 +224,7 @@ DISCOVERY_READINESS_KNOWN_ISSUE_CODES = (
     "checker_exemption_broadening",
     "unresolved_vendor_discovery_capability",
     "upstream_vendor_schema_guard_drift",
+    "downstream_vendor_identity_evidence_guard_drift",
     "source_read_error",
     "source_parse_error",
 )
@@ -233,8 +252,20 @@ DISCOVERY_READINESS_NODE_NAMES = (
     "_DISCOVERY_PATH",
     "_POLICY_PATH",
     "_UPSTREAM_CHECKER_PATH",
+    "_DOWNSTREAM_CHECKER_PATH",
+    "_DOWNSTREAM_IMPLEMENTATION_PATH",
+    "_DOWNSTREAM_POLICY_PATH",
     "_NON_VENDOR_OUTPUT_SOURCE_PATHS",
     "_APPROVED_POLICY_SHA256",
+    "_APPROVED_DOWNSTREAM_POLICY_SHA256",
+    "_APPROVED_DOWNSTREAM_CHECKER_SHA256",
+    "_DOWNSTREAM_PROOF_KEYS",
+    "_DOWNSTREAM_ROUTED_MARKERS",
+    "_DOWNSTREAM_GUARD_NODE_NAMES",
+    "_DOWNSTREAM_GUARD_AST_SHA256",
+    "_DOWNSTREAM_GUARD_IMPORT_AST_SHA256",
+    "_DOWNSTREAM_GUARD_MODULE_AST_SHA256",
+    "_DOWNSTREAM_COMPOSITION_AST_SHA256",
     "_PASS_MARKER",
     "_SELF_TEST_MARKER",
     "_NORMAL_SCOPE",
@@ -261,6 +292,7 @@ DISCOVERY_READINESS_NODE_NAMES = (
     "_UPSTREAM_STATIC_NODE_HASHES",
     "_UPSTREAM_INTEGRATION_NODE_SPECS",
     "_UPSTREAM_INTEGRATION_OWNER_HASHES",
+    "_UPSTREAM_MODULE_GUARD_AST_SHA256",
     "_EXACT_FIXTURE_NODE_HASHES",
     "_SELF_AUDIT_NODE_NAMES",
     "_SELF_AUDIT_AST_SHA256",
@@ -307,6 +339,9 @@ DISCOVERY_READINESS_NODE_NAMES = (
     "_upstream_integration_node_ids",
     "_v002_protected_node_ids",
     "_check_upstream_guard",
+    "_downstream_node_keys",
+    "_check_downstream_guard",
+    "_downstream_guard_node_ids",
     "_runtime_paths",
     "_collect_imports",
     "_imported_class_candidates",
@@ -328,10 +363,12 @@ DISCOVERY_READINESS_NODE_NAMES = (
     "_bind_match_pattern",
     "_direct_call_nodes",
     "_scan_nodes",
+    "_should_scan_source_node",
     "_self_audit",
     "_apply_source_boundary_fallback",
     "_scan_repository",
     "_dedupe_issues",
+    "_clear_analysis_caches",
     "_analyze_repository",
     "_render_normal",
     "_parse_args",
@@ -342,7 +379,40 @@ DISCOVERY_READINESS_NODE_NAMES = (
     "_main",
 )
 DISCOVERY_READINESS_AST_SHA256 = (
-    "B8E4343E0B11BFE8D4D78EBA3D1D94537BAE95E94AB1699B2769B1BD60B87A5B"
+    "A00EDC95E5A6E4A91AE96791998B8D8BA9AEB380F0BFA5A67B91A6E8E1DE0123"
+)
+IDENTITY_EVIDENCE_KNOWN_ISSUE_CODES = (
+    "vendor_identity_evidence_path_drift",
+    "vendor_identity_evidence_stage_drift",
+    "vendor_identity_evidence_unresolved_target",
+    "vendor_identity_evidence_ownership_conflict",
+    "vendor_identity_evidence_forbidden_capability",
+    "vendor_identity_evidence_checker_exemption",
+    "vendor_identity_evidence_guard_contract_drift",
+)
+IDENTITY_EVIDENCE_NODE_NAMES = (
+    "_ROOT_DIR", "_CHECKER_PATH", "_IMPLEMENTATION_PATH",
+    "_V003_POLICY_PATH", "_V004B_POLICY_PATH", "_V003_POLICY_SHA256",
+    "_V004B_POLICY_SHA256", "_PASS_MARKER", "_SELF_TEST_MARKER",
+    "_NORMAL_SCOPE", "_ISSUE_CODES", "_ALLOWED_STAGES",
+    "_ROUTED_MARKERS", "_V003_OWNED_MARKERS", "_FORBIDDEN_WORDS",
+    "_FORBIDDEN_CALLS", "_FORBIDDEN_IMPORTS", "_SELF_AUDIT_NODE_NAMES",
+    "_SELF_AUDIT_AST_SHA256", "_Issue", "_top_level_name",
+    "_ast_sha256", "_ast_bundle_sha256", "_node_text", "_node_key",
+    "_add_issue", "_read_bytes", "_policy_issues", "_stage_nodes",
+    "_routed_nodes", "_inspect_source", "_self_audit",
+    "_repository_issues", "_proof_payload", "_canonical_json",
+    "_render_normal", "_parse_args", "_write_fixture", "_assert_fixture",
+    "_run_self_test", "_main",
+)
+IDENTITY_EVIDENCE_AST_SHA256 = (
+    "8611D00A7F679FC59C21D03524A403AB9E9C9C6660BFCFA33F3F0BF6664874F9"
+)
+IDENTITY_EVIDENCE_IMPORT_AST_SHA256 = (
+    "66E1F523A04A592880D19B4378DF53BBD9BCF0DBBFC062FE914EDF7761D11E24"
+)
+IDENTITY_EVIDENCE_MODULE_AST_SHA256 = (
+    "2F40106DCD5D65CAAEF5ACBB5A0B225074EDE61594854F758C95C37E8B50FE78"
 )
 VENDOR_SCHEMA_ERROR_CODES = (
     "invalid_connection",
@@ -2270,9 +2340,25 @@ def check_policy_document(
             )
         ]
     try:
-        data = path.read_bytes()
-        text = data.decode("utf-8")
-    except (OSError, UnicodeError):
+        raw_data = path.read_bytes()
+    except OSError:
+        return [
+            Issue(
+                "vendor_schema_policy_drift",
+                relative.as_posix(),
+                1,
+                "unreadable",
+            )
+        ]
+
+    data_without_crlf = raw_data.replace(b"\r\n", b"")
+    malformed_line_endings = b"\r" in data_without_crlf or (
+        b"\r\n" in raw_data and b"\n" in data_without_crlf
+    )
+    canonical_data = raw_data.replace(b"\r\n", b"\n")
+    try:
+        text = canonical_data.decode("utf-8")
+    except UnicodeError:
         return [
             Issue(
                 "vendor_schema_policy_drift",
@@ -2283,9 +2369,18 @@ def check_policy_document(
         ]
 
     issues: list[Issue] = []
-    if git_blob_id(data) != approved_blob or (
+    if malformed_line_endings:
+        issues.append(
+            Issue(
+                "vendor_schema_policy_drift",
+                relative.as_posix(),
+                1,
+                "line_endings",
+            )
+        )
+    if git_blob_id(canonical_data) != approved_blob or (
         approved_sha256
-        and hashlib.sha256(data).hexdigest().upper() != approved_sha256
+        and hashlib.sha256(canonical_data).hexdigest().upper() != approved_sha256
     ):
         issues.append(
             Issue("vendor_schema_policy_drift", relative.as_posix(), 1, "fingerprint")
@@ -3284,7 +3379,7 @@ def validate_exact_discovery_readiness_checker(
     ]
     if (
         _ast_bundle_sha256(import_nodes)
-        != "ACD31EB63EB0097B919704C9AD159CE0D6E41ED3FF7DD322DF5AFC391D2FFE4E"
+        != "896518E8B13C8AA86A844541688444D91706DFC491A33F440DF873C12E1D4248"
     ):
         issues.append(
             Issue(issue_code, path, 1, "import_ast")
@@ -3328,6 +3423,9 @@ def validate_exact_discovery_readiness_checker(
             "docs/vendor_id_003_read_only_vendor_discovery_baseline.md"
         ),
         "_UPSTREAM_CHECKER_PATH": CHECKER_PATH.as_posix(),
+        "_DOWNSTREAM_CHECKER_PATH": IDENTITY_EVIDENCE_CHECKER_PATH.as_posix(),
+        "_DOWNSTREAM_IMPLEMENTATION_PATH": IDENTITY_EVIDENCE_IMPLEMENTATION_PATH.as_posix(),
+        "_DOWNSTREAM_POLICY_PATH": IDENTITY_EVIDENCE_POLICY_PATH.as_posix(),
     }
     for name, expected_path in expected_paths.items():
         observed = _assignment_value(selected[name])
@@ -3354,7 +3452,13 @@ def validate_exact_discovery_readiness_checker(
 
     expected_literals = {
         "_APPROVED_POLICY_SHA256": (
-            "DE97D2F4459E56FF9F7BE0C8411C2F8E1C897E1B0BD81EF9D8CD87A4475CBB20"
+            "17363C85B514FA0A66E4A22A8A870F5B92C7AF1248105EC4E8A9076792F6A5F0"
+        ),
+        "_APPROVED_DOWNSTREAM_POLICY_SHA256": (
+            "226C4672F600028320F9395887D28BF9D7FDEF6A3C4BBC7B986C19368C95D414"
+        ),
+        "_APPROVED_DOWNSTREAM_CHECKER_SHA256": (
+            "49EB8FBCCBBE5C9105503EC42BDDB9145715619E25E02A312FA838229CF47663"
         ),
     }
     for name, expected_literal in expected_literals.items():
@@ -3420,7 +3524,6 @@ def validate_exact_discovery_readiness_checker(
         "sqlalchemy",
         "sqlite3",
         "sqlite_db_path",
-        "subprocess",
         "tools",
     }
     for node in import_nodes:
@@ -3519,6 +3622,33 @@ def validate_exact_discovery_readiness_checker(
                     )
                 )
 
+    subprocess_calls = [
+        child
+        for child in ast.walk(selected["_check_downstream_guard"])
+        if isinstance(child, ast.Call)
+        and dotted_name(child.func) == "subprocess.run"
+    ]
+    if len(subprocess_calls) != 1:
+        issues.append(
+            Issue(issue_code, path, 1, "downstream_subprocess_count")
+        )
+    else:
+        call = subprocess_calls[0]
+        keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+        required_keywords = {
+            "input", "stdout", "stderr", "cwd", "timeout", "check", "shell"
+        }
+        if set(keywords) != required_keywords:
+            issues.append(
+                Issue(issue_code, path, call.lineno, "downstream_subprocess_keywords")
+            )
+        for key, expected in (("timeout", 30), ("check", False), ("shell", False)):
+            value = keywords.get(key)
+            if not isinstance(value, ast.Constant) or value.value != expected:
+                issues.append(
+                    Issue(issue_code, path, call.lineno, f"downstream_subprocess_{key}")
+                )
+
     bundle_hash = _ast_bundle_sha256(nodes)
     if bundle_hash != DISCOVERY_READINESS_AST_SHA256:
         issues.append(
@@ -3590,6 +3720,110 @@ def validate_exact_discovery_readiness_checker(
                     code,
                     required=False,
                 )
+    return issues, candidate
+
+
+def validate_exact_identity_evidence_checker(
+    root: Path,
+    tree: ast.Module,
+) -> tuple[list[Issue], StructuralAllowanceCandidate]:
+    path = IDENTITY_EVIDENCE_CHECKER_PATH.as_posix()
+    issue_code = "vendor_schema_discovery_checker_contract_drift"
+    issues: list[Issue] = []
+    candidate = StructuralAllowanceCandidate()
+    nodes, node_issues = _selected_top_level_nodes(
+        tree,
+        IDENTITY_EVIDENCE_NODE_NAMES,
+        path,
+        issue_code,
+    )
+    issues.extend(node_issues)
+    observed_names: list[str] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            observed_names.append(node.name)
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            observed_names.append(node.targets[0].id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            observed_names.append(node.target.id)
+    if tuple(observed_names) != IDENTITY_EVIDENCE_NODE_NAMES:
+        issues.append(Issue(issue_code, path, 1, "top_level_named_node_inventory"))
+    import_nodes = tuple(
+        node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
+    )
+    residual_nodes = tuple(
+        node
+        for node in tree.body
+        if node not in nodes and node not in import_nodes
+    )
+    if _ast_bundle_sha256(import_nodes) != IDENTITY_EVIDENCE_IMPORT_AST_SHA256:
+        issues.append(Issue(issue_code, path, 1, "import_ast"))
+    if _ast_bundle_sha256(residual_nodes) != IDENTITY_EVIDENCE_MODULE_AST_SHA256:
+        issues.append(Issue(issue_code, path, 1, "module_guard_ast"))
+    if node_issues:
+        return issues, candidate
+    if _ast_bundle_sha256(nodes) != IDENTITY_EVIDENCE_AST_SHA256:
+        issues.append(Issue(issue_code, path, 1, "guard_ast"))
+    try:
+        payload = (root / IDENTITY_EVIDENCE_CHECKER_PATH).read_bytes()
+    except OSError:
+        payload = b""
+    if hashlib.sha256(payload).hexdigest().upper() != APPROVED_IDENTITY_EVIDENCE_CHECKER_SHA256:
+        issues.append(Issue(issue_code, path, 1, "guard_source_sha256"))
+    selected = dict(zip(IDENTITY_EVIDENCE_NODE_NAMES, nodes, strict=True))
+    try:
+        codes = _literal_assignment(selected, "_ISSUE_CODES")
+    except (ValueError, SyntaxError):
+        codes = None
+    if codes != IDENTITY_EVIDENCE_KNOWN_ISSUE_CODES:
+        issues.append(Issue(issue_code, path, 1, "stable_issue_codes"))
+    expected_paths = {
+        "_CHECKER_PATH": IDENTITY_EVIDENCE_CHECKER_PATH.as_posix(),
+        "_IMPLEMENTATION_PATH": IDENTITY_EVIDENCE_IMPLEMENTATION_PATH.as_posix(),
+        "_V003_POLICY_PATH": "docs/vendor_id_003_read_only_vendor_discovery_baseline.md",
+        "_V004B_POLICY_PATH": IDENTITY_EVIDENCE_POLICY_PATH.as_posix(),
+    }
+    for name, expected_path in expected_paths.items():
+        observed = _assignment_value(selected[name])
+        expected = ast.parse(f"Path({expected_path!r})", mode="eval").body
+        if observed is None or ast.dump(observed, include_attributes=False) != ast.dump(expected, include_attributes=False):
+            issues.append(Issue(issue_code, path, 1, name))
+    forbidden_import_roots = {
+        "app", "database", "flask", "models", "os", "psycopg", "psycopg2",
+        "sqlalchemy", "sqlite3", "subprocess", "tools",
+    }
+    for node in import_nodes:
+        roots = (
+            {alias.name.split(".", 1)[0] for alias in node.names}
+            if isinstance(node, ast.Import)
+            else ({(node.module or "").split(".", 1)[0]} | ({"<relative>"} if node.level else set()))
+        )
+        if roots & (forbidden_import_roots | {"<relative>"}):
+            issues.append(Issue(issue_code, path, getattr(node, "lineno", 1), "forbidden_import"))
+    forbidden_calls = {"connect", "create_engine", "execute", "executemany", "executescript", "getenv"}
+    for node in nodes:
+        for child in ast.walk(node):
+            if isinstance(child, ast.Call) and dotted_name(child.func).rsplit(".", 1)[-1] in forbidden_calls:
+                issues.append(Issue(issue_code, path, child.lineno, "runtime_sink"))
+    if issues:
+        return issues, candidate
+    for node in (*nodes, *import_nodes, *residual_nodes):
+        for child in ast.walk(node):
+            evidence = ""
+            if isinstance(child, ast.Name):
+                evidence = child.id
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                evidence = child.name
+            elif isinstance(child, ast.arg):
+                evidence = child.arg
+            elif isinstance(child, ast.Attribute):
+                evidence = child.attr
+            elif isinstance(child, ast.Constant) and type(child.value) is str:
+                evidence = child.value
+            if evidence and has_target(evidence):
+                candidate.approve_target_evidence_node(path, child)
+            for code in DISCOVERY_READINESS_ALLOWED_V002_ISSUE_CODES:
+                candidate.approve_issue(path, child, code, required=False)
     return issues, candidate
 
 
@@ -3674,6 +3908,23 @@ def analyze_repository(root: Path) -> list[Issue]:
             SCHEMA_POLICY_MARKERS,
         )
     )
+    try:
+        identity_policy_digest = hashlib.sha256(
+            (root / IDENTITY_EVIDENCE_POLICY_PATH)
+            .read_bytes()
+            .replace(b"\r\n", b"\n")
+        ).hexdigest().upper()
+    except OSError:
+        identity_policy_digest = ""
+    if identity_policy_digest != APPROVED_IDENTITY_EVIDENCE_POLICY_SHA256:
+        issues.append(
+            Issue(
+                "vendor_schema_discovery_checker_contract_drift",
+                IDENTITY_EVIDENCE_POLICY_PATH.as_posix(),
+                1,
+                "identity_policy_sha256",
+            )
+        )
     policy_clean = not issues
     for relative in FIXED_RUNTIME_FILES:
         if not (root / relative).is_file():
@@ -3744,6 +3995,24 @@ def analyze_repository(root: Path) -> list[Issue]:
         )
         structural_issues.extend(discovery_issues)
         candidates.append(discovery_candidate)
+    identity_checker_tree = parsed.get(IDENTITY_EVIDENCE_CHECKER_PATH)
+    if identity_checker_tree is None:
+        structural_issues.append(
+            Issue(
+                "vendor_schema_discovery_checker_contract_drift",
+                IDENTITY_EVIDENCE_CHECKER_PATH.as_posix(),
+                1,
+                "identity_guard_missing_or_unparsed",
+            )
+        )
+    else:
+        identity_issues, identity_candidate = (
+            validate_exact_identity_evidence_checker(
+                root, identity_checker_tree
+            )
+        )
+        structural_issues.extend(identity_issues)
+        candidates.append(identity_candidate)
     if DISCOVERY_IMPLEMENTATION_PATH in parsed:
         structural_issues.append(
             Issue(
@@ -3751,6 +4020,15 @@ def analyze_repository(root: Path) -> list[Issue]:
                 DISCOVERY_IMPLEMENTATION_PATH.as_posix(),
                 1,
                 "canonical_discovery_module_present",
+            )
+        )
+    if IDENTITY_EVIDENCE_IMPLEMENTATION_PATH in parsed:
+        structural_issues.append(
+            Issue(
+                "vendor_schema_discovery_checker_contract_drift",
+                IDENTITY_EVIDENCE_IMPLEMENTATION_PATH.as_posix(),
+                1,
+                "canonical_identity_evidence_module_present",
             )
         )
     issues.extend(structural_issues)
@@ -3814,7 +4092,11 @@ def render_normal(issues: list[Issue]) -> tuple[int, str]:
 
 
 def write_base_tree(root: Path) -> None:
-    for relative in (VENDOR_POLICY_PATH, SCHEMA_POLICY_PATH):
+    for relative in (
+        VENDOR_POLICY_PATH,
+        SCHEMA_POLICY_PATH,
+        IDENTITY_EVIDENCE_POLICY_PATH,
+    ):
         destination = root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT_DIR / relative, destination)
@@ -3827,6 +4109,12 @@ def write_base_tree(root: Path) -> None:
     shutil.copyfile(
         ROOT_DIR / "tools/capture_schema_manifest.py",
         manifest,
+    )
+    identity_guard = root / IDENTITY_EVIDENCE_CHECKER_PATH
+    identity_guard.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(
+        ROOT_DIR / IDENTITY_EVIDENCE_CHECKER_PATH,
+        identity_guard,
     )
     discovery_checker = root / DISCOVERY_READINESS_CHECKER_PATH
     discovery_checker.parent.mkdir(parents=True, exist_ok=True)
@@ -4528,14 +4816,15 @@ def _exercise_discovery_readiness_checker_contract(
     mutation_cases: tuple[tuple[str, Any], ...] = (
         (
             "discovery_checker_stale_approved_policy_literal",
-            lambda source: _replace_exact_fragment(
+            lambda source: re.sub(
+                (
+                    r'(_APPROVED_POLICY_SHA256 = \(\n    ")'
+                    r"[0-9A-F]{64}"
+                ),
+                r"\g<1>"
+                + "BA780334D5CCFAA345733EE7C0320C95B1ADAB710289A1FA65D796A615325C0E",
                 source,
-                (
-                    "DE97D2F4459E56FF9F7BE0C8411C2F8E1C897E1B0BD81EF9D8CD87A4475CBB20"
-                ),
-                (
-                    "BA780334D5CCFAA345733EE7C0320C95B1ADAB710289A1FA65D796A615325C0E"
-                ),
+                count=1,
             ),
         ),
         (
@@ -6201,6 +6490,280 @@ def run_self_test() -> int:
         baseline = temp_root / "baseline"
         baseline.mkdir()
         write_base_tree(baseline)
+
+        policy_configs = (
+            (
+                "v001",
+                VENDOR_POLICY_PATH,
+                APPROVED_VENDOR_POLICY_BLOB,
+                None,
+                VENDOR_POLICY_MARKERS,
+            ),
+            (
+                "v002",
+                SCHEMA_POLICY_PATH,
+                APPROVED_SCHEMA_POLICY_BLOB,
+                APPROVED_SCHEMA_POLICY_SHA256,
+                SCHEMA_POLICY_MARKERS,
+            ),
+        )
+
+        def write_policy_fixture(
+            name: str,
+            relative: Path,
+            payload: bytes | None,
+        ) -> Path:
+            root = temp_root / name
+            if payload is not None:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+            return root
+
+        def assert_policy_fixture(
+            name: str,
+            root: Path,
+            relative: Path,
+            approved_blob: str,
+            approved_sha256: str | None,
+            markers: tuple[str, ...],
+            expected_code: str | None,
+            expected_symbol: str | None = None,
+        ) -> list[Issue]:
+            fixture_issues = check_policy_document(
+                root,
+                relative,
+                approved_blob,
+                approved_sha256,
+                markers,
+            )
+            status, output = render_normal(fixture_issues)
+            if expected_code is None:
+                if status != 0 or fixture_issues or PASS_MARKER not in output:
+                    raise AssertionError(
+                        f"policy representation {name} failed: {fixture_issues!r}"
+                    )
+                return fixture_issues
+            matching = [
+                issue
+                for issue in fixture_issues
+                if issue.code == expected_code
+                and (
+                    expected_symbol is None
+                    or issue.symbol == expected_symbol
+                )
+            ]
+            if status == 0 or not matching:
+                raise AssertionError(
+                    f"policy representation {name} missed "
+                    f"{expected_code}/{expected_symbol}: {fixture_issues!r}"
+                )
+            if PASS_MARKER in output:
+                raise AssertionError(
+                    f"policy representation {name} emitted normal PASS"
+                )
+            return fixture_issues
+
+        for (
+            policy_name,
+            relative,
+            approved_blob,
+            approved_sha256,
+            markers,
+        ) in policy_configs:
+            source = (baseline / relative).read_bytes()
+            source_without_crlf = source.replace(b"\r\n", b"")
+            if b"\r" in source_without_crlf or (
+                b"\r\n" in source and b"\n" in source_without_crlf
+            ):
+                raise AssertionError(
+                    f"baseline policy has malformed line endings: {policy_name}"
+                )
+            canonical_lf = source.replace(b"\r\n", b"\n")
+            mechanical_crlf = canonical_lf.replace(b"\n", b"\r\n")
+
+            lf_root = write_policy_fixture(
+                f"policy-{policy_name}-lf",
+                relative,
+                canonical_lf,
+            )
+            assert_policy_fixture(
+                f"{policy_name}_canonical_lf",
+                lf_root,
+                relative,
+                approved_blob,
+                approved_sha256,
+                markers,
+                None,
+            )
+            scenario_count += 1
+
+            crlf_root = write_policy_fixture(
+                f"policy-{policy_name}-crlf",
+                relative,
+                mechanical_crlf,
+            )
+            assert_policy_fixture(
+                f"{policy_name}_mechanical_crlf",
+                crlf_root,
+                relative,
+                approved_blob,
+                approved_sha256,
+                markers,
+                None,
+            )
+            scenario_count += 1
+
+            lf_issues = check_policy_document(
+                lf_root,
+                relative,
+                approved_blob,
+                approved_sha256,
+                markers,
+            )
+            crlf_issues = check_policy_document(
+                crlf_root,
+                relative,
+                approved_blob,
+                approved_sha256,
+                markers,
+            )
+            if (
+                lf_issues != crlf_issues
+                or git_blob_id(canonical_lf)
+                != git_blob_id(mechanical_crlf.replace(b"\r\n", b"\n"))
+                or hashlib.sha256(canonical_lf).digest()
+                != hashlib.sha256(
+                    mechanical_crlf.replace(b"\r\n", b"\n")
+                ).digest()
+            ):
+                raise AssertionError(
+                    f"LF/CRLF policy fingerprint parity failed: {policy_name}"
+                )
+            scenario_count += 1
+
+            drift_lf = canonical_lf + b"\n# semantic drift\n"
+            drift_lf_root = write_policy_fixture(
+                f"policy-{policy_name}-lf-drift",
+                relative,
+                drift_lf,
+            )
+            drift_lf_issues = assert_policy_fixture(
+                f"{policy_name}_lf_drift",
+                drift_lf_root,
+                relative,
+                approved_blob,
+                approved_sha256,
+                markers,
+                "vendor_schema_policy_drift",
+            )
+            scenario_count += 1
+
+            drift_crlf_root = write_policy_fixture(
+                f"policy-{policy_name}-crlf-drift",
+                relative,
+                drift_lf.replace(b"\n", b"\r\n"),
+            )
+            drift_crlf_issues = assert_policy_fixture(
+                f"{policy_name}_crlf_drift",
+                drift_crlf_root,
+                relative,
+                approved_blob,
+                approved_sha256,
+                markers,
+                "vendor_schema_policy_drift",
+            )
+            if {
+                (issue.code, issue.symbol) for issue in drift_lf_issues
+            } != {
+                (issue.code, issue.symbol) for issue in drift_crlf_issues
+            }:
+                raise AssertionError(
+                    f"LF/CRLF drift classification mismatch: {policy_name}"
+                )
+            scenario_count += 1
+
+            standalone_cr = canonical_lf.replace(b"\n", b"\r", 1)
+            standalone_root = write_policy_fixture(
+                f"policy-{policy_name}-standalone-cr",
+                relative,
+                standalone_cr,
+            )
+            assert_policy_fixture(
+                f"{policy_name}_standalone_cr",
+                standalone_root,
+                relative,
+                approved_blob,
+                approved_sha256,
+                markers,
+                "vendor_schema_policy_drift",
+                "line_endings",
+            )
+            scenario_count += 1
+
+            mixed_endings = canonical_lf.replace(b"\n", b"\r\n", 1)
+            mixed_root = write_policy_fixture(
+                f"policy-{policy_name}-mixed-endings",
+                relative,
+                mixed_endings,
+            )
+            assert_policy_fixture(
+                f"{policy_name}_mixed_endings",
+                mixed_root,
+                relative,
+                approved_blob,
+                approved_sha256,
+                markers,
+                "vendor_schema_policy_drift",
+                "line_endings",
+            )
+            scenario_count += 1
+
+            malformed_cr = canonical_lf.replace(b"\n", b"\rX\n", 1)
+            malformed_root = write_policy_fixture(
+                f"policy-{policy_name}-malformed-cr",
+                relative,
+                malformed_cr,
+            )
+            assert_policy_fixture(
+                f"{policy_name}_malformed_cr",
+                malformed_root,
+                relative,
+                approved_blob,
+                approved_sha256,
+                markers,
+                "vendor_schema_policy_drift",
+                "line_endings",
+            )
+            scenario_count += 1
+
+            missing_root = write_policy_fixture(
+                f"policy-{policy_name}-missing",
+                relative,
+                None,
+            )
+            assert_policy_fixture(
+                f"{policy_name}_missing",
+                missing_root,
+                relative,
+                approved_blob,
+                approved_sha256,
+                markers,
+                "vendor_schema_policy_document_missing",
+            )
+            scenario_count += 1
+
+            assert_policy_fixture(
+                f"{policy_name}_incorrect_pin",
+                lf_root,
+                relative,
+                "0" * 40,
+                approved_sha256,
+                markers,
+                "vendor_schema_policy_drift",
+                "fingerprint",
+            )
+            scenario_count += 1
 
         for name, relative, source in positive_cases():
             root = temp_root / f"positive-{name}"
