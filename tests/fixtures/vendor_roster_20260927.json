@@ -1,0 +1,320 @@
+{
+  "roster_version": "2026-09-27-r02",
+  "implementation_slice": "004F-VR1/r01",
+  "vendors": [
+    {
+      "tax_id": "12275123",
+      "legal_name": "哥德廚具股份有限公司",
+      "display_name": "哥德",
+      "aliases": [],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 2,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "哥德廚具股份有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "96769654",
+      "legal_name": "呈旭工程有限公司",
+      "display_name": "呈旭",
+      "aliases": [
+        "呈旭"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 3,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "呈旭工程有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "69740418",
+      "legal_name": "東園國際有限公司",
+      "display_name": "東園",
+      "aliases": [
+        "東園"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 4,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "東園國際有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "84646813",
+      "legal_name": "寶勳工程有限公司",
+      "display_name": "寶勳",
+      "aliases": [
+        "寶勳"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 5,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "寶勳工程有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "33937872",
+      "legal_name": "永欣鋁業股份有限公司",
+      "display_name": "永欣",
+      "aliases": [
+        "昭和"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 6,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "永欣鋁業股份有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "12211281",
+      "legal_name": "金亞金屬工業股份有限公司",
+      "display_name": "金亞",
+      "aliases": [
+        "金亞"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 7,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "金亞金屬工業股份有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "66572768",
+      "legal_name": "金湧工程有限公司",
+      "display_name": "金湧",
+      "aliases": [
+        "金湧"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 8,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "金湧工程有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "31352752",
+      "legal_name": "大信建設營造股份有限公司",
+      "display_name": "大信",
+      "aliases": [
+        "大信"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 9,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "大信建設營造股份有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "00252579",
+      "legal_name": "浤淋有限公司",
+      "display_name": "浤淋",
+      "aliases": [
+        "浤淋"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 10,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "浤淋有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened",
+        "original_tax_id": 252579,
+        "original_tax_id_type": "number",
+        "user_supplement_tax_id": "00257979",
+        "verified_tax_id": "00252579",
+        "verification_reference": "114年12月清冊，第10頁，序號42",
+        "verification_urls": [
+          "https://serv.gcis.nat.gov.tw/pub/cmpy/reportAction.do?fileName=376430000Achange11412.pdf&method=report&reportClass=cmpyCityItem&subPath=11412"
+        ]
+      }
+    },
+    {
+      "tax_id": "28760874",
+      "legal_name": "凱思登企業有限公司",
+      "display_name": "凱斯登",
+      "aliases": [
+        "凱斯登"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 11,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "凱思登企業有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "16670737",
+      "legal_name": "隆昌窯業股份有限公司新竹分公司",
+      "display_name": "隆昌",
+      "aliases": [
+        "隆昌"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 12,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "隆昌窯業股份有限公司新竹分公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "53068936",
+      "legal_name": "富立木業有限公司",
+      "display_name": "富立",
+      "aliases": [
+        "富立"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 13,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "富立木業有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "84882674",
+      "legal_name": "長田實業股份有限公司",
+      "display_name": "長田",
+      "aliases": [
+        "長田"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 14,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "長田實業股份有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "29147257",
+      "legal_name": "鋐賓有限公司",
+      "display_name": "鋐賓",
+      "aliases": [
+        "鋐賓"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 15,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "鋐賓有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    },
+    {
+      "tax_id": "23199101",
+      "legal_name": "大英營造有限公司",
+      "display_name": "工務所",
+      "aliases": [
+        "工務所"
+      ],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 16,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "大英營造有限公司-新埔段",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened",
+        "site_note": "新埔段",
+        "site_note_grants_access": false,
+        "verification_urls": [
+          "https://findbiz.nat.gov.tw/fts/company/23199101",
+          "https://info.technews.tw/company/23199101-大英營造有限公司"
+        ]
+      }
+    },
+    {
+      "tax_id": "54502509",
+      "legal_name": "喜士多開發石材有限公司",
+      "display_name": "喜士多",
+      "aliases": [],
+      "source": {
+        "document": "廠商名冊.xlsx",
+        "document_bytes": 10810,
+        "document_sha256": "7021FA458CEF4121437154834BBFBA4E127D2F200F676DB1BA99B846F365F044",
+        "sheet": "Sheet1",
+        "row": 17,
+        "version": "2026-09-27-r02",
+        "handoff": "004F-VR1/r01 ROSTER.md",
+        "source_original_name": "喜士多開發石材有限公司",
+        "verification_basis": "Supplied verified ROSTER.md; source workbook and closed r02 package not reopened"
+      }
+    }
+  ]
+}
