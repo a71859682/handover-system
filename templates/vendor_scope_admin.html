@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}廠商待開通設定 - {{ settings.site_title }}{% endblock %}
+{% block content %}
+<style>
+  .scope-admin { max-width: 1050px; margin: auto; }
+  .scope-admin fieldset { margin: 1rem 0; padding: 1rem; border: 1px solid #bcc7d2; border-radius: .5rem; }
+  .scope-admin label { display: block; margin: .6rem 0; overflow-wrap: anywhere; }
+  .scope-admin select, .scope-admin textarea { max-width: 100%; box-sizing: border-box; }
+  .scope-admin textarea { width: 100%; min-height: 5rem; }
+  .scope-note { padding: 1rem; background: #edf3f9; border-left: 4px solid #416789; }
+  .scope-error { padding: 1rem; background: #fff0ee; color: #8b2720; }
+  .scope-tasks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: .2rem 1rem; }
+  .scope-admin button { margin: .5rem 0; }
+  .scope-admin [hidden] { display: none; }
+</style>
+<section class="scope-admin">
+  <h1>廠商待開通設定</h1>
+  <p><a href="{{ url_for('users') }}">返回成員管理</a></p>
+  <p class="scope-note">儲存待開通設定只準備成員與工地範圍。帳號仍未啟用、廠商仍停用、成員仍 pending；待開通，尚未生效。自助建立帳號與正式開通尚未提供。</p>
+  {% if error %}<p class="scope-error" role="alert">{{ error }}</p>{% endif %}
+  {% if stale %}
+  <p>本次輸入未保存。請重新載入，核對已保存設定與全部選項後再送出。</p>
+  <a href="{{ url_for('vendor_scope_admin.index', vendor_id=edit.profile.vendor_id, account_id=edit.account.id) if edit else url_for('vendor_scope_admin.index') }}">重新載入待開通設定</a>
+  {% if submitted %}<details><summary>查看本次未保存輸入</summary><ul>
+    {% for key in submitted %}{% if key not in ('csrf_token', 'snapshot') %}<li>{{ key }}：{{ submitted.getlist(key)|join('、') }}</li>{% endif %}{% endfor %}
+  </ul></details>{% endif %}
+  {% endif %}
+  {% if catalog %}
+  {% if not catalog.has_pending %}<p class="scope-note">尚無待開通帳號。請先透過後續帳號建立流程準備未啟用帳號；本頁不會建立帳號。</p>{% endif %}
+  <form method="get" action="{{ url_for('vendor_scope_admin.index') }}">
+    <label>廠商（完整八碼統編與穩定 ID）
+      <select name="vendor_id" required><option value="">請明確選擇廠商</option>
+      {% for vendor in catalog.profiles %}
+        <option value="{{ vendor.vendor_id }}" {% if edit and edit.profile.vendor_id == vendor.vendor_id %}selected{% endif %}>{{ vendor.legal_name }}／{{ vendor.tax_id }}／{{ vendor.vendor_id }}／{{ vendor.organization_status }}</option>
+      {% endfor %}</select>
+    </label>
+    <label>既有廠商帳號
+      <select name="account_id" required><option value="">請明確選擇帳號</option>
+      {% for account in catalog.accounts %}
+        <option value="{{ account.id }}" {% if edit and edit.account.id == account.id %}selected{% endif %}>{{ account.username }}／ID {{ account.id }}／{{ account.status }}</option>
+      {% endfor %}</select>
+    </label>
+    <button type="submit">載入待開通設定</button>
+  </form>
+  {% endif %}
+  {% if edit %}
+  <h2>{{ edit.profile.legal_name }}／{{ edit.profile.tax_id }}</h2>
+  <p>廠商 ID：{{ edit.profile.vendor_id }}<br>帳號：{{ edit.account.username }}／ID {{ edit.account.id }}</p>
+  <p>已保存 revision：<strong>{{ edit.preview.revision }}</strong>；配置工項數：<strong>{{ edit.preview.configured_scope.task_count }}</strong>。待開通，尚未生效。</p>
+  {% if edit.preview.configured_scopes %}<details open><summary>目前已保存的完整設定</summary><ul>
+    {% for scope in edit.preview.configured_scopes %}<li>工地 ID {{ scope.site_id }}：{{ scope.mode }}{% if scope.mode == 'SELECTED' %}／工項 ID {{ scope.task_ids|join('、') or '無（零工項）' }}{% endif %}</li>{% endfor %}
+  </ul></details>{% else %}<p>尚無已保存工地；首次所有工地均未勾選。</p>{% endif %}
+  {% if edit.pending_task_count %}<p>有 {{ edit.pending_task_count }} 個工項尚無 VR1 歸屬，已排除；須先在名冊歸屬流程處理。</p>{% endif %}
+  {% if edit.blocked %}<p class="scope-error">{{ edit.blocked }}</p>{% endif %}
+  {% if not edit.blocked and not stale %}
+  <form method="post" action="{{ url_for('vendor_scope_admin.index') }}" id="pending-scope-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="snapshot" value="{{ snapshot_token }}">
+    <input type="hidden" name="vendor_id" value="{{ edit.profile.vendor_id }}">
+    <input type="hidden" name="account_id" value="{{ edit.account.id }}">
+    <input type="hidden" name="scope_set_complete" value="1">
+    {% if not edit.membership_id %}<label><input type="checkbox" name="confirm_membership" value="1" required {% if submitted and submitted.get('confirm_membership') == '1' %}checked{% endif %}>我確認此帳號屬於上述廠商；首次建立 member／pending 成員，不授予 owner。</label>{% endif %}
+    <p>勾選工地預設 ALL：本工地本廠商在所有合格表格的全部工項，包含日後符合完整交集的新增工項。SELECTED 空選表示零工項。</p>
+    <p>取消工地只移除此成員配置；整份表單會替換完整工地集合，全部不勾選即清空此成員配置。</p>
+    {% for site in edit.sites %}
+    {% set saved = edit.preview.configured_scopes|selectattr('site_id', 'equalto', site.id)|first %}
+    {% set sid = site.id|string %}
+    {% set chosen = submitted.get('enabled.' + sid) == '1' if submitted else saved is defined %}
+    {% set mode = submitted.get('mode.' + sid, 'ALL') if submitted else saved.mode if saved is defined else 'ALL' %}
+    {% set selected_ids = submitted.getlist('task.' + sid) if submitted else saved.task_ids|map('string')|list if saved is defined else [] %}
+    <fieldset data-scope-site>
+      <legend>{{ site.site_name }}／工地 ID {{ site.id }}</legend>
+      <input type="hidden" name="site_row" value="{{ site.id }}">
+      <input type="hidden" name="tasks_present.{{ site.id }}" value="1">
+      <label><input type="checkbox" data-site-toggle name="enabled.{{ site.id }}" value="1" {% if chosen %}checked{% endif %} {% if site.issue %}disabled{% endif %}>配置此工地</label>
+      {% if site.issue %}<p class="scope-error">{{ site.issue }}</p>{% else %}
+      <p>{{ '已存在有效工地關係' if site.plan.assignment_id else '儲存時準備工地關係' }}；{{ site.tasks|length }} 個候選工項（候選不代表有效權限）。</p>{% endif %}
+      <label>工項範圍 <select name="mode.{{ site.id }}" data-scope-mode>
+        <option value="ALL" {% if mode == 'ALL' %}selected{% endif %}>ALL：本廠商全部合格工項</option>
+        <option value="SELECTED" {% if mode == 'SELECTED' %}selected{% endif %}>SELECTED：指定工項（可空選）</option>
+      </select></label>
+      <div class="scope-tasks" data-task-list>
+      {% for task in site.tasks %}<label><input type="checkbox" name="task.{{ site.id }}" value="{{ task.task_id }}" {% if task.task_id|string in selected_ids %}checked{% endif %}>{{ task.sheet_name }}／{{ task.task_name }}（表格 {{ task.sheet_id }}，工項 ID {{ task.task_id }}）</label>{% else %}<p>本工地尚無此廠商的合格工項。</p>{% endfor %}
+      </div>
+    </fieldset>
+    {% endfor %}
+    <label>保存理由（必填，最多 500 字）<textarea name="reason" required maxlength="500">{{ submitted.get('reason', '') if submitted else '' }}</textarea></label>
+    <button type="submit">儲存待開通設定</button>
+  </form>
+  <script>
+    document.querySelectorAll('[data-scope-site]').forEach(function (site) {
+      const toggle = site.querySelector('[data-site-toggle]');
+      const mode = site.querySelector('[data-scope-mode]');
+      const list = site.querySelector('[data-task-list]');
+      function update() {
+        const picking = toggle.checked && !toggle.disabled && mode.value === 'SELECTED';
+        list.hidden = !picking;
+        list.querySelectorAll('input').forEach(function (task) { task.disabled = !picking; });
+      }
+      toggle.addEventListener('change', update);
+      mode.addEventListener('change', update);
+      update();
+    });
+  </script>
+  {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

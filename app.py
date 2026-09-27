@@ -10458,6 +10458,14 @@ def table_admin():
     )
 
 
+# VR3 registration only: existing bootstrap, login and runtime reads are unchanged.
+from routes.vendor_scope_admin import register_vendor_scope_admin
+
+register_vendor_scope_admin(
+    app, db_path=lambda: DB_PATH, core_state=_vendor_organization_schema_state,
+    session_type=resolve_vendor_work_entry_actor_session_type, settings=DEFAULT_SETTINGS,
+)
+
 bootstrap()
 
 if __name__ == "__main__":

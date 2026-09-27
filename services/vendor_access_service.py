@@ -400,3 +400,34 @@ def resolve_scope(conn, *, vendor_account_id):
             return {**scope, "reason": None if scope["task_count"] else "no_eligible_tasks"}
     except (ScopeError, sqlite3.Error):
         return {**_group([]), "reason": "scope_unavailable"}
+
+
+def admin_schema_state(conn, *, actor):
+    """Read-only management gate: absent as a whole, or exact VR2 schema.
+
+    The controller still supplies the existing core schema guard. Unlike explicit
+    initialize_schema, management must never repair a partially present schema.
+    """
+    with _snapshot(conn):
+        _admin(conn, actor)
+        present = sum(conn.execute(
+            "SELECT 1 FROM main.sqlite_schema WHERE name=?", (name,)).fetchone() is not None
+            for name in _SCHEMA)
+        if present not in (0, len(_SCHEMA)):
+            raise ScopeError("partial_scope_schema")
+        _schema(conn, allow_absent=present == 0)
+        return "absent" if present == 0 else "ready"
+
+
+def list_admin_eligible_tasks(conn, *, actor, vendor_id, site_id):
+    """Expose the SAME complete intersection used by saving and resolution.
+
+    This reports existing valid links only; it does not prepare links or grant
+    effective access. VR3 uses it after preparation in its caller transaction.
+    """
+    _integer(site_id, "site_id")
+    with _snapshot(conn):
+        _admin(conn, actor)
+        _schema(conn)
+        assignment = _assignment(conn, vendor_id, site_id)
+        return _eligible(conn, vendor_id, site_id, assignment)
