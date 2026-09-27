@@ -13,6 +13,7 @@ import uuid
 
 from services import vendor_access_service as access
 from services import vendor_roster_service as roster
+from services import vendor_registration_service as registration
 
 
 class AdminError(access.ScopeError):
@@ -54,6 +55,18 @@ def _gate(conn, actor, core_state):
     return state, profiles
 
 
+def _registration_info(conn):
+    """Display-only supplement; never used in the editor fingerprint or grants."""
+    try:
+        if registration.request_schema_state(conn) == "absent":
+            return {"state": "absent", "by_account": {}}
+        rows = _rows(conn, """SELECT account_id,requested_vendor_id,submitted_company_name,
+            submitted_tax_id,created_at FROM main.vendor_registration_requests ORDER BY account_id""")
+        return {"state": "ready", "by_account": {r["account_id"]: r for r in rows}}
+    except (registration.PrerequisiteError, sqlite3.Error):
+        return {"state": "unavailable", "by_account": {}}
+
+
 def catalog(conn, *, actor, core_state):
     state, profiles = _gate(conn, actor, core_state)
     statuses = dict(conn.execute("SELECT vendor_id,organization_status FROM main.vendor_organizations"))
@@ -72,7 +85,8 @@ def catalog(conn, *, actor, core_state):
              statuses.get(history[0]["vendor_id"]) == "disabled"))
     return {"schema_state": state, "profiles": [dict(p, organization_status=statuses[p["vendor_id"]])
             for p in profiles], "accounts": accounts,
-            "has_pending": any(a["configurable"] for a in accounts)}
+            "has_pending": any(a["configurable"] for a in accounts),
+            "registration_info": _registration_info(conn)}
 
 
 def _link_plan(site, tasks, assignments, bindings):
@@ -170,6 +184,10 @@ def editor(conn, *, actor, vendor_id, account_id, core_state):
               "schema_state": data["schema_state"],
               "pending_task_count": sum(t["pending"] for t in task_rows)}
     result["fingerprint"] = fingerprint(result)
+    # Display-only data follows the fingerprint and stays scoped to this account.
+    # POST error rendering has an editor but no catalog.
+    info = data["registration_info"]
+    result["registration_info"] = {"state": info["state"], "request": info["by_account"].get(account_id)}
     return result
 
 

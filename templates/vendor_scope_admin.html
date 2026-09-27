@@ -16,7 +16,7 @@
 <section class="scope-admin">
   <h1>廠商待開通設定</h1>
   <p><a href="{{ url_for('users') }}">返回成員管理</a></p>
-  <p class="scope-note">儲存待開通設定只準備成員與工地範圍。帳號仍未啟用、廠商仍停用、成員仍 pending；待開通，尚未生效。自助建立帳號與正式開通尚未提供。</p>
+  <p class="scope-note">儲存待開通設定只準備成員與工地範圍。帳號仍未啟用、廠商仍停用、成員仍 pending；待開通，尚未生效。廠商可自行申請未啟用帳號；正式開通尚未提供。</p>
   {% if error %}<p class="scope-error" role="alert">{{ error }}</p>{% endif %}
   {% if stale %}
   <p>本次輸入未保存。請重新載入，核對已保存設定與全部選項後再送出。</p>
@@ -26,7 +26,17 @@
   </ul></details>{% endif %}
   {% endif %}
   {% if catalog %}
-  {% if not catalog.has_pending %}<p class="scope-note">尚無待開通帳號。請先透過後續帳號建立流程準備未啟用帳號；本頁不會建立帳號。</p>{% endif %}
+  {% if not catalog.has_pending %}<p class="scope-note">尚無待開通帳號。請廠商由登入頁的「廠商申請帳號」入口申請未啟用帳號；本頁不會建立帳號。</p>{% endif %}
+  {% if catalog.registration_info.state == 'unavailable' %}
+  <p class="scope-error" role="alert">申請資訊不可用：資料結構不相容或讀取失敗。既有待開通設定仍須人工核對。</p>
+  {% elif catalog.registration_info.by_account %}
+  <details open><summary>自行申請資料（自行填報，尚未核驗）</summary><ul>
+    {% for account in catalog.accounts %}
+    {% set submitted_request = catalog.registration_info.by_account.get(account.id) %}
+    {% if submitted_request %}<li>{{ account.username }}／ID {{ account.id }}：{{ submitted_request.submitted_company_name }}／{{ submitted_request.submitted_tax_id }}／申請廠商 ID {{ submitted_request.requested_vendor_id }}</li>{% endif %}
+    {% endfor %}
+  </ul></details>
+  {% else %}<p>無本片申請資料。</p>{% endif %}
   <form method="get" action="{{ url_for('vendor_scope_admin.index') }}">
     <label>廠商（完整八碼統編與穩定 ID）
       <select name="vendor_id" required><option value="">請明確選擇廠商</option>
@@ -46,6 +56,17 @@
   {% if edit %}
   <h2>{{ edit.profile.legal_name }}／{{ edit.profile.tax_id }}</h2>
   <p>廠商 ID：{{ edit.profile.vendor_id }}<br>帳號：{{ edit.account.username }}／ID {{ edit.account.id }}</p>
+  {% if edit.registration_info.state == 'unavailable' %}
+  {% if not catalog or catalog.registration_info.state != 'unavailable' %}<p class="scope-error" role="alert">申請資訊不可用：資料結構不相容或讀取失敗。既有待開通設定仍須人工核對。</p>{% endif %}
+  {% else %}
+  {% set submitted_request = edit.registration_info.request %}
+  {% if submitted_request %}
+  <div class="scope-note" data-testid="registration-info">
+    <p>自行填報，尚未核驗：{{ submitted_request.submitted_company_name }}／{{ submitted_request.submitted_tax_id }}<br>申請廠商 ID：{{ submitted_request.requested_vendor_id }}</p>
+    {% if submitted_request.requested_vendor_id != edit.profile.vendor_id %}<p class="scope-error" role="alert">注意：目前選定廠商與申請廠商不同。請核對兩者差異，再明確確認實際歸屬；不會依申請資料自動選定或搬移。</p>{% endif %}
+  </div>
+  {% else %}<p>此帳號無本片申請資料。</p>{% endif %}
+  {% endif %}
   <p>已保存 revision：<strong>{{ edit.preview.revision }}</strong>；配置工項數：<strong>{{ edit.preview.configured_scope.task_count }}</strong>。待開通，尚未生效。</p>
   {% if edit.preview.configured_scopes %}<details open><summary>目前已保存的完整設定</summary><ul>
     {% for scope in edit.preview.configured_scopes %}<li>工地 ID {{ scope.site_id }}：{{ scope.mode }}{% if scope.mode == 'SELECTED' %}／工項 ID {{ scope.task_ids|join('、') or '無（零工項）' }}{% endif %}</li>{% endfor %}

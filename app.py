@@ -10466,6 +10466,14 @@ register_vendor_scope_admin(
     session_type=resolve_vendor_work_entry_actor_session_type, settings=DEFAULT_SETTINGS,
 )
 
+# VR4 public registration: read-only dependencies, no bootstrap/runtime changes.
+from routes.vendor_registration import register_vendor_registration
+
+register_vendor_registration(
+    app, db_path=lambda: DB_PATH, core_state=_vendor_organization_schema_state,
+    registry_schema=IDENTITY_REGISTRY_SCHEMA_STATEMENTS, settings=DEFAULT_SETTINGS,
+)
+
 bootstrap()
 
 if __name__ == "__main__":
