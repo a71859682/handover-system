@@ -1,30 +1,30 @@
 {% extends "base.html" %}
-{% block title %}Vendor Login{% endblock %}
+{% block title %}廠商登入{% endblock %}
 {% block main_class %}login-page{% endblock %}
 {% block content %}
 <section class="login-panel" data-testid="vendor-login-page">
-  <h1>Vendor Login</h1>
+  <h1>廠商登入</h1>
   {% if error_message %}
   <p class="message error" data-testid="vendor-login-error">{{ error_message }}</p>
   {% endif %}
 
   {% if is_authenticated %}
   <div data-testid="vendor-login-success">
-    <p>Signed in as {{ vendor_name }}</p>
+    <p>已登入廠商： {{ vendor_name }}</p>
     <p data-testid="vendor-username">{{ vendor_username }}</p>
-    <a href="{{ url_for('vendor_logout') }}" data-testid="vendor-logout-link">Logout</a>
+    <a href="{{ url_for('vendor_logout') }}" data-testid="vendor-logout-link">登出</a>
   </div>
   {% else %}
   <form method="post" class="login-form" data-testid="vendor-login-form">
     <label>
-      Username
+      帳號
       <input name="username" autocomplete="username" required autofocus>
     </label>
     <label>
-      Password
+      密碼
       <input name="password" type="password" autocomplete="current-password" required>
     </label>
-    <button type="submit">Login</button>
+    <button type="submit">登入</button>
   </form>
   <p><a href="{{ url_for('vendor_registration.index') }}" data-testid="vendor-register-link">廠商申請帳號（待開通）</a></p>
   {% endif %}

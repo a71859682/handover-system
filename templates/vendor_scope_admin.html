@@ -30,7 +30,7 @@
   {% if catalog.registration_info.state == 'unavailable' %}
   <p class="scope-error" role="alert">申請資訊不可用：資料結構不相容或讀取失敗。既有待開通設定仍須人工核對。</p>
   {% elif catalog.registration_info.by_account %}
-  <details open><summary>自行申請資料（自行填報，尚未核驗）</summary><ul>
+  <details open><summary>自行申請資料（申請人提供的公司歸屬，尚未核驗）</summary><ul>
     {% for account in catalog.accounts %}
     {% set submitted_request = catalog.registration_info.by_account.get(account.id) %}
     {% if submitted_request %}<li>{{ account.username }}／ID {{ account.id }}：{{ submitted_request.submitted_company_name }}／{{ submitted_request.submitted_tax_id }}／申請廠商 ID {{ submitted_request.requested_vendor_id }}</li>{% endif %}
@@ -62,7 +62,7 @@
   {% set submitted_request = edit.registration_info.request %}
   {% if submitted_request %}
   <div class="scope-note" data-testid="registration-info">
-    <p>自行填報，尚未核驗：{{ submitted_request.submitted_company_name }}／{{ submitted_request.submitted_tax_id }}<br>申請廠商 ID：{{ submitted_request.requested_vendor_id }}</p>
+    <p>申請人提供的公司歸屬，尚未核驗：{{ submitted_request.submitted_company_name }}／{{ submitted_request.submitted_tax_id }}<br>申請廠商 ID：{{ submitted_request.requested_vendor_id }}</p>
     {% if submitted_request.requested_vendor_id != edit.profile.vendor_id %}<p class="scope-error" role="alert">注意：目前選定廠商與申請廠商不同。請核對兩者差異，再明確確認實際歸屬；不會依申請資料自動選定或搬移。</p>{% endif %}
   </div>
   {% else %}<p>此帳號無本片申請資料。</p>{% endif %}

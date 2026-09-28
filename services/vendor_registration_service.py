@@ -23,6 +23,8 @@ class PrerequisiteError(RegistrationError):
 
 UNICODE_VERSION = unicodedata.unidata_version
 FIELDS = frozenset({"company_name", "tax_id", "username", "password", "confirm_password"})
+PUBLIC_FIELDS = frozenset({"vendor_id", "username", "password", "confirm_password", "csrf_token"})
+SELECTION_FIELDS = PUBLIC_FIELDS - {"csrf_token"}
 REQUEST_SCHEMA = """CREATE TABLE vendor_registration_requests (
     account_id INTEGER NOT NULL PRIMARY KEY REFERENCES vendor_accounts(id) ON DELETE RESTRICT,
     requested_vendor_id TEXT NOT NULL REFERENCES vendor_profiles(vendor_id) ON DELETE RESTRICT,
@@ -169,3 +171,44 @@ def register(conn, values, *, core_state, registry_schema):
         conn.execute("ROLLBACK TO SAVEPOINT vr4_registration")
         conn.execute("RELEASE SAVEPOINT vr4_registration")
         raise
+
+
+def _eligible_profiles(conn, *, core_state):
+    """Read in the caller's explicit transaction; never initialize the roster."""
+    if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+        raise PrerequisiteError("讀取公司名冊需要明確交易")
+    if core_state(conn) != "all_exact":
+        raise PrerequisiteError("核心廠商資料前提不足或不相容")
+    try:
+        profiles = roster.list_profiles(conn)
+    except roster.RosterError as exc:
+        raise PrerequisiteError("公司名冊前提不足或不相容") from exc
+    if len({p["vendor_id"] for p in profiles}) != len(profiles):
+        raise PrerequisiteError("公司名冊有重複識別，無法受理")
+    disabled = {row[0] for row in conn.execute(
+        "SELECT vendor_id FROM main.vendor_organizations WHERE organization_status='disabled'")}
+    return [p for p in profiles if p["vendor_id"] in disabled and len(p["legal_name"]) <= 200]
+
+
+def registration_choices(conn, *, core_state):
+    """The public projection contains no tax IDs, aliases or provenance."""
+    return sorted(({key: p[key] for key in ("vendor_id", "display_name", "legal_name")}
+                   for p in _eligible_profiles(conn, core_state=core_state)),
+                  key=lambda p: (p["display_name"], p["legal_name"], p["vendor_id"]))
+
+
+def register_selected(conn, values, *, core_state, registry_schema):
+    """Resolve the claimed company under BEGIN IMMEDIATE, then use the core."""
+    if (not isinstance(values, dict) or set(values) != SELECTION_FIELDS or
+            any(not isinstance(v, str) for v in values.values())):
+        raise RegistrationError("申請欄位缺少或不支援")
+    if not values["vendor_id"].strip():
+        raise RegistrationError("請選擇公司")
+    matches = [p for p in _eligible_profiles(conn, core_state=core_state)
+               if p["vendor_id"] == values["vendor_id"]]
+    if len(matches) != 1:
+        raise RegistrationError("所選公司已失效或目前無法申請，請重新選擇公司")
+    profile = matches[0]
+    canonical = {key: values[key] for key in ("username", "password", "confirm_password")}
+    canonical.update(company_name=profile["legal_name"], tax_id=profile["tax_id"])
+    return register(conn, canonical, core_state=core_state, registry_schema=registry_schema)

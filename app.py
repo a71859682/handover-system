@@ -8382,7 +8382,7 @@ def vendor_login():
         if vendor_account is not None:
             set_vendor_session(vendor_account)
             return redirect(url_for("vendor_login"))
-        return _render_vendor_login_page(error_message="Invalid vendor username or password.")
+        return _render_vendor_login_page(error_message="廠商帳號或密碼錯誤，或帳號尚未開通")
     return _render_vendor_login_page()
 
 

@@ -4,7 +4,8 @@
 {% block content %}
 <style>
   .registration-panel { box-sizing: border-box; overflow-wrap: anywhere; }
-  .registration-panel input { width: 100%; min-width: 0; box-sizing: border-box; }
+  .registration-panel input, .registration-panel select { width: 100%; min-width: 0; box-sizing: border-box; }
+  .registration-panel select { max-width: 100%; min-height: 44px; font: inherit; }
   .registration-panel small { font-weight: normal; }
 </style>
 <section class="login-panel registration-panel" data-testid="vendor-registration">
@@ -13,19 +14,27 @@
   <div role="status" data-testid="registration-success">
     <p>帳號已建立，待管理者確認，尚未開通。</p>
     <p>帳號：{{ success.username }}<br>公司：{{ success.company_name }}<br>統編：{{ success.tax_id }}</p>
-    <p>公司資訊為自行填報，尚未核驗；目前無法登入或查看工地資料。請聯絡管理者確認歸屬與待開通範圍。</p>
+    <p>申請人提供的公司歸屬，尚未核驗；目前無法登入或查看工地資料。請聯絡管理者確認歸屬與待開通範圍。</p>
   </div>
   {% else %}
-  <p>請填寫已登錄的完整公司名稱及八碼統編。申請成功只建立未啟用帳號，仍須管理者確認。</p>
+  <p>請選擇所屬公司，再填寫帳號與密碼。公司選擇僅為申請人聲稱的歸屬，尚未核驗；申請成功只建立未啟用帳號，仍須管理者確認。</p>
   {% if error %}<p class="message error" role="alert">{{ error }}</p>{% endif %}
   <form method="post" action="{{ url_for('vendor_registration.index') }}" class="login-form" id="vendor-registration-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>完整公司名稱<input name="company_name" value="{{ values.get('company_name', '') }}" maxlength="200" autocomplete="organization" required></label>
-    <label>統一編號<input name="tax_id" value="{{ values.get('tax_id', '') }}" inputmode="numeric" pattern="[0-9]{8}" minlength="8" maxlength="8" required><small>請保留前導零，輸入完整八碼。</small></label>
+    <label for="registration-company">所屬公司</label>
+    <select id="registration-company" name="vendor_id" aria-describedby="company-help{% if selection_invalid %} company-error{% endif %}" required{% if not choices %} disabled{% endif %}>
+      <option value=""{% if not values.get('vendor_id') or selection_invalid %} selected{% endif %}>請選擇公司</option>
+      {% for company in choices %}
+      <option value="{{ company.vendor_id }}"{% if values.get('vendor_id') == company.vendor_id %} selected{% endif %}>{{ company.display_name }}{% if company.legal_name != company.display_name %}（{{ company.legal_name }}）{% endif %}{% if (company.display_name, company.legal_name) in duplicate_labels %}［識別：{{ company.vendor_id }}］{% endif %}</option>
+      {% endfor %}
+    </select>
+    <small id="company-help">找不到所屬公司時，請聯絡管理者確認公司名冊。</small>
+    {% if selection_invalid %}<p id="company-error" role="alert">所選公司已失效或目前無法申請，請重新選擇公司。</p>{% endif %}
+    {% if not choices and choices_loaded %}<p role="status">目前沒有可申請的公司，請聯絡管理者。</p>{% endif %}
     <label>帳號<input name="username" value="{{ values.get('username', '') }}" minlength="4" maxlength="64" pattern="[a-z][a-z0-9._\-]{3,63}" autocomplete="username" autocapitalize="none" spellcheck="false" required><small>以小寫英文字母開頭，4–64 字元，可含數字、點、底線、連字號。</small></label>
     <label>密碼<input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required><small>12–128 字元，空白也計入密碼。</small></label>
     <label>確認密碼<input name="confirm_password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required></label>
-    <button type="submit">建立待開通帳號</button>
+    <button type="submit"{% if not choices %} disabled{% endif %}>建立待開通帳號</button>
   </form>
   {% endif %}
   <p><a href="{{ url_for('vendor_login') }}">返回廠商登入</a></p>
