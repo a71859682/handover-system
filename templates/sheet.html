@@ -1,10 +1,11 @@
 {% extends "base.html" %}
-{% block title %}{{ grid.settings.sheet_title }}｜{{ grid.settings.site_title }}{% endblock %}
+{% block title %}{{ grid.current_sheet.name if vr4_preview else grid.settings.sheet_title }}｜{{ grid.settings.site_title }}{% endblock %}
 {% block main_class %}page sheet-page{% endblock %}
 {% block content %}
-<section class="sheet-header">
+<section class="sheet-header"{% if vr4_preview %} id="top"{% endif %}>
   <div>
-    <h1>{{ grid.settings.sheet_title }}</h1>
+    <h1>{{ grid.current_sheet.name if vr4_preview else grid.settings.sheet_title }}</h1>
+    {% if vr4_preview %}<p>管制表唯讀；進度、日期、額外欄位與樓層／單戶報表本次預覽未開放。</p>{% endif %}
     <p>{{ grid.settings.instruction_text }}</p>
     <div class="sheet-mobile-work-hub-access" data-testid="sheet-mobile-work-hub-access">
       <a
@@ -16,13 +17,13 @@
     </div>
   </div>
   <div class="sheet-actions">
-    <div class="sync-state" id="syncState">已同步</div>
+    <div class="sync-state" id="syncState">{% if vr4_preview %}唯讀預覽・重新整理更新{% else %}已同步{% endif %}</div>
     <div class="action-buttons">
       <button type="button" id="expandAllBtn">全部展開</button>
       <button type="button" id="collapseAllBtn">全部收納</button>
       <button type="button" id="showSelectedBtn">顯示選取工項/廠商</button>
       {% if session.get("role") == "admin" %}
-      <button type="button" id="resetSheetBtn" data-sheet-id="{{ grid.current_sheet.id }}">回復預設</button>
+      <button type="button" id="resetSheetBtn" data-sheet-id="{{ grid.current_sheet.id }}"{% if vr4_preview %} disabled title="本次預覽未開放"{% endif %}>回復預設{% if vr4_preview %}（本次預覽未開放）{% endif %}</button>
       {% endif %}
       <button type="button" id="printBtn">列印</button>
     </div>
@@ -99,6 +100,7 @@
   </div>
 </dialog>
 
+{% if not vr4_preview %}
 <dialog
   id="crew-formal-cancellation-dialog"
   class="crew-formal-cancellation-dialog"
@@ -131,6 +133,7 @@
     </div>
   </form>
 </dialog>
+{% endif %}
 
 <div class="print-meta">
   <div class="print-date">列表日期：<span id="printDate"></span></div>
@@ -144,7 +147,7 @@
 </div>
 
 <section class="table-shell">
-  <table class="control-table" id="controlTable" data-sheet-id="{{ grid.current_sheet.id }}">
+  <table class="control-table" id="controlTable" data-sheet-id="{{ grid.current_sheet.id }}"{% if vr4_preview %} data-vr4-preview="true"{% endif %}>
     <thead>
       <tr class="vendor-row">
         <th class="meta" data-head-floor>{{ grid.settings.floor_header }}</th>
@@ -172,7 +175,7 @@
         <td class="floor-cell" data-floor-label>
           <button class="toggle" type="button" data-floor-id="{{ item.floor.id }}">+</button>
           <span>{{ item.floor.name }}</span>
-          <a class="floor-report-link" data-testid="floor-report-link-{{ item.floor.id }}" href="{{ url_for('floor_handover_report', floor_id=item.floor.id) }}">樓層報表</a>
+          {% if vr4_preview %}<span aria-disabled="true">樓層報表（本次預覽未開放）</span>{% else %}<a class="floor-report-link" data-testid="floor-report-link-{{ item.floor.id }}" href="{{ url_for('floor_handover_report', floor_id=item.floor.id) }}">樓層報表</a>{% endif %}
         </td>
         <td class="count">{{ item.floor.unit_count }}</td>
         <td>{{ item.floor.block_name }}</td>
@@ -191,12 +194,12 @@
         <td class="count">1</td>
         <td data-unit-name>
           <span>{{ unit.name }}</span>
-          <a class="unit-report-link" data-testid="unit-report-link-{{ unit.id }}" href="{{ url_for('unit_handover_report', unit_id=unit.id) }}">單戶報表</a>
+          {% if vr4_preview %}<span aria-disabled="true">單戶報表（本次預覽未開放）</span>{% else %}<a class="unit-report-link" data-testid="unit-report-link-{{ unit.id }}" href="{{ url_for('unit_handover_report', unit_id=unit.id) }}">單戶報表</a>{% endif %}
         </td>
         {% for task in grid.tasks %}
         {% set value = grid.progress.get((unit.id, task.id), 'X') %}
         <td class="task-col task-col-{{ task.id }}">
-          <select class="progress-select" data-unit-id="{{ unit.id }}" data-task-id="{{ task.id }}">
+          <select class="progress-select"{% if vr4_preview %} disabled title="本次預覽未開放"{% endif %} data-unit-id="{{ unit.id }}" data-task-id="{{ task.id }}">
             <option value="X" {{ 'selected' if value == 'X' else '' }}>X</option>
             <option value="O" {{ 'selected' if value == 'O' else '' }}>O</option>
           </select>
@@ -205,12 +208,12 @@
         {% for field in grid.extra_fields %}
         <td>
           {% if field.field_type == 'status' %}
-          <select class="extra-select" data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}">
+          <select class="extra-select"{% if vr4_preview %} disabled title="本次預覽未開放"{% endif %} data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}">
             <option value="X" {{ 'selected' if (extra.get(field.field_key) or 'X') == 'X' else '' }}>X</option>
             <option value="O" {{ 'selected' if extra.get(field.field_key) == 'O' else '' }}>O</option>
           </select>
           {% else %}
-          <input class="extra-input" type="date" data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}" value="{{ extra.get(field.field_key) or '' }}">
+          <input class="extra-input"{% if vr4_preview %} disabled title="本次預覽未開放"{% endif %} type="date" data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}" value="{{ extra.get(field.field_key) or '' }}">
           {% endif %}
         </td>
         {% endfor %}
@@ -257,6 +260,14 @@
 </section>
 
 <section class="crew-form-shell" data-mode="readonly" data-sheet-id="{{ grid.current_sheet.id }}" id="sheet-lower-table-start">
+  {% if vr4_preview %}
+  <h2>工班進場表</h2>
+  <p>本次預覽未開放；工班資料、需求確認與核准／取消操作均未啟用。</p>
+  <section id="sheet-work-hub-overview" tabindex="-1" aria-label="工作總覽">
+    <h3>工作總覽</h3>
+    <p>本次預覽未開放；不載入工班、管理摘要或排程資料。</p>
+  </section>
+  {% else %}
   <div class="crew-form-header">
     <div>
       <h2>&#24037;&#29677;&#36914;&#22580;&#34920;</h2>
@@ -294,12 +305,15 @@
   <div class="crew-vendor-list" id="crewVendorList" data-testid="crew-work-hub-target-today-entries">
     <div class="crew-empty-state">&#27491;&#22312;&#36617;&#20837;&#24037;&#29677;&#36039;&#26009;...</div>
   </div>
+{% endif %}
 </section>
 
+{% if not vr4_preview %}
 <div class="date-popover hidden" id="datePopover">
   <button type="button" id="dateClearBtn">清除</button>
   <button type="button" id="dateConfirmBtn">確定</button>
 </div>
+{% endif %}
 
 <style>
   .crew-management-insight-summary {

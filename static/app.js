@@ -1,5 +1,7 @@
 const syncState = document.getElementById("syncState");
 const table = document.getElementById("controlTable");
+// Presentation flag emitted only by the isolated entry; server allowlist remains authoritative.
+const vr4Preview = table?.dataset.vr4Preview === "true";
 const columnFilterStyle = document.getElementById("columnFilterStyle");
 const crewFormShell = document.querySelector(".crew-form-shell");
 const crewVendorList = document.getElementById("crewVendorList");
@@ -88,6 +90,7 @@ function closeCrewFormalCancellationDialog() {
 }
 
 function openCrewFormalCancellationDialog(button) {
+  if (vr4Preview) return;
   if (crewFormalCancellationSubmitting) return;
   if (!button || !crewFormalCancellationDialog || typeof crewFormalCancellationDialog.showModal !== "function") return;
   crewFormalCancellationTrigger = button;
@@ -104,6 +107,7 @@ function openCrewFormalCancellationDialog(button) {
 }
 
 function initializeCrewFormalCancellationDialog() {
+  if (vr4Preview) return;
   if (!crewFormalCancellationDialog || !crewFormalCancellationForm || !crewFormalCancellationReason) return;
   crewFormalCancellationReason.addEventListener("input", updateCrewFormalCancellationCounter);
   document.querySelector("[data-testid='crew-formal-cancellation-close']")?.addEventListener("click", closeCrewFormalCancellationDialog);
@@ -1121,6 +1125,7 @@ function renderCrewForms(data) {
 }
 
 async function loadCrewForms(sheetId) {
+  if (vr4Preview) return;
   if (!crewFormShell || !sheetId) return false;
   try {
     const response = await fetch(`/api/crew-forms?sheet_id=${encodeURIComponent(sheetId)}`);
@@ -1137,6 +1142,7 @@ async function loadCrewForms(sheetId) {
 }
 
 async function confirmCrewWorkEntryRequirement(button) {
+  if (vr4Preview) return;
   const entryId = Number.parseInt(button?.dataset.entryId || "", 10);
   const sheetId = Number.parseInt(button?.dataset.sheetId || crewFormShell?.dataset.sheetId || "", 10);
   if (!entryId || !sheetId) {
@@ -1171,6 +1177,7 @@ async function confirmCrewWorkEntryRequirement(button) {
 }
 
 async function loadCrewWorkHubSummary(sheetId) {
+  if (vr4Preview) return;
   if ((!crewManagementInsightSummary && !crewWorkHubCards && !crewWorkHubFocusSections) || !sheetId) return;
   const emptySummary = {
     blocked_count: 0,
@@ -1325,6 +1332,7 @@ function setCrewFormalApproveFeedback(button, message, state = "") {
 }
 
 async function approveCrewWorkEntryFormal(button) {
+  if (vr4Preview) return;
   if (!button || button.disabled || button.dataset.formalApproveInFlight === "true") return;
   const entryId = Number.parseInt(button?.dataset.entryId || "", 10);
   const sheetId = Number.parseInt(button?.dataset.sheetId || crewFormShell?.dataset.sheetId || "", 10);
@@ -1380,6 +1388,7 @@ async function approveCrewWorkEntryFormal(button) {
 }
 
 async function cancelCrewWorkEntryFormal(button) {
+  if (vr4Preview) return;
   if (crewFormalCancellationSubmitting || !button || !crewFormalCancellationReason) return;
   const entryId = Number.parseInt(button.dataset.entryId || "", 10);
   const sheetId = Number.parseInt(button.dataset.sheetId || crewFormShell?.dataset.sheetId || "", 10);
@@ -1611,6 +1620,7 @@ function showSelectedTaskX() {
 }
 
 async function resetSheetDefaults() {
+  if (vr4Preview) return;
   const button = document.getElementById("resetSheetBtn");
   if (!button) return;
   const password = window.prompt("請輸入管理員密碼，確認後會將目前管制表全部回復為預設值。");
@@ -1641,6 +1651,7 @@ async function resetSheetDefaults() {
 }
 
 async function postJson(url, payload) {
+  if (vr4Preview) return;
   pendingSaves += 1;
   setSyncState("儲存中", "saving");
   try {
@@ -1662,6 +1673,7 @@ async function postJson(url, payload) {
 }
 
 function saveProgress(select) {
+  if (vr4Preview) return;
   return postJson("/api/progress", {
     unit_id: select.dataset.unitId,
     task_id: select.dataset.taskId,
@@ -1670,6 +1682,7 @@ function saveProgress(select) {
 }
 
 function saveExtra(control) {
+  if (vr4Preview) return;
   return postJson("/api/unit-extra", {
     unit_id: control.dataset.unitId,
     field: control.dataset.field,
@@ -1715,6 +1728,7 @@ function applyGrid(grid) {
 }
 
 async function refreshGrid() {
+  if (vr4Preview) return;
   if (pendingSaves > 0 || document.activeElement?.matches("select,input")) return;
   try {
     const response = await fetch("/api/grid");
@@ -1727,6 +1741,7 @@ async function refreshGrid() {
 }
 
 function showDatePopover(input) {
+  if (vr4Preview) return;
   activeDateInput = input;
   const popover = document.getElementById("datePopover");
   if (!popover) return;
@@ -1800,6 +1815,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("focusin", (event) => {
+  if (vr4Preview) return;
   const control = event.target.closest(".progress-select, .extra-input, .extra-select");
   if (!control) return;
   highlightForControl(control);
@@ -1807,6 +1823,7 @@ document.addEventListener("focusin", (event) => {
 });
 
 document.addEventListener("focusout", (event) => {
+  if (vr4Preview) return;
   if (!event.target.closest(".progress-select, .extra-input, .extra-select")) return;
   window.setTimeout(() => {
     if (!document.activeElement?.matches(".progress-select, .extra-input, .extra-select")) {
@@ -1817,6 +1834,7 @@ document.addEventListener("focusout", (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (vr4Preview) return;
   const progress = event.target.closest(".progress-select");
   if (progress) return saveProgress(progress);
   const extra = event.target.closest(".extra-select");
@@ -1827,8 +1845,8 @@ buildDomCache();
 updatePrintDate();
 initializeSheetAiUx001bDialogShell();
 initializeCrewFormalCancellationDialog();
-if (crewFormShell?.dataset.sheetId) {
+if (!vr4Preview && crewFormShell?.dataset.sheetId) {
   loadCrewWorkHubSummary(crewFormShell.dataset.sheetId);
   loadCrewForms(crewFormShell.dataset.sheetId);
 }
-setInterval(refreshGrid, 10000);
+if (!vr4Preview) setInterval(refreshGrid, 10000);

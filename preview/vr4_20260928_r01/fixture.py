@@ -13,10 +13,10 @@ import uuid
 from urllib.parse import unquote, urlsplit
 from urllib.request import url2pathname
 
-IDENTITY = "004F-VR4-UX-PREVIEW/r01"
-BASELINE = "a0eb5d2055ce047ce2eb5c862b6457853daa6643"
-WINDOWS_ROOT = Path(r"C:\Users\Public\Documents\004f-VR4-UX-PREVIEW-20260928-r01")
-RENDER_ROOT = Path("/tmp/004f-vr4-ux-preview-20260928-r01")
+IDENTITY = "004F-VR4-PREVIEW-NAV/r02"
+BASELINE = "048f27807f89428301ad975aef420aa7721ac242"
+WINDOWS_ROOT = Path(r"C:\Users\Public\Documents\004f-VR4-PREVIEW-NAV-20260928-r02")
+RENDER_ROOT = Path("/tmp/004f-vr4-preview-nav-20260928-r02")
 FLAGS = ("USE_SQLALCHEMY_READS", "USE_SQLALCHEMY_WRITES", "USERS_READ_COMPARE",
          "DUAL_WRITE_ENABLED", "DUAL_WRITE_DRY_RUN", "DUAL_WRITE_STRICT")
 MARKER = "vr4_preview_identity"

@@ -28,9 +28,20 @@ ALLOWED = {"/", "/login", "/logout", "/vendor/login", "/vendor/logout",
            "/site-selector", "/sheet", "/api/grid", "/preview/version", "/preview/fixture-state"}
 
 
+@app.context_processor
+def preview_template_context():
+    # Registered only after preimport isolation and fixture validation succeeded.
+    return {"vr4_preview": True}
+
+
 @app.before_request
 def preview_surface():
-    if request.path not in ALLOWED and not request.path.startswith("/static/"):
+    sheet_read = (request.method in {"GET", "HEAD"} and
+                  request.url_rule is not None and
+                  request.url_rule.rule == "/sheet/<int:sheet_id>" and
+                  request.endpoint == "sheet")
+    if (request.path not in ALLOWED and not sheet_read and
+            not request.path.startswith("/static/")):
         abort(404)
 
 

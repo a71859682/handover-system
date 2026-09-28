@@ -7,6 +7,27 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='styles.css', v=asset_version) }}">
 </head>
 <body>
+  {% if vr4_preview %}
+  <aside class="message" aria-label="隔離預覽說明" data-testid="vr4-preview-notice">
+    <strong>VR4 隔離預覽・僅供測試</strong>
+    <p>可用：廠商申請、廠商登入；內部管理員可管理廠商帳號與範圍、切換工地及唯讀瀏覽既有管制表。</p>
+    <nav aria-label="預覽入口">
+      {% if session.get("user_id") %}
+      <p>廠商申請／廠商登入需先登出內部帳號，登出後可從此處選擇入口。</p>
+      <form method="post" action="{{ url_for('logout') }}">
+        <button type="submit">登出以使用廠商申請／廠商登入</button>
+      </form>
+      {% elif session.get("vendor_account_id") %}
+      <p>申請新帳號前請先登出目前廠商帳號。</p>
+      <a href="{{ url_for('vendor_logout') }}">廠商登出</a>
+      {% else %}
+      <a href="{{ url_for('vendor_registration.index') }}">廠商申請</a>
+      <a href="{{ url_for('vendor_login') }}">廠商登入</a>
+      <a href="{{ url_for('login') }}">內部登入</a>
+      {% endif %}
+    </nav>
+  </aside>
+  {% endif %}
   {% if session.get("user_id") %}
   <header class="topbar">
     <div>
@@ -18,8 +39,14 @@
       <span class="user">&#30446;&#21069;&#24037;&#22320;&#65306;{{ session.get("current_site_name") or "&#23578;&#26410;&#36984;&#25799;" }}</span>
       <a href="{{ url_for('site_selector') }}">&#20999;&#25563;&#24037;&#22320;</a>
       {% if session.get("role") == "admin" %}
+      {% if vr4_preview %}
+      <a href="{{ url_for('vendor_scope_admin.index') }}">廠商帳號與範圍管理</a>
+      <span aria-disabled="true">表格設定（本次預覽未開放）</span>
+      <span aria-disabled="true">成員管理（本次預覽未開放）</span>
+      {% else %}
       <a href="{{ url_for('table_admin') }}">&#34920;&#26684;&#35373;&#23450;</a>
       <a href="{{ url_for('users') }}">&#25104;&#21729;&#31649;&#29702;</a>
+      {% endif %}
       {% endif %}
       <span class="user">{{ session.get("display_name") or session.get("username") }}</span>
       <form method="post" action="{{ url_for('logout') }}">

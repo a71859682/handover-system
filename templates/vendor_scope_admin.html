@@ -15,7 +15,7 @@
 </style>
 <section class="scope-admin">
   <h1>廠商待開通設定</h1>
-  <p><a href="{{ url_for('users') }}">返回成員管理</a></p>
+  <p>{% if vr4_preview %}<a href="{{ url_for('sheet') }}">返回管制表</a>{% else %}<a href="{{ url_for('users') }}">返回成員管理</a>{% endif %}</p>
   <p class="scope-note">儲存待開通設定只準備成員與工地範圍。帳號仍未啟用、廠商仍停用、成員仍 pending；待開通，尚未生效。廠商可自行申請未啟用帳號；正式開通尚未提供。</p>
   {% if error %}<p class="scope-error" role="alert">{{ error }}</p>{% endif %}
   {% if stale %}
