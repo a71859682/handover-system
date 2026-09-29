@@ -3,6 +3,7 @@
 import hashlib
 import json
 import uuid
+from pathlib import Path
 
 from .fixture import (BASELINE, IDENTITY, finish_fixture, install_storage_guard,
                       prepare, readonly, validate_environment, verify_identity)
@@ -13,7 +14,7 @@ with prepare(contract) as (fresh, fixture_instance):
     import app as product
     finish_fixture(product, contract, fresh)
 
-from flask import abort, jsonify, request, session
+from flask import Response, abort, jsonify, request, session
 from services import vendor_access_service as access
 from services import vendor_scope_admin_service as scope_admin
 
@@ -25,7 +26,8 @@ VERSION = dict(preview=IDENTITY, baseline_commit=BASELINE, render_git_commit=con
 # In particular no original admin/users, admin/table or reset endpoint is exposed.
 ALLOWED = {"/", "/login", "/logout", "/vendor/login", "/vendor/logout",
            "/vendor/register", "/vendor/register/success", "/admin/vendor-scopes",
-           "/site-selector", "/sheet", "/api/grid", "/preview/version", "/preview/fixture-state"}
+           "/site-selector", "/sheet", "/api/grid", "/preview/version", "/preview/fixture-state",
+           "/google2f0bce787d3c033e.html"}
 
 
 @app.context_processor
@@ -43,6 +45,18 @@ def preview_surface():
     if (request.path not in ALLOWED and not sheet_read and
             not request.path.startswith("/static/")):
         abort(404)
+
+
+@app.get("/google2f0bce787d3c033e.html")
+def google_site_verification():
+    if request.query_string:
+        abort(400)
+    response = Response(
+        Path(__file__).with_name("google2f0bce787d3c033e.html").read_bytes(),
+        mimetype="text/html",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/preview/version")
