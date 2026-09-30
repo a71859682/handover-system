@@ -96,11 +96,12 @@ def fixture_state():
                      registrations=list(catalog["registration_info"]["by_account"].values()),
                      memberships=[], sites=[dict(r) for r in conn.execute(
                          "SELECT id,site_name,is_active FROM sites ORDER BY id")])
-        for row in conn.execute("SELECT vendor_membership_id,vendor_account_id,vendor_id,membership_status "
+        for row in conn.execute("SELECT vendor_membership_id,vendor_account_id,vendor_id,membership_status,membership_role "
                                 "FROM vendor_organization_memberships ORDER BY vendor_membership_id"):
             preview = access.preview_scopes(conn, actor=actor, membership_id=row[0])
             state["memberships"].append(dict(row) | {
                 "revision": preview["revision"], "configured_scopes": preview["configured_scopes"],
+                "configured_scope": preview["configured_scope"],
                 "configured_task_count": preview["configured_scope"]["task_count"],
                 "effective_task_count": preview["effective_scope"]["task_count"]})
         tables = ("vendor_accounts", "vendor_organizations", "vendor_organization_memberships",
