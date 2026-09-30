@@ -18,6 +18,7 @@ class Sheet(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.Text, nullable=False)
     sort_order = db.Column(db.Integer, nullable=False, default=1, server_default="1")
+    site_id = db.Column(db.Integer, nullable=True)
     created_at = db.Column(db.Text, nullable=False, server_default=db.text("CURRENT_TIMESTAMP"))
 
 
