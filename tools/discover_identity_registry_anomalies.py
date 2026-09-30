@@ -1776,7 +1776,7 @@ def _capture(sqlite3, resolved_path, pre, run_id, captured_at, tool_commit):
                 code, disposition, indeterminate=reason
             )
     try:
-        post = _checkpoint(resolved_path, initial=False)
+        post = _checkpoint(_Path(pre["lexical"]), initial=False)
         identity_keys = (
             "lexical",
             "resolved",
