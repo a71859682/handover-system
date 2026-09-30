@@ -5,8 +5,8 @@ on:
   pull_request:
 
 jobs:
-  verify:
-    runs-on: ubuntu-latest
+  linux-portable:
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
@@ -15,7 +15,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.14.7"
+          architecture: x64
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -35,5 +36,47 @@ jobs:
       - name: Check model schema
         run: python tools/check_model_schema.py
 
-      - name: Run smoke test
-        run: python tests/smoke_test.py
+      - name: Run Linux portable smoke
+        run: python tests/smoke_test.py --ci-linux-portable
+
+  windows-native:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.7"
+          architecture: x64
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Windows native smoke
+        run: python tests/smoke_test.py --ci-windows-native
+
+  verify:
+    needs: [linux-portable, windows-native]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.7"
+          architecture: x64
+
+      - name: Require both platform jobs
+        env:
+          LINUX_RESULT: ${{ needs['linux-portable'].result }}
+          WINDOWS_RESULT: ${{ needs['windows-native'].result }}
+        run: |
+          python3 - <<'PY'
+          import os
+          if (os.environ["LINUX_RESULT"], os.environ["WINDOWS_RESULT"]) != ("success", "success"):
+              raise SystemExit("Both platform jobs must succeed.")
+          print("Both platform jobs passed.")
+          PY

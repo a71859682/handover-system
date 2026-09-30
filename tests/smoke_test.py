@@ -30797,7 +30797,117 @@ def run_schema_manifest_serializer_smoke(temp_root: Path) -> None:
     print(marker)
 
 
-def main() -> int:
+def run_identity_registry_unsupported_platform_smoke(temp_root: Path) -> None:
+    if sys.platform != "linux" or os.name != "posix":
+        raise AssertionError("unsupported-platform smoke requires native Linux")
+    from importlib import import_module
+
+    module = import_module("discover_identity_registry_anomalies")
+    temp_root.mkdir(parents=True, exist_ok=False)
+    missing_db = (temp_root / "unsupported-missing.db").resolve()
+    family = [Path(str(missing_db) + suffix) for suffix in ("", "-wal", "-shm", "-journal")]
+
+    def require_missing_family():
+        if any(os.path.lexists(path) for path in family):
+            raise AssertionError("unsupported-platform discovery created a DB or sidecar")
+
+    argv = [
+        "--db", str(missing_db),
+        "--run-id", "123e4567-e89b-42d3-a456-426614174000",
+        "--captured-at", "2026-07-19T00:00:00Z",
+        "--tool-commit", "53fd06ebd10cc2ce60e7cdf4c16737634c270f9e",
+    ]
+    touched = []
+
+    def forbidden_stage(name):
+        def reject(*args, **kwargs):
+            touched.append(name)
+            raise AssertionError("unsupported platform reached a protected discovery stage")
+        return reject
+
+    class BinaryCapture:
+        def __init__(self):
+            self.buffer = io.BytesIO()
+
+    original_connect = sqlite3.connect
+    original_validate = module._validate_inputs
+    original_checkpoint = module._checkpoint
+    original_capture = module._capture
+    require_missing_family()
+    try:
+        sqlite3.connect = forbidden_stage("sqlite.connect")
+        module._validate_inputs = forbidden_stage("validate_inputs")
+        module._checkpoint = forbidden_stage("checkpoint")
+        module._capture = forbidden_stage("capture")
+        try:
+            module.discover_identity_registry_anomalies(
+                db_path=missing_db, run_id=argv[3], captured_at=argv[5], tool_commit=argv[7]
+            )
+        except module.IdentityRegistryDiscoveryError as error:
+            if (
+                error.args != ("identity registry discovery failed",)
+                or error._classification != "internal"
+                or error.__cause__ is not None
+                or error.__context__ is not None
+            ):
+                raise AssertionError("unsupported-platform API error contract changed") from None
+        else:
+            raise AssertionError("unsupported-platform API unexpectedly accepted Linux")
+        if touched:
+            raise AssertionError("unsupported-platform API reached protected stages")
+        require_missing_family()
+        stdout, stderr = BinaryCapture(), BinaryCapture()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = module._main(argv)
+        if (status, stdout.buffer.getvalue(), stderr.buffer.getvalue()) != (
+            4, b"", b"AUTH-ID-001H DISCOVERY INTERNAL ERROR\n"
+        ):
+            raise AssertionError("unsupported-platform CLI error contract changed")
+        if touched:
+            raise AssertionError("unsupported-platform CLI reached protected stages")
+        require_missing_family()
+    finally:
+        sqlite3.connect = original_connect
+        module._validate_inputs = original_validate
+        module._checkpoint = original_checkpoint
+        module._capture = original_capture
+
+    require_missing_family()
+    result = subprocess.run(
+        [sys.executable, "-B", str(TOOLS_DIR / "discover_identity_registry_anomalies.py"), *argv],
+        cwd=ROOT_DIR, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True, check=False,
+    )
+    if (result.returncode, result.stdout, result.stderr) != (
+        4, b"", b"AUTH-ID-001H DISCOVERY INTERNAL ERROR\n"
+    ):
+        raise AssertionError("unsupported-platform process CLI error contract changed")
+    require_missing_family()
+    print("identity registry native Linux refusal smoke PASS")
+
+
+def run_ci_smoke(mode: str) -> int:
+    if mode not in {"--ci-linux-portable", "--ci-windows-native"}:
+        raise SystemExit("unknown CI smoke mode")
+    if (
+        sys.implementation.name != "cpython"
+        or sys.version_info[:2] != (3, 14)
+        or sys.maxsize != 2**63 - 1
+    ):
+        raise SystemExit("CI smoke requires 64-bit CPython 3.14")
+    if mode == "--ci-linux-portable":
+        if sys.platform != "linux" or os.name != "posix":
+            raise SystemExit("Linux portable smoke requires native Linux")
+        return main(ci_linux_portable=True)
+    if sys.platform != "win32" or os.name != "nt":
+        raise SystemExit("Windows native smoke requires native Windows")
+    run_identity_registry_discovery_smoke()
+    run_sqlite_db_path_resolver_smoke()
+    print("Windows native smoke PASS")
+    return 0
+
+
+def main(*, ci_linux_portable: bool = False) -> int:
     with tempfile.TemporaryDirectory() as tmpdir:
         run_dev_vendor_credential_rotation_smoke(Path(tmpdir) / "dev-vendor-credential-rotation")
         db_path = Path(tmpdir) / "sample.db"
@@ -30944,9 +31054,14 @@ def main() -> int:
         run_vendor_organization_physical_schema_smoke(
             Path(tmpdir) / "vendor-organization-physical-schema"
         )
-        run_identity_registry_discovery_smoke(
-            Path(tmpdir) / "identity-registry-discovery"
-        )
+        if ci_linux_portable:
+            run_identity_registry_unsupported_platform_smoke(
+                Path(tmpdir) / "identity-registry-unsupported-platform"
+            )
+        else:
+            run_identity_registry_discovery_smoke(
+                Path(tmpdir) / "identity-registry-discovery"
+            )
         run_identity_registry_schema_smoke(Path(tmpdir) / "identity-registry-schema")
         run_schema_manifest_serializer_smoke(Path(tmpdir) / "schema-manifest-serializer")
         vendor_auth_db = Path(tmpdir) / "vendor-auth-foundation.db"
@@ -31187,6 +31302,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] in {"--ci-linux-portable", "--ci-windows-native"}:
+        raise SystemExit(run_ci_smoke(sys.argv[1]))
     if len(sys.argv) == 2 and sys.argv[1] == "--internal-identity-registry-id-format":
         raise SystemExit(_run_identity_registry_id_format_child())
     if len(sys.argv) == 2 and sys.argv[1] == "--internal-identity-registry-lifecycle-readiness":
@@ -31232,4 +31349,6 @@ if __name__ == "__main__":
         raise SystemExit(_run_dev_vendor_credential_rotation_child(Path(sys.argv[2])))
     if len(sys.argv) == 4 and sys.argv[1] == "--internal-vendor-authenticated-submit":
         raise SystemExit(_run_vendor_authenticated_submit_child(Path(sys.argv[2]), Path(sys.argv[3])))
+    if len(sys.argv) != 1:
+        raise SystemExit("unknown smoke test mode or invalid arguments")
     raise SystemExit(main())
