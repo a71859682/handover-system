@@ -5654,6 +5654,107 @@ def run_sheet_bidirectional_floating_navigation_guardrail_smoke() -> None:
         raise AssertionError("sheet bidirectional floating navigation must remain hidden in print")
 
 
+def _assert_sheet_preview_bootstrap(js_text: str) -> str:
+    flag = 'const vr4Preview = table?.dataset.vr4Preview === "true";'
+    start = "buildDomCache();"
+    if js_text.count(flag) != 1 or js_text.count(start) != 1:
+        raise AssertionError("sheet preview flag and bootstrap must remain unique")
+    bootstrap = js_text[js_text.index(start):]
+    for call in (
+        "loadCrewWorkHubSummary(crewFormShell.dataset.sheetId);",
+        "loadCrewForms(crewFormShell.dataset.sheetId);",
+        "setInterval(refreshGrid, 10000);",
+    ):
+        if js_text.count(call) != 1:
+            raise AssertionError("sheet preview bootstrap call must remain unique")
+    expected = (
+        "buildDomCache();",
+        "updatePrintDate();",
+        "initializeSheetAiUx001bDialogShell();",
+        "initializeCrewFormalCancellationDialog();",
+        "if (!vr4Preview && crewFormShell?.dataset.sheetId) {",
+        "loadCrewWorkHubSummary(crewFormShell.dataset.sheetId);",
+        "loadCrewForms(crewFormShell.dataset.sheetId);",
+        "}",
+        "if (!vr4Preview) setInterval(refreshGrid, 10000);",
+    )
+    if tuple(line.strip() for line in bootstrap.splitlines() if line.strip()) != expected:
+        raise AssertionError("sheet preview bootstrap isolation or order changed")
+    return bootstrap
+
+
+def _assert_sheet_grid_controls(html: str, preview: bool) -> None:
+    from html.parser import HTMLParser
+
+    class GridMarkup(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.tags = []
+
+        def handle_starttag(self, tag, attrs):
+            self.tags.append((tag, attrs))
+
+    parser = GridMarkup()
+    parser.feed(html)
+    expected = (
+        ("toggle", "button", {"type": "button", "data-floor-id": "22"}),
+        ("progress-select", "select", {"data-unit-id": "33", "data-task-id": "44"}),
+        ("extra-select", "select", {"data-unit-id": "33", "data-field": "status"}),
+        ("extra-input", "input", {"type": "date", "data-unit-id": "33", "data-field": "date"}),
+    )
+    for class_name, tag_name, bindings in expected:
+        matches = [(tag, attrs) for tag, attrs in parser.tags
+                   if any(key == "class" and class_name in (value or "").split() for key, value in attrs)]
+        if len(matches) != 1:
+            raise AssertionError("sheet grid control must remain unique: " + class_name)
+        tag, items = matches[0]
+        attrs = dict(items)
+        if len(items) != len(attrs) or tag != tag_name or any(attrs.get(key) != value for key, value in bindings.items()):
+            raise AssertionError("sheet grid control binding changed: " + class_name)
+        if ("disabled" in attrs) != (preview and class_name != "toggle"):
+            raise AssertionError("sheet grid control preview isolation changed: " + class_name)
+    tables = [(tag, attrs) for tag, attrs in parser.tags if any(key == "id" and value == "controlTable" for key, value in attrs)]
+    if len(tables) != 1:
+        raise AssertionError("sheet grid table must remain unique")
+    tag, items = tables[0]
+    attrs = dict(items)
+    if len(items) != len(attrs) or tag != "table" or attrs.get("data-sheet-id") != "11":
+        raise AssertionError("sheet grid table binding changed")
+    if (attrs.get("data-vr4-preview") != "true" if preview else "data-vr4-preview" in attrs):
+        raise AssertionError("sheet grid preview flag changed")
+
+
+def _render_sheet_grid_control_cases(template_text: str) -> dict[bool, str]:
+    from jinja2 import DictLoader, Environment, StrictUndefined, select_autoescape
+
+    environment = Environment(
+        loader=DictLoader({"sheet.html": template_text,
+                           "base.html": (ROOT_DIR / "templates" / "base.html").read_text(encoding="utf-8")}),
+        autoescape=select_autoescape(["html"]), undefined=StrictUndefined,
+    )
+    context = {
+        "grid": {
+            "settings": {key: "synthetic" for key in (
+                "sheet_title", "site_title", "instruction_text", "floor_header", "count_header", "unit_header", "task_header")},
+            "current_sheet": {"id": 11, "name": "synthetic"}, "sheets": [],
+            "tasks": [{"id": 44, "name": "synthetic", "vendor": "synthetic"}],
+            "extra_fields": [{"field_key": key, "name": "synthetic", "field_type": key} for key in ("status", "date")],
+            "floor_rows": [{"floor": {"id": 22, "name": "F", "unit_count": 1, "block_name": "B"},
+                            "parent_status": {44: "X"}, "units": [{"id": 33, "name": "U"}]}],
+            "progress": {(33, 44): "O"}, "extras": {33: {"status": "O", "date": "2026-09-30"}},
+            "summary": {44: {"total": 1, "done": 1}},
+            "extra_summary": {key: {"total": 1, "done": 1} for key in ("status", "date")},
+        },
+        "settings": {"site_title": "synthetic"}, "session": {}, "asset_version": "synthetic",
+        "url_for": lambda endpoint, **kwargs: "/synthetic/" + endpoint,
+        "get_flashed_messages": lambda **kwargs: [],
+    }
+    return {preview: environment.get_template("sheet.html").render(**context, vr4_preview=preview)
+            for preview in (False, True)}
+
+
+
+
 def run_sheet_ai_ux_001b_floating_entry_modal_shell_smoke() -> None:
     template_text = (ROOT_DIR / "templates" / "sheet.html").read_text(encoding="utf-8")
     styles_text = (ROOT_DIR / "static" / "styles.css").read_text(encoding="utf-8")
@@ -5779,10 +5880,11 @@ def run_sheet_ai_ux_001b_floating_entry_modal_shell_smoke() -> None:
         js_text.rindex("buildDomCache();"),
         js_text.rindex("updatePrintDate();"),
         js_text.rindex("initializeSheetAiUx001bDialogShell();"),
-        js_text.rindex("if (crewFormShell?.dataset.sheetId)"),
+        js_text.rindex("if (!vr4Preview && crewFormShell?.dataset.sheetId)"),
     ]
     if bootstrap_positions != sorted(bootstrap_positions) or len(set(bootstrap_positions)) != 4:
         raise AssertionError("AI-UX-001B initializer must preserve the existing bootstrap order")
+    _assert_sheet_preview_bootstrap(js_text)
 
     ai_button_css = re.search(r"\.sheet-page \.sheet-ai-ux-001b-entry \{(.*?)\}", styles_text, re.S)
     if not ai_button_css or any(marker not in ai_button_css.group(1) for marker in ("width: 44px", "height: 44px", "background: var(--accent)")):
@@ -6060,15 +6162,14 @@ def run_mobile_sheet_frozen_region_guardrail_smoke() -> None:
 
     grid_control_sources = (
         ('class="toggle" type="button" data-floor-id="{{ item.floor.id }}"', 1),
-        ('class="progress-select" data-unit-id="{{ unit.id }}" data-task-id="{{ task.id }}"', 1),
-        ('class="extra-select" data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}"', 1),
-        ('class="extra-input" type="date" data-unit-id="{{ unit.id }}" data-field="{{ field.field_key }}"', 1),
     )
     for snippet, expected_count in grid_control_sources:
         if snippet not in template_text:
             raise AssertionError(f"mobile frozen region must preserve grid write control: {snippet}")
         if template_text.count(snippet) != expected_count:
             raise AssertionError(f"mobile frozen region must not duplicate grid write control: {snippet}")
+    for preview, html in _render_sheet_grid_control_cases(template_text).items():
+        _assert_sheet_grid_controls(html, preview)
     for snippet in (
         'return postJson("/api/progress", {',
         'return postJson("/api/unit-extra", {',
@@ -25467,6 +25568,35 @@ def run_vendor_organization_discovery_readiness_smoke(
     print("vendor organization discovery readiness smoke PASS")
 
 
+def _format_identity_capture_diagnostic(exact_equal: bool, first: dict, second: dict) -> str:
+    invalid = '{"diagnostic_invalid":true}'
+    if type(exact_equal) is not bool or type(first) is not dict or type(second) is not dict:
+        return invalid
+    allowed_errors = {
+        "source_read_incomplete", "source_identity_changed", "schema_drift",
+        "schema_capture_incomplete", "bounded_query_incomplete", "sidecar_state_changed",
+    }
+    projection = {"exact_equal": exact_equal}
+    for suffix, capture in (("a", first), ("b", second)):
+        status, errors = capture.get("capture_status"), capture.get("errors")
+        if type(status) is not str or len(status) > 10 or status not in ("complete", "incomplete"):
+            return invalid
+        if type(errors) is not list or len(errors) > 6:
+            return invalid
+        if any(type(code) is not str or len(code) > 32 or code not in allowed_errors for code in errors):
+            return invalid
+        if len(set(errors)) != len(errors):
+            return invalid
+        count = len(errors)
+        if type(count) is not int or not 0 <= count <= 6:
+            return invalid
+        projection["status_" + suffix] = status
+        projection["errors_" + suffix] = sorted(errors)
+        projection["error_count_" + suffix] = count
+    encoded = json.dumps(projection, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":"))
+    return encoded if len(encoded.encode("utf-8")) <= 1024 else invalid
+
+
 def run_identity_registry_discovery_smoke(temp_root: Path | None = None) -> None:
     owned_temp = None
     if temp_root is None:
@@ -25715,6 +25845,7 @@ def run_identity_registry_discovery_smoke(temp_root: Path | None = None) -> None
     exact_before = db_evidence(exact_db)
     exact_a = discover(exact_db)
     exact_b = discover(exact_db)
+    print(_format_identity_capture_diagnostic(exact_a == exact_b, exact_a, exact_b), flush=True)
     if exact_a != exact_b or exact_a["capture_status"] != "complete":
         raise AssertionError("identity registry discovery deterministic complete capture failed")
     if exact_a["errors"] != []:
