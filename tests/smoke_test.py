@@ -17996,7 +17996,7 @@ if vendor_login_page.status_code != 200:
     raise SystemExit("vendor login page GET should return 200")
 vendor_login_html = vendor_login_page.get_data(as_text=True)
 for fragment in (
-    "Vendor Login",
+    "<h1>廠商登入</h1>",
     'data-testid="vendor-login-page"',
     'data-testid="vendor-login-form"',
     'name="username"',
@@ -24575,7 +24575,7 @@ def run_identity_registry_lifecycle_readiness_smoke(temp_root: Path | None = Non
                 [sys.executable, "-B", str(checker_path), "--self-test"],
                 "identity registry lifecycle readiness self-test PASS",
                 (
-                    "self_test_scenarios: 46",
+                    "self_test_scenarios: 61",
                     "database_access: 0",
                     "app_imports: 0",
                 ),
@@ -25590,6 +25590,17 @@ def _format_identity_capture_diagnostic(exact_equal: bool, first: dict, second: 
         count = len(errors)
         if type(count) is not int or not 0 <= count <= 6:
             return invalid
+        source = capture.get("source")
+        if type(source) is not dict or "schema_manifest_sha256" not in source:
+            return invalid
+        manifest = source["schema_manifest_sha256"]
+        if manifest is None:
+            manifest_present = False
+        elif type(manifest) is str and len(manifest) == 64 and all(char in "0123456789abcdef" for char in manifest):
+            manifest_present = True
+        else:
+            return invalid
+        projection["schema_manifest_present_" + suffix] = manifest_present
         projection["status_" + suffix] = status
         projection["errors_" + suffix] = sorted(errors)
         projection["error_count_" + suffix] = count

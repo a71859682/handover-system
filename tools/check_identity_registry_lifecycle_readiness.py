@@ -38,6 +38,24 @@ APPROVED_FIXTURE_STATEMENTS = {
         "(global_identity_id, registry_status, created_provenance, updated_provenance) "
         "values (?, ?, ?, ?)",
     ),
+    (
+        Path('tests/test_vendor_roster_service.py'),
+        'seed_protected_rows',
+        'insert',
+        "insert into global_identities(global_identity_id,created_provenance,updated_provenance) values('fixture-identity','fixture','fixture')",
+    ),
+    (
+        Path('tests/test_vendor_roster_service.py'),
+        'seed_protected_rows',
+        'insert',
+        "insert into backend_principal_mappings(backend_principal_mapping_id,global_identity_id, backend_kind,backend_principal_key,created_provenance,updated_provenance) values('fixture-mapping','fixture-identity','vendor',601,'fixture','fixture')",
+    ),
+    (
+        Path('tests/test_vendor_roster_service.py'),
+        'seed_protected_rows',
+        'insert',
+        "insert into login_identifier_aliases(login_identifier_alias_id,global_identity_id, raw_alias,normalized_lookup_key,normalization_algorithm_family,normalization_profile, unicode_data_version,trim_conformance_profile,created_provenance,updated_provenance) values('fixture-alias','fixture-identity','fixture','fixture','nfkc_casefold_v1', 'nfkc_casefold_v1_ucd16_0_0','16.0.0','py3146_ucd16_0_0_strip_v1','fixture','fixture')",
+    ),
 }
 EXPECTED_STATUS_CHECKS = (
     "check (registry_status in ('active', 'disabled'))",
@@ -653,6 +671,45 @@ AUTH-ID-001E2 overall must not be marked CLOSED
 """
 
 
+def roster_fixture_statements() -> tuple[str, ...]:
+    # Independently transcribed fixture SQL, not derived from the allowlist.
+    return (
+        """INSERT INTO global_identities(global_identity_id,created_provenance,updated_provenance)
+        VALUES('fixture-identity','fixture','fixture')""",
+        """INSERT INTO backend_principal_mappings(backend_principal_mapping_id,global_identity_id,
+        backend_kind,backend_principal_key,created_provenance,updated_provenance)
+        VALUES('fixture-mapping','fixture-identity','vendor',601,'fixture','fixture')""",
+        """INSERT INTO login_identifier_aliases(login_identifier_alias_id,global_identity_id,
+        raw_alias,normalized_lookup_key,normalization_algorithm_family,normalization_profile,
+        unicode_data_version,trim_conformance_profile,created_provenance,updated_provenance)
+        VALUES('fixture-alias','fixture-identity','fixture','fixture','NFKC_CASEFOLD_V1',
+        'NFKC_CASEFOLD_V1_UCD16_0_0','16.0.0','PY3146_UCD16_0_0_STRIP_V1','fixture','fixture')""",
+    )
+
+
+def roster_fixture_source(statements: tuple[str, ...], symbol: str = "seed_protected_rows") -> str:
+    return f"def {symbol}(conn):\n" + "".join(f"    conn.execute({sql!r})\n" for sql in statements)
+
+
+def roster_fixture_negative_cases() -> list[tuple[str, str, str, str]]:
+    cases = []
+    path = "tests/test_vendor_roster_service.py"
+    for index, (sql, row_id) in enumerate(zip(
+        roster_fixture_statements(), ("fixture-identity", "fixture-mapping", "fixture-alias")
+    ), start=1):
+        changed = sql.replace(f"'{row_id}'", f"'unapproved-{row_id}'", 1)
+        assert changed != sql
+        source = roster_fixture_source((sql,))
+        cases.extend((
+            (f"roster_{index}_wrong_path", "tests/unapproved_vendor_roster_fixture.py", source, "runtime_registry_dml"),
+            (f"roster_{index}_wrong_symbol", path, roster_fixture_source((sql,), "seed_protected_rows_unapproved"), "runtime_registry_dml"),
+            (f"roster_{index}_wrong_operation", path, roster_fixture_source((sql.replace("INSERT INTO", "REPLACE INTO", 1),)), "runtime_registry_dml"),
+            (f"roster_{index}_changed_sql", path, roster_fixture_source((changed,)), "runtime_registry_dml"),
+            (f"roster_{index}_extra_insert", path, roster_fixture_source((sql, changed)), "runtime_registry_dml"),
+        ))
+    return cases
+
+
 def write_synthetic_tree(root: Path) -> None:
     files = {
         Path("app.py"): POSITIVE_APP,
@@ -669,6 +726,7 @@ def write_synthetic_tree(root: Path) -> None:
             "VALUES (?, ?, ?, ?)\", ('fixture', 'disabled', 'self-test', 'self-test'))\n"
         ),
         Path("tools/capture_schema_manifest.py"): "def capture_schema_manifest():\n    return {'write_attempts': 0}\n",
+        Path("tests/test_vendor_roster_service.py"): roster_fixture_source(roster_fixture_statements()),
         POLICY_E_PATH: POSITIVE_E_POLICY,
         POLICY_F_PATH: POSITIVE_F_POLICY,
     }
@@ -732,7 +790,7 @@ def self_test_cases() -> list[tuple[str, str, str, str]]:
         ("approved_fixture_update", "tools/check_identity_registry_schema.py", "def build_unexpected_row(conn):\n    conn.execute(\"UPDATE global_identities SET registry_status = 'active'\")\n", "runtime_registry_dml"),
         ("approved_fixture_replace", "tools/check_identity_registry_schema.py", "def build_unexpected_row(conn):\n    conn.execute(\"REPLACE INTO global_identities VALUES ('x')\")\n", "runtime_registry_dml"),
         ("approved_fixture_upsert", "tools/check_identity_registry_schema.py", "def build_unexpected_row(conn):\n    conn.execute(\"INSERT INTO global_identities VALUES ('x') ON CONFLICT(global_identity_id) DO UPDATE SET registry_status='active'\")\n", "runtime_registry_dml"),
-    ]
+    ] + roster_fixture_negative_cases()
 
 
 def run_self_test() -> int:
