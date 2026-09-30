@@ -5086,8 +5086,65 @@ for snippet in (
     if snippet not in template_text:
         raise SystemExit(f"sheet mobile work hub top access missing template guardrail: {snippet}")
 
-if template_text.count('id="sheet-work-hub-overview"') != 1:
-    raise SystemExit("sheet mobile work hub top access target must remain unique")
+from html.parser import HTMLParser
+from jinja2 import DictLoader, Environment, StrictUndefined, select_autoescape
+
+class WorkHubMarkup(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tags = []
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.append((tag, dict(attrs)))
+
+def check_work_hub_rendered_markup(html, preview):
+    mode = "preview" if preview else "normal"
+    parser = WorkHubMarkup()
+    parser.feed(html)
+    targets = [attrs for tag, attrs in parser.tags if attrs.get("id") == "sheet-work-hub-overview"]
+    anchors = [attrs for tag, attrs in parser.tags if tag == "a" and attrs.get("href") == "#sheet-work-hub-overview"]
+    if len(targets) != 1:
+        raise SystemExit(f"{mode} sheet mobile work hub top access target must remain unique")
+    if len(anchors) != 1:
+        raise SystemExit(f"{mode} sheet mobile work hub top access must keep exactly one matching anchor")
+    if targets[0].get("tabindex") != "-1":
+        raise SystemExit(f"{mode} sheet mobile work hub target must remain focusable")
+    for testid in (
+        "crew-work-hub-shell",
+        "crew-management-insight-summary",
+        "crew-work-hub-cards",
+        "crew-work-hub-focus-sections",
+        "crew-work-hub-target-today-entries",
+    ):
+        count = sum(attrs.get("data-testid") == testid for tag, attrs in parser.tags)
+        if count != (0 if preview else 1):
+            raise SystemExit(f"{mode} sheet work hub rendered mount count mismatch: {testid}")
+    if preview and "本次預覽未開放；不載入工班、管理摘要或排程資料。" not in html:
+        raise SystemExit("preview sheet work hub must retain its isolated placeholder")
+
+render_environment = Environment(
+    loader=DictLoader({
+        "sheet.html": template_text,
+        "base.html": (Path(root_dir) / "templates" / "base.html").read_text(encoding="utf-8"),
+    }),
+    autoescape=select_autoescape(["html"]),
+    undefined=StrictUndefined,
+)
+render_context = {
+    "grid": {
+        "settings": {key: "synthetic" for key in (
+            "sheet_title", "site_title", "instruction_text", "floor_header", "count_header", "unit_header", "task_header"
+        )},
+        "current_sheet": {"id": 1, "name": "synthetic"},
+        "sheets": [], "tasks": [], "extra_fields": [], "floor_rows": [],
+    },
+    "settings": {"site_title": "synthetic"}, "session": {}, "asset_version": "synthetic",
+    "url_for": lambda endpoint, **kwargs: "/synthetic/" + endpoint,
+    "get_flashed_messages": lambda **kwargs: [],
+}
+for preview in (False, True):
+    rendered_html = render_environment.get_template("sheet.html").render(**render_context, vr4_preview=preview)
+    check_work_hub_rendered_markup(rendered_html, preview)
 if template_text.count('data-testid="crew-work-hub-shell"') != 1:
     raise SystemExit("sheet mobile work hub top access must not duplicate the work hub shell")
 if template_text.count('data-testid="crew-management-insight-summary"') != 1:
