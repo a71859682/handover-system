@@ -20,7 +20,7 @@ POLICY_G_PATH = Path("docs/auth_id_001g_explicit_cross_backend_linking_baseline.
 CHECKER_PATH = Path("tools/check_identity_registry_linking_readiness.py")
 LIFECYCLE_CHECKER_PATH = Path("tools/check_identity_registry_lifecycle_readiness.py")
 APPROVED_LIFECYCLE_CHECKER_SHA256 = (
-    "5651BDC56222399816941D9BFF25A1BAAA7F8EEFBFC18B01B70FEFC3697466F1"
+    "1EA1764FA4F1F960078194BABA8C2A09C1C1085050DA9D3133741BC5DE028DFD"
 )
 
 G_POLICY_MARKERS = (
@@ -484,6 +484,101 @@ def function_moves_authority(
     return False
 
 
+APPROVED_NON_LINKING_FUNCTIONS = {
+    ("preview/vr4_20260928_r01/entry.py", "fixture_state"):
+        "8d4bdac5286f490f25f8d521867781c2ff75316472a16afeebf835f071c427da",
+    ("services/vendor_access_service.py", "save_scopes"):
+        "4b161118f1a74e864c6eb733295f6ae5fd8d9b9ab341b5eb6092055362ce5379",
+}
+NON_LINKING_HEURISTIC_CODES = frozenset({
+    "forbidden_link_authority_inheritance", "forbidden_link_proof_implementation",
+})
+
+
+def approved_non_linking_issue(path, qualname, node, source, code):
+    expected = APPROVED_NON_LINKING_FUNCTIONS.get((path.as_posix(), qualname))
+    if expected is None or code not in NON_LINKING_HEURISTIC_CODES:
+        return False
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    try:
+        typed_tree = ast.parse(source, type_comments=True)
+    except SyntaxError:
+        return False
+    matches = [item for item in typed_tree.body
+               if type(item) is type(node) and item.name == node.name]
+    if len(matches) != 1 or matches[0].lineno != node.lineno or matches[0].col_offset != node.col_offset:
+        return False
+    typed_node = matches[0]
+    start = min([typed_node.lineno] + [item.lineno for item in typed_node.decorator_list])
+    if any(start <= item.lineno <= typed_node.end_lineno for item in typed_tree.type_ignores):
+        return False
+    payload = ast.dump(typed_node, annotate_fields=True, include_attributes=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest() == expected
+
+
+def run_non_linking_exception_self_tests():
+    scenarios = 0
+    for (relative, qualname), expected in APPROVED_NON_LINKING_FUNCTIONS.items():
+        original = (ROOT_DIR / relative).read_text(encoding="utf-8")
+        tree = ast.parse(original, type_comments=True)
+        nodes = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == qualname]
+        if len(nodes) != 1:
+            raise AssertionError("approved non-linking function missing or ambiguous")
+        node = nodes[0]
+        if hashlib.sha256(ast.dump(node, annotate_fields=True, include_attributes=False).encode()).hexdigest() != expected:
+            raise AssertionError("approved non-linking function requires independent review")
+        start = min([node.lineno] + [item.lineno for item in node.decorator_list])
+        text = "\n".join(original.splitlines()[start - 1:node.end_lineno]) + "\n"
+
+        def analyze(path, candidate):
+            parsed = ast.parse(candidate)
+            analyzer = PythonSourceAnalyzer(ROOT_DIR, ROOT_DIR / path, candidate, parsed)
+            analyzer.visit(parsed)
+            return analyzer, parsed
+
+        analyzer, parsed = analyze(relative, text)
+        if analyzer.issues:
+            raise AssertionError("approved non-linking positive rejected")
+        scenarios += 1
+        cases = (
+            ("wrong-path", "services/unapproved_non_linking.py", text),
+            ("conditional-wrapper", relative, "if True:\n" + "\n".join("    " + line for line in text.splitlines()) + "\n"),
+            ("duplicate-definition", relative, text + "\n" + text),
+            ("wrong-qualname", relative, text.replace("def " + qualname + "(", "def unapproved_" + qualname + "(", 1)),
+            ("body-change", relative, text + "    pass\n"),
+            ("decorator-change", relative, "@unapproved_decorator\n" + text),
+            ("type-comment", relative, text.replace("):" , "):  # type: () -> None", 1)),
+            ("protected-operation", relative, text + "    identity_link_target.role = source.role\n"),
+            ("extra-protected-function", relative, text + "\ndef link_account_authority(source):\n    return copy(source.role)\n"),
+            ("type-ignore", relative, text.replace("def " + qualname, "def " + qualname, 1).rstrip() + "  # type: ignore\n"),
+        )
+        for name, path, candidate in cases:
+            rejected, _ = analyze(path, candidate)
+            exit_code, output = render_normal(rejected.issues)
+            if not rejected.issues or exit_code == 0 or PASS_MARKER in output:
+                raise AssertionError("non-linking negative did not fail closed: " + name)
+            if name == "protected-operation" and not any(
+                issue.code == "forbidden_link_authority_inheritance"
+                and issue.line == len(candidate.splitlines()) for issue in rejected.issues
+            ):
+                raise AssertionError("protected body statement was not scanned")
+            scenarios += 1
+        exact_node = next(node for node in parsed.body if isinstance(node, ast.FunctionDef))
+        analyzer.symbols.append("unapproved_scope")
+        analyzer._add_function_issue("forbidden_link_proof_implementation", exact_node, "synthetic wrong qualname")
+        if not any(issue.symbol == "unapproved_scope" for issue in analyzer.issues):
+            raise AssertionError("wrong qualname with identical AST was suppressed")
+        analyzer.symbols.pop()
+        scenarios += 1
+        for code in ("forbidden_linking_oracle", "forbidden_link_authority_implementation"):
+            analyzer._add_function_issue(code, exact_node, "synthetic unapproved issue code")
+            if not any(issue.code == code for issue in analyzer.issues):
+                raise AssertionError("unapproved issue code suppressed")
+            scenarios += 1
+    return scenarios
+
+
 class PythonSourceAnalyzer(ast.NodeVisitor):
     def __init__(self, root: Path, path: Path, source: str, tree: ast.AST) -> None:
         self.root = root
@@ -599,6 +694,11 @@ class PythonSourceAnalyzer(ast.NodeVisitor):
             self.visit(statement)
         self.scopes.pop()
         self.symbols.pop()
+
+    def _add_function_issue(self, code, node, reason):
+        qualname = symbol_name([*self.symbols, node.name])
+        if not approved_non_linking_issue(self.path, qualname, node, self.source, code):
+            self.add_issue(code, node, reason)
 
     def _check_function(
         self,
@@ -724,7 +824,7 @@ class PythonSourceAnalyzer(ast.NodeVisitor):
                 "linking authority, approver, permission, or override capability appeared",
             )
         if proof_context:
-            self.add_issue(
+            self._add_function_issue(
                 "forbidden_link_proof_implementation",
                 node,
                 "linking proof, challenge, store, consumption, or equivalence capability appeared",
@@ -789,7 +889,7 @@ class PythonSourceAnalyzer(ast.NodeVisitor):
         )
         inheritance_movement = function_moves_authority(node)
         if inheritance_subject and (inheritance_action or inheritance_movement):
-            self.add_issue(
+            self._add_function_issue(
                 "forbidden_link_authority_inheritance",
                 node,
                 "linking attempts to inherit credential, session, role, permission, or business authority",
@@ -1919,6 +2019,7 @@ def run_self_test() -> int:
                 )
             scenario_count += 1
 
+    scenario_count += run_non_linking_exception_self_tests()
     print(f"self_test_scenarios: {scenario_count}")
     print("database_access: 0")
     print("app_imports: 0")

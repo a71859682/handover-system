@@ -24726,7 +24726,7 @@ def run_identity_registry_linking_readiness_smoke(temp_root: Path | None = None)
                 [sys.executable, "-B", str(checker_path), "--self-test"],
                 "identity registry linking readiness self-test PASS",
                 (
-                    "self_test_scenarios: 98",
+                    "self_test_scenarios: 126",
                     "database_access: 0",
                     "app_imports: 0",
                 ),
@@ -25568,7 +25568,77 @@ def run_vendor_organization_discovery_readiness_smoke(
     print("vendor organization discovery readiness smoke PASS")
 
 
-def _format_identity_capture_diagnostic(exact_equal: bool, first: dict, second: dict) -> str:
+@contextlib.contextmanager
+def _observe_identity_checkpoints(module):
+    original = module._checkpoint
+    observation = {"calls": 0, "returned": 0, "initials": [], "snapshots": []}
+
+    def observe(*args, **kwargs):
+        observation["calls"] += 1
+        if observation["calls"] <= 2:
+            observation["initials"].append(kwargs.get("initial"))
+        snapshot = original(*args, **kwargs)
+        observation["returned"] += 1
+        if observation["returned"] <= 2:
+            observation["snapshots"].append(snapshot)
+        return snapshot
+
+    module._checkpoint = observe
+    try:
+        yield observation
+    finally:
+        module._checkpoint = original
+
+
+def _identity_checkpoint_projection(observation):
+    if type(observation) is not dict or len(observation) != 4:
+        return None
+    if any(type(key) is not str for key in observation):
+        return None
+    if set(observation) != {"calls", "returned", "initials", "snapshots"}:
+        return None
+    if any(type(observation[key]) is not int or observation[key] != 2 for key in ("calls", "returned")):
+        return None
+    initials, snapshots = observation["initials"], observation["snapshots"]
+    if type(initials) is not list or len(initials) != 2 or any(type(value) is not bool for value in initials) or initials != [True, False]:
+        return None
+    if type(snapshots) is not list or len(snapshots) != 2:
+        return None
+    keys = ("lexical", "resolved", "identity", "nlink", "attributes", "sha256", "byte_length", "size", "mtime_ns")
+    for snapshot in snapshots:
+        if type(snapshot) is not dict or len(snapshot) != 10 or any(type(key) is not str for key in snapshot):
+            return None
+        if set(snapshot) != set(keys) | {"sidecars"}:
+            return None
+        if type(snapshot["lexical"]) is not str or not 1 <= len(snapshot["lexical"]) <= 32768:
+            return None
+        if type(snapshot["resolved"]) is not type(Path()):
+            return None
+        if not 1 <= len(str(snapshot["resolved"])) <= 32768:
+            return None
+        identity = snapshot["identity"]
+        if type(identity) is not tuple or len(identity) != 2 or any(type(value) is not int for value in identity):
+            return None
+        if any(type(snapshot[key]) is not int for key in ("nlink", "attributes", "byte_length", "size", "mtime_ns")):
+            return None
+        digest = snapshot["sha256"]
+        if type(digest) is not str or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            return None
+        sidecars = snapshot["sidecars"]
+        if type(sidecars) is not tuple or len(sidecars) != 3:
+            return None
+        for item in sidecars:
+            if type(item) is not tuple or len(item) != 2 or type(item[0]) is not str or len(item[0]) > 32768 or type(item[1]) is not bool:
+                return None
+    first, second = snapshots
+    equal = {key: first[key] == second[key] for key in keys}
+    spelling_equal = first["lexical"] == str(first["resolved"])
+    if any(type(value) is not bool for value in equal.values()) or type(spelling_equal) is not bool:
+        return None
+    return {"count": 2, "equal": equal, "input_spelling_is_resolved": spelling_equal}
+
+
+def _format_identity_capture_diagnostic(exact_equal: bool, first: dict, second: dict, observed_a: dict, observed_b: dict) -> str:
     invalid = '{"diagnostic_invalid":true}'
     if type(exact_equal) is not bool or type(first) is not dict or type(second) is not dict:
         return invalid
@@ -25577,7 +25647,21 @@ def _format_identity_capture_diagnostic(exact_equal: bool, first: dict, second: 
         "schema_capture_incomplete", "bounded_query_incomplete", "sidecar_state_changed",
     }
     projection = {"exact_equal": exact_equal}
+    for suffix, observation in (("a", observed_a), ("b", observed_b)):
+        try:
+            checkpoint = _identity_checkpoint_projection(observation)
+        except Exception:
+            # This boundary covers pure diagnostic projection only, never capture.
+            return invalid
+        if checkpoint is None:
+            return invalid
+        projection["checkpoint_count_" + suffix] = checkpoint["count"]
+        projection["checkpoint_equal_" + suffix] = checkpoint["equal"]
+        projection["input_spelling_is_resolved_" + suffix] = checkpoint["input_spelling_is_resolved"]
+    allowed_capture_keys = {"format", "schema_version", "run_id", "captured_at", "tool", "source", "scope", "capture_status", "anomalies", "errors", "redaction", "integrity"}
     for suffix, capture in (("a", first), ("b", second)):
+        if len(capture) > 12 or any(type(key) is not str or key not in allowed_capture_keys for key in capture):
+            return invalid
         status, errors = capture.get("capture_status"), capture.get("errors")
         if type(status) is not str or len(status) > 10 or status not in ("complete", "incomplete"):
             return invalid
@@ -25591,7 +25675,11 @@ def _format_identity_capture_diagnostic(exact_equal: bool, first: dict, second: 
         if type(count) is not int or not 0 <= count <= 6:
             return invalid
         source = capture.get("source")
-        if type(source) is not dict or "schema_manifest_sha256" not in source:
+        if type(source) is not dict or len(source) > 4:
+            return invalid
+        if any(type(key) is not str or key not in {"classification", "schema_manifest_sha256", "sha256", "size_bytes"} for key in source):
+            return invalid
+        if "schema_manifest_sha256" not in source:
             return invalid
         manifest = source["schema_manifest_sha256"]
         if manifest is None:
@@ -25854,9 +25942,11 @@ def run_identity_registry_discovery_smoke(temp_root: Path | None = None) -> None
     exact_db = temp_root / "exact.db"
     bootstrap_exact(exact_db)
     exact_before = db_evidence(exact_db)
-    exact_a = discover(exact_db)
-    exact_b = discover(exact_db)
-    print(_format_identity_capture_diagnostic(exact_a == exact_b, exact_a, exact_b), flush=True)
+    with _observe_identity_checkpoints(module) as observed_a:
+        exact_a = discover(exact_db)
+    with _observe_identity_checkpoints(module) as observed_b:
+        exact_b = discover(exact_db)
+    print(_format_identity_capture_diagnostic(exact_a == exact_b, exact_a, exact_b, observed_a, observed_b), flush=True)
     if exact_a != exact_b or exact_a["capture_status"] != "complete":
         raise AssertionError("identity registry discovery deterministic complete capture failed")
     if exact_a["errors"] != []:
