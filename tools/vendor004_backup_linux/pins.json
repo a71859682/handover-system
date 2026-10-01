@@ -3,16 +3,43 @@
   "python_version": "3.14.7",
   "runner": "ubuntu-24.04",
   "architecture": "x64",
+  "qualification_base_commit": "05e90a8cc50f31ea0788e9a7cd8a903a5c51a0f5",
+  "private_sqlite": {
+    "version": "3.51.3",
+    "source_id": "2026-03-13 10:38:09 737ae4a34738ffa0c3ff7f9bb18df914dd1cad163f28fd6b6e114a344fe6d618",
+    "url": "https://sqlite.org/2026/sqlite-amalgamation-3510300.zip",
+    "archive_root": "sqlite-amalgamation-3510300",
+    "archive_bytes": 2876305,
+    "archive_sha256": "ACB1E6F5D832484BF6D32B681E858C38ADD8B2ACDFD42AC5DF24B8AFB46552B4",
+    "archive_sha3_256": "CED02FF9738970F338C9C8E269897B554BCDA73F6CF1029D49459E1324DBEAEA",
+    "c_sha256": "9512509B1BCCB7461F79BEA8AAD6280AE4699E925FA4804381B71F59E7EFB0C5",
+    "h_sha256": "19585C8B5230E9D4F223BF31B709ECE7B6A0BB3FAF00D8310625D8E58CDA1B1D",
+    "official_c_sha3_256": "32D5424F97E0A7FC5ED2F6335AFBB58BE4E0298BD7117A34E39D345FF13D859E",
+    "release_evidence": "https://sqlite.org/releaselog/3_51_3.html",
+    "checksum_basis": "Archive and member SHA256/SHA3 computed from official HTTPS bytes on 2026-10-01; sqlite3.c SHA3 and source ID also match the official release publication.",
+    "compile_flags": [
+      "-O2",
+      "-fPIC",
+      "-shared",
+      "-DSQLITE_THREADSAFE=1",
+      "-Wl,-soname,libsqlite3.so.0",
+      "-Wl,-z,relro,-z,now"
+    ],
+    "recipe": "Fixed /usr/bin/gcc resolved path; pinned sqlite3.c only; output private libsqlite3.so.0; link -ldl -lpthread -lm; no install.",
+    "binary_review_status": "UNBUILT_UNOBSERVED"
+  },
   "files": {
     "backup_candidate.py": "9042FE33A26BC903BB27D364EB67AEE202EF68483BAF5B5603E64655D293BC54",
     "test_backup_candidate.py": "A0BDD8F0E7CC2F134C5898797B41870E661618BDC63F55EA55CF28CA1315079F",
     "test_r02_regressions.py": "49A4E8E1A58FB5D35FAC777E656266E636B6F9F1C59ACB722F775029C16D9038",
     "posix_cases.py": "F6D6C775B089E57F16E9162D15C0EA6CE3B6DC5FAD214C8A9FB06B19214791AA",
-    "qualify.py": "683EC0CE4AFD27FC1377D0C88D3DC769C4F148C3D8D37B0F7B5C9858F0F9DBCC",
-    "supervise.py": "7E54B3A0E3246C8F3916B51E3958D8FF53ADE060425E3D4529D984B2AE58C465"
+    "qualify.py": "269262E4BD743B174D241550E9224EACFDE0F0010AA5F807CBFB1DC6547D4027",
+    "supervise.py": "BED9BA7AAED629F9877CEE8A43E889DD2FE94C7D26DD7B62599F637150517113",
+    "private_sqlite.py": "A7EA9A85582D4F5EFC3F4D5A8C104069D3E95E51918E98A51D1EE69BE5CD5D2A",
+    "test_private_sqlite.py": "2348EFEEAD32FB3E914DEADD1F5F8FDCC02A9C99249FE79C9DAC4BAE2B78372C"
   },
   "reviewed_linux_sqlite": null,
-  "sqlite_limit": "Actual linked Linux library/source ID/hash/backport provenance unobserved; first functional success remains LIMITED.",
+  "sqlite_limit": "Previous Ubuntu 3.45.1-1ubuntu2.8 library is not accepted as WAL-reset fixed. New private 3.51.3 source is pinned; its compiled binary, ABI and runtime identity remain unobserved. First functional success remains LIMITED until exact compiled-library evidence is independently reviewed; no wildcard pin or DEV upgrade.",
   "actions": {
     "checkout": {
       "tag": "v7.0.1",

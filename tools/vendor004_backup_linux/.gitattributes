@@ -6,3 +6,5 @@ test_r02_regressions.py -text
 posix_cases.py text eol=lf
 qualify.py text eol=lf
 supervise.py text eol=lf
+private_sqlite.py text eol=lf
+test_private_sqlite.py text eol=lf

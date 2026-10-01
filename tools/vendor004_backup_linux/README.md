@@ -1,51 +1,120 @@
-# vendor004 backup Linux qualification candidate r01
+# vendor004 private SQLite qualification preparation
 
-PREPARATION ONLY. No commit, push, CI, Linux execution, Windows rerun, DEV input/grant or live database access occurred. The local branch is `ci-vendor004-backup-linux-r01`, based on reviewed `ci-vr-schema-compat-r01` at `f95c028f782028f214e0340ec4732ac66d386450`. New files are confined to this directory and `.github/workflows/vendor004-backup-linux.yml`; application/runtime code and the existing CI are unchanged. This branch inherits the reviewed baseline; it is not an orphan branch.
+This revision is PREPARATION ONLY, based on qualification commit
+`05e90a8cc50f31ea0788e9a7cd8a903a5c51a0f5` on
+`ci-vendor004-backup-linux-r01`. Product base remains
+`f95c028f782028f214e0340ec4732ac66d386450`.
+No build, installation, test execution, commit, push, CI, live access, merge or
+deployment is included in this preparation. This branch is for isolated
+qualification only. The backup implementation, original 16+9 tests, seven POSIX
+cases, application workflow and product guards remain byte-identical.
 
-## What a later separately approved push would do
+## Accepted predecessor and current limitation
 
-The new workflow matches only this branch and these qualification paths. **The unchanged existing `.github/workflows/ci.yml` also matches every push and will run its Linux portable, Windows native and verify jobs.** That additional application CI is not silently disabled or claimed to be avoided. Future authorization must include both workflows, or a separately approved trigger change must be reviewed first. No PR or merge is part of this candidate.
+Prior run `36859202075` completed 32 functional cases and returned LIMITED,
+exit 2. Its Ubuntu SQLite 3.45.1-1ubuntu2.8 library hash was
+`85265A9D4AFCA6F4B325CEB078B669C754FB881ABED4CAFE91CCEBE9D625D975`.
+That library is not accepted as WAL-reset fixed. Those results remain historical
+functional evidence, not patch qualification. Actual DEV runtime is unknown;
+this change neither inspects nor upgrades DEV.
 
-Read-only repo hooks/rulesets returned empty lists. Default `main` has only an application CI workflow with no deploy step. Five services in the selected Render workspace were inspected: auto-deploy tracks main/develop/staging; both preview services have auto-deploy and previews off; none follows this new branch. No deployment path was found in the inspected settings. `deployment-review.json` records the snapshot and its visibility limits; unlisted external integrations or later setting changes are not attested. No Render secrets, env vars or DB were read.
+The new recipe uses official SQLite 3.51.3, whose release includes the WAL-reset
+fix. `pins.json` records the exact URL, archive size/SHA256/SHA3, member hashes,
+source ID and recipe. Archive and member SHA256 values were computed from
+official HTTPS bytes on 2026-10-01; the C file SHA3 and source ID also match the
+official release publication. Archive hashes are not described as a historical
+official checksum publication. No compiled binary has been observed or approved.
+`reviewed_linux_sqlite` remains null: even a future 38-case success must return
+LIMITED/exit 2 until the exact actual binary is independently reviewed. There is
+no wildcard allowlist, automatic approval or version-only qualification.
 
-## Fixed inputs and provenance
+## Private build and runtime contract
 
-The r02 candidate, original16 tests and9 regression supplement are copied byte-identically. Per-directory Git attributes disable text normalization for these originals. Their SHA256 pins are:
+Python remains 3.14.7/x64 on ubuntu-24.04, with unchanged full action commit pins.
+A future authorized job builds only pinned `sqlite3.c` using resolved
+`/usr/bin/gcc`, `-O2 -fPIC -shared -DSQLITE_THREADSAFE=1`, SONAME
+`libsqlite3.so.0`, RELRO/NOW and `-ldl -lpthread -lm`. There is no apt, sudo,
+configure, make install, system-library replacement or toolcache modification.
+The official previous runner-image report lists GCC and Python 3.14.7; a future
+floating image is not assumed identical. Build evidence records actual compiler
+path/hash/version, command, runner image, source identity and output binary SHA.
 
-| Original | SHA256 |
-| --- | --- |
-| backup_candidate.py | 9042FE33A26BC903BB27D364EB67AEE202EF68483BAF5B5603E64655D293BC54 |
-| test_backup_candidate.py | A0BDD8F0E7CC2F134C5898797B41870E661618BDC63F55EA55CF28CA1315079F |
-| test_r02_regressions.py | 49A4E8E1A58FB5D35FAC777E656266E636B6F9F1C59ACB722F775029C16D9038 |
+All output stays in a fresh 0700 direct child of RUNNER_TEMP named
+`vendor004-sqlite-<run-id>-<attempt>`. Source/archive/library become 0400 and the
+build manifest is create-new. Existing directories are rejected, never reused
+or removed. Files must be canonical, owned by the current non-root UID, regular,
+single-link and inaccessible to other users. Trusted parent directories and
+same-UID processes remain prerequisites; these checks do not provide hostile
+same-UID atomic immutability.
 
-All six Python files are checked before/after the future suite using `pins.json`. Python is fixed at3.14.7/x64 on ubuntu-24.04. Checkout v7.0.1, setup-python v7.0.0 and upload-artifact v7.0.1 use full official commit pins; URLs and published Python asset metadata are in `pins.json`.
+The launcher starts the supervisor with exactly
+`<private-prefix>/lib:<Python-LIBDIR>` before Python imports SQLite. Suite and
+worker processes inherit the same constructed loader environment. Arbitrary
+LD_LIBRARY_PATH, LD_PRELOAD and LD_AUDIT are not inherited. The suite receives no
+credentials or GITHUB_OUTPUT. Parent and suite verify actual `/proc` mappings,
+private library SHA, SQLite version/full source ID/compile options, Python and
+`_sqlite3` hashes against the build probe, before and after the suite. Missing,
+multiple, deleted, system-fallback or mismatched libraries are rejected.
 
-setup-python can use runner toolcache or official actions/python-versions downloads. The upstream3.14.7 Linux24.04 x64 asset has published SHA25676d5ddab6d2dd89a39c06220f6efeda486a48ed481eae97bfc596c74ac3623db, but this preparation has not downloaded/hashed it and cannot claim it is what a future runner will use. The official builder uses a distribution SQLite dependency; a Python version does not fix the loaded SQLite library.
+The new six cases cover exact identity, identity mismatch, mapping/hash rejection,
+clean loader environment, an actual frozen worker's verified private mapping
+before stdin, and rejection of a worker launched without the private path before
+any payload is sent. The positive case uses fresh synthetic WAL data and the
+unchanged worker argv. Worker source ID is explicitly INFERRED from the exact
+same mapped binary observed in the queried parent/suite; the frozen worker does
+not report its own source ID. The other transient workers in the original 32
+cases inherit this environment; this is not individual per-PID attestation of
+every original case. Original 16+9+7 cases stay unchanged; planned total is 38.
+These six cases have been statically reviewed only, not executed.
 
-**Actual Linux linked SQLite version/source ID/library hashes and patch provenance remain unknown.** `reviewed_linux_sqlite` is deliberately null. The future supervisor records the real Python binary, `_sqlite3`, mapped SQLite library hashes/package ownership and independent `:memory:` SQLite version/source ID/compile options. It does not query a backed-up source for provenance. It classifies known fixed version lines conservatively (3.51.3+, or3.50.7+/3.44.6+ on those specific branches), but version alone is not reviewed distro backport proof. If functional tests pass without reviewed actual-library provenance, overall status is **LIMITED, exit2**, not PASS. Review the observed runtime before proposing any subsequent qualification; no private binary download or DEV upgrade is included.
+## Future execution and retained evidence
 
-## Minimal additional Linux proof
-
-The future suite contains the unchanged16 + unchanged9 cases and7 POSIX cases. Three cases send real external SIGINT/SIGTERM/SIGHUP to the known synthetic parent PID; another repeats mixed signals during both cleanup waits. A ready/phase/ack handshake chooses the phase. A real helper child ignores SIGTERM, so actual terminate/wait must escalate to SIGKILL/reap. No candidate source patch is made; a test-local Popen/wait hook binds the real helper and observes phase. Tests demand actual `-SIGKILL`, consumed/unusable receipt, confirmed child exit and replay rejection.
-
-Other cases reject unsafe claim-directory modes and source/directory/claim symlinks before source opening, and verify a0400 synthetic main with a writable sidecar directory plus destination0400/private0700/0600 modes. Same-UID/root path replacement remains outside the candidate's atomic guarantees; trusted parent directories and same-UID processes are prerequisites. No test changes this trust contract. Source VFS WAL/SHM effects remain possible; source SQL is still forbidden.
-
-## Supervisor, artifacts and exact future command
-
-Only after external review and explicit commit/push/CI authorization, the single new job would execute:
+Only after separate execution approval, the workflow would run:
 
 ```bash
-python -I -S -B tools/vendor004_backup_linux/supervise.py --evidence-root "$QUAL_EVIDENCE_DIR"
+python -I -S -B tools/vendor004_backup_linux/private_sqlite.py build --runtime-root "$QUAL_SQLITE_ROOT"
+python -I -S -B tools/vendor004_backup_linux/private_sqlite.py launch --runtime-root "$QUAL_SQLITE_ROOT" --evidence-root "$QUAL_EVIDENCE_DIR"
 ```
 
-The workflow sets QUAL_EVIDENCE_DIR to a new direct child of RUNNER_TEMP suffixed with GitHub run ID and run attempt. Existing evidence paths are refused. The supervisor requires Linux/non-root, sets umask0077, creates separate home/scratch/artifact directories, runs tests with a minimal environment and no credentials, and starts its test tree in its own process group. No live mount, /var/data source, application dependency, service container or Render secret is used. Synthetic failures and unknown results remain retained; no cleanup deletes files.
+The build step has a 3-minute cap (compiler subprocess 120 seconds); qualification
+has a 5-minute cap and the unchanged 240-second supervisor budget, including
+cleanup/finalization. The job cap becomes 9 minutes to include the new build and
+upload margin. These are emergency bounds, not guaranteed interruption of stuck
+kernel I/O or qualification of a DEV whole-command supervisor. No retry or
+fallback is authorized by an UNKNOWN result. Source VFS WAL/SHM effects remain
+possible under the existing synthetic contract; source SQL remains forbidden.
+The download's 30-second timeout is a socket timeout, not a total download
+deadline. The compiler's 120-second subprocess timeout stops the direct GCC
+process; complete cc1/as/ld descendant cleanup has not been qualified. The outer
+workflow step/job caps provide emergency containment, not a verified build-tree
+supervisor or cleanup guarantee.
 
-One absolute monotonic240-second budget reserves the last10 seconds for cleanup/finalization: suite stops by230s, cleanup by234s, artifact stages check the240s deadline. Only the supervisor-owned process group can receive fallback TERM/KILL. Signals set cancellation state. Elapsed values distinguish receipt-write time from final artifact validation. The workflow's5-minute cap is emergency containment. Neither mechanism is currently executed/qualified, neither can guarantee interruption of stuck kernel I/O, and neither constitutes a qualified DEV whole-command supervisor. A missing terminal/suite receipt or unconfirmed process group means UNKNOWN, never permission to retry an operation.
+Upload has 16 literal filenames: eight Python files, README/pins, four existing
+runtime/suite/console/supervisor files, plus sqlite-build.json/sqlite-build.log.
+There is no upload of DB/WAL/SHM/journal, binary, archive, scratch, raw input or
+environment dump. The existing artifact validation and conditional upload remain
+in place. A build failure can leave runner logs/local private files but has no
+qualified-suite artifact authorization. No candidate cleanup deletes files;
+hosted-runner disposal is a platform lifecycle effect.
 
-The upload step uses12 literal filenames only (six code files, README/pins, runtime/suite/console/supervisor evidence); no DB/WAL/SHM/journal, scratch tree, input JSON, env dump or broad repository upload. No artifacts are overwritten. An explicit output is produced only after the entire artifact validation succeeds before the deadline; the `always()` upload additionally requires that output. Safe FAIL/UNKNOWN evidence can be retained, but failed/incomplete content validation is not published and remains local. Hard job cancellation may still prevent upload. Hosted-runner disposal is platform lifecycle, not candidate deletion authority.
+The unchanged application CI also runs on a later push. Its source-universe guard
+already rejected the prior six new harness files and will see eight after this
+revision; do not patch that guard or claim that expected failure is fixed. The
+prior deployment-settings review found no service tracking this branch, but that
+historical snapshot is not a fresh or universal deployment guarantee. No merge,
+production preflight, F apply, G reconciliation or authority switch is implied.
 
-The suite also measures its own linked library/source ID/hashes under the exact clean environment and must match supervisor observations before any future qualification. External signal tests here cover cleanup; external signaling during spawn remains untested (the original9 supplement covers its own in-process spawn cancellation only).
+## Review boundary and references
 
-This preparation used static Python parsing, byte/hash checks and diff review only. It does not establish Linux results, patch safety, DEV source identity or grant. The next handoff is external review of this exact diff and pins; only then may an exact commit/push/CI request be put to the user.
+Preparation validation is limited to AST parsing (no imports), byte/hash checks,
+static case counts and diff review. Next action is external review of the exact
+patch/pins. Commit/push/build/CI require separate authorization. After that first
+build, actual binary SHA/source ID/compile options, ABI/load behavior and worker
+evidence must be reviewed before proposing an exact approved runtime pin.
 
-Official references: [SQLite WAL-reset advisory](https://sqlite.org/wal.html#the_wal_reset_bug), [setup-python fixed source](https://github.com/actions/setup-python/blob/5fda3b95a4ea91299a34e894583c3862153e4b97/README.md), [Python build release](https://github.com/actions/python-versions/releases/tag/3.14.7-31064857500).
+- [SQLite 3.51.3 release](https://sqlite.org/releaselog/3_51_3.html)
+- [Official source ZIP](https://sqlite.org/2026/sqlite-amalgamation-3510300.zip)
+- [Compilation](https://www.sqlite.org/howtocompile.html)
+- [Compile options](https://www.sqlite.org/compile.html)
+- [Observed runner image software](https://github.com/actions/runner-images/blob/ubuntu24/20260927.320/images/ubuntu/Ubuntu2404-Readme.md)
+- [WAL-reset advisory](https://sqlite.org/wal.html#the_wal_reset_bug)

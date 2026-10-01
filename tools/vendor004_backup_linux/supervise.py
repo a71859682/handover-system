@@ -13,9 +13,12 @@ import sysconfig
 import time
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+import private_sqlite
 CODE = ('backup_candidate.py', 'test_backup_candidate.py', 'test_r02_regressions.py',
-        'posix_cases.py', 'qualify.py', 'supervise.py')
-ARTIFACTS = CODE + ('README.md', 'pins.json', 'runtime.json', 'suite.json', 'console.txt', 'supervisor.json')
+        'posix_cases.py', 'qualify.py', 'supervise.py', 'private_sqlite.py', 'test_private_sqlite.py')
+ARTIFACTS = CODE + ('README.md', 'pins.json', 'runtime.json', 'suite.json', 'console.txt',
+                    'supervisor.json', 'sqlite-build.json', 'sqlite-build.log')
 
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest().upper()
@@ -124,11 +127,17 @@ def main():
         if tuple(sys.version_info[:3]) != (3, 14, 7) or not pins_match(pins):
             raise ValueError('runtime_or_code_pin_mismatch')
         verified = True
+        private_root = private_sqlite.private_root(os.environ['QUAL_SQLITE_ROOT'])
+        build, private_identity = private_sqlite.require_current(private_root, pins)
+        write_new(artifact/'sqlite-build.json', build)
+        with (artifact/'sqlite-build.log').open('xb') as out:
+            out.write(private_sqlite.private_file(private_root/'build.log', private_root).read_bytes())
+        report['private_sqlite_build_verified'] = True
         runtime = runtime_info()
+        runtime['private_sqlite'] = private_identity
+        runtime['build_manifest_sha256'] = digest(private_root/'build.json')
         write_new(artifact/'runtime.json', runtime)
-        env = {'PATH': str(Path(sys.executable).parent)+':/usr/bin:/bin', 'HOME': str(home),
-               'TMPDIR': str(scratch), 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
-               'LD_LIBRARY_PATH': str(sysconfig.get_config_var('LIBDIR'))}
+        env = private_sqlite.clean_env(private_root, home=home, scratch=scratch)
         if cancelled or time.monotonic() >= suite_end:
             raise TimeoutError('No remaining suite budget')
         with (artifact/'console.txt').open('xb') as console:
@@ -152,7 +161,10 @@ def main():
         actual = suite.get('runtime', {})
         matched_runtime = all(actual.get(k) == runtime[k] for k in
                               ('python', 'sqlite_version', 'sqlite_source_id',
-                               'sqlite_extension_sha256', 'linked_libraries'))
+                               'sqlite_extension_sha256', 'linked_libraries',
+                               'private_sqlite', 'build_manifest_sha256'))
+        build_after, identity_after = private_sqlite.require_current(private_root, pins)
+        matched_runtime = matched_runtime and build_after == build and identity_after == private_identity
         report['suite_runtime_matches_supervisor'] = matched_runtime
         expected = pins.get('reviewed_linux_sqlite')
         patch_verified = bool(expected and matched_runtime and expected.get('wal_reset_fixed') is True
@@ -179,7 +191,7 @@ def main():
             report['process_group_exit_confirmed'] = stop_group(child, cleanup_end)
             report['status'] = 'UNKNOWN'
         report['signals'] = cancelled
-        report['five_minute_ci_cap_is_emergency_only'] = True
+        report['five_minute_qualification_step_cap_is_emergency_only'] = True
         if verified:
             for name in CODE + ('README.md', 'pins.json'):
                 if time.monotonic() >= end:

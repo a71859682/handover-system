@@ -13,7 +13,7 @@ permissions:
 jobs:
   synthetic:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 9
     steps:
       - name: Checkout exact qualification commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -26,12 +26,20 @@ jobs:
           python-version: '3.14.7'
           architecture: x64
           check-latest: false
+      - name: Build pinned SQLite only in a private RUNNER_TEMP prefix
+        timeout-minutes: 3
+        shell: bash
+        env:
+          QUAL_SQLITE_ROOT: ${{ runner.temp }}/vendor004-sqlite-${{ github.run_id }}-${{ github.run_attempt }}
+        run: python -I -S -B tools/vendor004_backup_linux/private_sqlite.py build --runtime-root "$QUAL_SQLITE_ROOT"
       - name: Non-root synthetic qualification under whole-job supervisor
         id: qualification
+        timeout-minutes: 5
         shell: bash
         env:
           QUAL_EVIDENCE_DIR: ${{ runner.temp }}/vendor004-backup-linux-${{ github.run_id }}-${{ github.run_attempt }}
-        run: python -I -S -B tools/vendor004_backup_linux/supervise.py --evidence-root "$QUAL_EVIDENCE_DIR"
+          QUAL_SQLITE_ROOT: ${{ runner.temp }}/vendor004-sqlite-${{ github.run_id }}-${{ github.run_attempt }}
+        run: python -I -S -B tools/vendor004_backup_linux/private_sqlite.py launch --runtime-root "$QUAL_SQLITE_ROOT" --evidence-root "$QUAL_EVIDENCE_DIR"
       - name: Retain explicit sanitized evidence allowlist
         if: always() && steps.qualification.outputs.artifacts_validated == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -49,9 +57,13 @@ jobs:
             ${{ env.QUAL_EVIDENCE_DIR }}/artifact/posix_cases.py
             ${{ env.QUAL_EVIDENCE_DIR }}/artifact/qualify.py
             ${{ env.QUAL_EVIDENCE_DIR }}/artifact/supervise.py
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/private_sqlite.py
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/test_private_sqlite.py
             ${{ env.QUAL_EVIDENCE_DIR }}/artifact/README.md
             ${{ env.QUAL_EVIDENCE_DIR }}/artifact/pins.json
             ${{ env.QUAL_EVIDENCE_DIR }}/artifact/runtime.json
             ${{ env.QUAL_EVIDENCE_DIR }}/artifact/suite.json
             ${{ env.QUAL_EVIDENCE_DIR }}/artifact/console.txt
             ${{ env.QUAL_EVIDENCE_DIR }}/artifact/supervisor.json
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/sqlite-build.json
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/sqlite-build.log
