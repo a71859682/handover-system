@@ -3,3 +3,5 @@ tools/check_identity_registry_linking_readiness.py text eol=lf
 docs/vendor_id_001_vendor_organization_owner_member_design.md text eol=lf
 docs/vendor_id_002_physical_sqlite_schema_migration_baseline.md text eol=lf
 docs/vendor_id_003_read_only_vendor_discovery_baseline.md text eol=lf
+docs/004f_vr_schema_compatibility_r01.md text eol=lf
+docs/004f_vr_discovery_compatibility_r01.md text eol=lf

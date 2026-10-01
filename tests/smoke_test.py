@@ -25022,7 +25022,7 @@ def run_vendor_organization_schema_readiness_smoke(
         }
 
         normal = subprocess.run(
-            [sys.executable, "-B", str(checker_path)],
+            [sys.executable, "-B", str(checker_path), "--vr-compat-r01"],
             cwd=ROOT_DIR,
             env=child_env,
             capture_output=True,
@@ -25030,7 +25030,7 @@ def run_vendor_organization_schema_readiness_smoke(
             encoding="utf-8",
             check=False,
         )
-        normal_marker = "vendor organization schema readiness PASS"
+        normal_marker = "vendor organization schema VR compatibility r01 PASS"
         if normal.returncode != 0:
             raise AssertionError(
                 "vendor organization schema readiness normal child failed: "
@@ -25041,21 +25041,26 @@ def run_vendor_organization_schema_readiness_smoke(
                 "vendor organization schema readiness normal child stderr was not empty: "
                 + normal.stderr
             )
-        for required_line in (
-            "vendor_schema_readiness_scope: static_exact_physical_schema_implementation_and_frozen_policy",
+        expected_normal_stdout = "\n".join((
+            "vendor_schema_readiness_scope: static_exact_physical_schema_and_vr_compat_r01_source_only",
+            "vr_compat_contract: 004f_vr_schema_compatibility_r01",
+            "vr_compat_logical_expected: 18",
+            "vr_compat_logical_observed: 18",
+            "vr_compat_emissions_expected: 71",
+            "vr_compat_emissions_observed: 71",
+            "vr_compat_emissions_consumed: 71",
             "issues_count: 0",
             "database_access: 0",
             "app_imports: 0",
             normal_marker,
-        ):
-            if normal.stdout.count(required_line) != 1:
-                raise AssertionError(
-                    "vendor organization schema readiness normal child missing exact evidence: "
-                    + required_line
-                )
+        )) + "\n"
+        if normal.stdout != expected_normal_stdout:
+            raise AssertionError(
+                "vendor organization schema VR compatibility normal output contract mismatch"
+            )
 
         self_test = subprocess.run(
-            [sys.executable, "-B", str(checker_path), "--self-test"],
+            [sys.executable, "-B", str(checker_path), "--vr-compat-r01-self-test"],
             cwd=ROOT_DIR,
             env=child_env,
             capture_output=True,
@@ -25063,7 +25068,7 @@ def run_vendor_organization_schema_readiness_smoke(
             encoding="utf-8",
             check=False,
         )
-        self_test_marker = "vendor organization schema readiness self-test PASS"
+        self_test_marker = "vendor organization schema VR compatibility r01 self-test PASS"
         if self_test.returncode != 0:
             raise AssertionError(
                 "vendor organization schema readiness self-test child failed: "
@@ -25074,24 +25079,17 @@ def run_vendor_organization_schema_readiness_smoke(
                 "vendor organization schema readiness self-test child stderr was not empty: "
                 + self_test.stderr
             )
-        if self_test.stdout.count(self_test_marker) != 1:
+        expected_self_test_stdout = "\n".join((
+            "vr_compat_self_test_scope: isolated_static_vr_compat_r01",
+            "self_test_scenarios: 254",
+            "database_access: 0",
+            "app_imports: 0",
+            self_test_marker,
+        )) + "\n"
+        if self_test.stdout != expected_self_test_stdout:
             raise AssertionError(
-                "vendor organization schema readiness self-test marker count was not one"
+                "vendor organization schema VR compatibility self-test output contract mismatch"
             )
-        scenario_matches = re.findall(
-            r"(?m)^self_test_scenarios: ([1-9][0-9]*)$",
-            self_test.stdout,
-        )
-        if len(scenario_matches) != 1:
-            raise AssertionError(
-                "vendor organization schema readiness self-test scenario count was not exact"
-            )
-        for required_line in ("database_access: 0", "app_imports: 0"):
-            if self_test.stdout.count(required_line) != 1:
-                raise AssertionError(
-                    "vendor organization schema readiness self-test missing exact evidence: "
-                    + required_line
-                )
 
         if sentinel_db.exists() or any(
             Path(str(sentinel_db) + suffix).exists()
@@ -25441,7 +25439,7 @@ def run_vendor_organization_discovery_readiness_smoke(
         }
 
         normal = subprocess.run(
-            [sys.executable, "-B", str(checker_path)],
+            [sys.executable, "-B", str(checker_path), "--vr-compat-r01"],
             cwd=ROOT_DIR,
             env=child_env,
             capture_output=True,
@@ -25450,7 +25448,7 @@ def run_vendor_organization_discovery_readiness_smoke(
             check=False,
         )
         repeated_normal = subprocess.run(
-            [sys.executable, "-B", str(checker_path)],
+            [sys.executable, "-B", str(checker_path), "--vr-compat-r01"],
             cwd=ROOT_DIR,
             env=child_env,
             capture_output=True,
@@ -25466,34 +25464,12 @@ def run_vendor_organization_discovery_readiness_smoke(
             raise AssertionError(
                 "vendor organization discovery readiness output was not deterministic"
             )
-        normal_marker = "vendor organization discovery readiness PASS"
-        if normal.returncode != 0:
-            raise AssertionError(
-                "vendor organization discovery readiness normal child failed: "
-                + (normal.stderr or normal.stdout)
-            )
-        if normal.stderr:
-            raise AssertionError(
-                "vendor organization discovery readiness normal child stderr was not empty: "
-                + normal.stderr
-            )
-        normal_lines = normal.stdout.splitlines()
-        for required_line in (
-            "vendor_discovery_readiness_scope: static_source_and_frozen_policy_only",
-            "issues_count: 0",
-            "upstream_vendor_schema_guard_boundary: PASS",
-            "database_access: 0",
-            "app_imports: 0",
-            normal_marker,
-        ):
-            if normal_lines.count(required_line) != 1:
-                raise AssertionError(
-                    "vendor organization discovery readiness normal child missing exact evidence: "
-                    + required_line
-                )
+        expected_normal = 'vendor_discovery_readiness_scope: static_source_and_frozen_policy_and_vr_compat_r01_only\nvr_compat_contract: 004f_vr_discovery_compatibility_r01\nvr_compat_observation_status: COMPLETE\nvr_compat_logical_expected: 70\nvr_compat_logical_observed: 70\nvr_compat_emissions_expected: 161\nvr_compat_emissions_observed: 161\nvr_compat_emissions_consumed: 161\nprimary_issues_count: 0\nsecondary_issues_count: 0\ndatabase_access: 0\napp_imports: 0\nvendor organization discovery VR compatibility r01 PASS\n'
+        if (normal.returncode, normal.stdout, normal.stderr) != (0, expected_normal, ''):
+            raise AssertionError('vendor discovery compatibility exact normal contract failed')
 
         self_test = subprocess.run(
-            [sys.executable, "-B", str(checker_path), "--self-test"],
+            [sys.executable, "-B", str(checker_path), "--vr-compat-r01-self-test"],
             cwd=ROOT_DIR,
             env=child_env,
             capture_output=True,
@@ -25501,42 +25477,9 @@ def run_vendor_organization_discovery_readiness_smoke(
             encoding="utf-8",
             check=False,
         )
-        self_test_marker = (
-            "vendor organization discovery readiness self-test PASS"
-        )
-        if self_test.returncode != 0:
-            raise AssertionError(
-                "vendor organization discovery readiness self-test child failed: "
-                + (self_test.stderr or self_test.stdout)
-            )
-        if self_test.stderr:
-            raise AssertionError(
-                "vendor organization discovery readiness self-test child stderr was not empty: "
-                + self_test.stderr
-            )
-        self_test_lines = self_test.stdout.splitlines()
-        if self_test_lines.count(self_test_marker) != 1:
-            raise AssertionError(
-                "vendor organization discovery readiness self-test marker count was not one"
-            )
-        if self_test_lines.count(normal_marker) != 0:
-            raise AssertionError(
-                "vendor organization discovery readiness self-test emitted the normal PASS marker"
-            )
-        scenario_matches = re.findall(
-            r"(?m)^self_test_scenarios: ([1-9][0-9]*)$",
-            self_test.stdout,
-        )
-        if len(scenario_matches) != 1:
-            raise AssertionError(
-                "vendor organization discovery readiness self-test scenario count was not exact"
-            )
-        for required_line in ("database_access: 0", "app_imports: 0"):
-            if self_test_lines.count(required_line) != 1:
-                raise AssertionError(
-                    "vendor organization discovery readiness self-test missing exact evidence: "
-                    + required_line
-                )
+        expected_selftest = 'vendor_discovery_readiness_scope: isolated_static_vr_compat_r01_scenarios\nscenarios_checked: 144\ndatabase_access: 0\napp_imports: 0\nvendor organization discovery VR compatibility r01 self-test PASS\n'
+        if (self_test.returncode, self_test.stdout, self_test.stderr) != (0, expected_selftest, ''):
+            raise AssertionError('vendor discovery compatibility exact self-test contract failed')
 
         if sentinel_db.exists() or any(
             Path(str(sentinel_db) + suffix).exists()

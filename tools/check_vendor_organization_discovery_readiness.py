@@ -407,6 +407,29 @@ _UPSTREAM_ALLOWED_NODE_NAMES = (
         "DISCOVERY_READINESS_AST_SHA256",
         "validate_exact_discovery_readiness_checker",
         "_exercise_discovery_readiness_checker_contract",
+        'VR_POLICY_PATH',
+        'VR_POLICY_SHA256',
+        'VR_POLICY_DELIMITER',
+        'VR_PASS',
+        'vr_typed_hash',
+        'vr_walk',
+        'vr_dotted',
+        'vr_reference_streams',
+        'vr_boundary_bindings',
+        'vr_counter',
+        'vr_policy',
+        'vr_preconditions',
+        'vr_event_key',
+        'vr_validate_accounting',
+        'vr_scan',
+        'analyze_vr_repository',
+        'render_vr',
+        'vr_cli_mode',
+        'vr_main',
+        'vr_replace_node',
+        'vr_mutate_source',
+        'vr_run_cases',
+        'vr_self_test',
 )
 _EXPECTED_UPSTREAM_ALLOWED_V002_ISSUE_CODES = frozenset(
     {
@@ -487,6 +510,29 @@ _UPSTREAM_STATIC_NODE_HASHES = {
     "_exercise_discovery_readiness_checker_contract": (
         "85986C074B417F6CD83CCBA49A03FA83E818076B2AB56423CB4960DFBE37356B"
     ),
+    'VR_POLICY_PATH': 'E0A9E6FB9827645E0519D7D82ADD8760EA0B9DFD32C63C0E1D1A88945463EEC6',
+    'VR_POLICY_SHA256': '8EB309FDECB645F42B36F35FB189BBB1D5DF5E56FD5A280AE1A11A4D01CDA450',
+    'VR_POLICY_DELIMITER': '9F667D416B1F2435A6846BE6635FFB73BFFA26CED177D2C98A6F74182FF2C652',
+    'VR_PASS': '11EB6DDFAD530CF24D17D7E304C211183183720FD3767DDF7B36550A9C18F5F4',
+    'vr_typed_hash': '152B26F31B44F02596F6B9D0115174B1A52F463866B81BDC8DEF9E2C2BC881F4',
+    'vr_walk': '54EE888EA057C8262B2F24E606FAA817B6BBEBF88C6D681887742A1AF1E7A9E0',
+    'vr_dotted': '3B73F7E9E4F22A96B69DC291BCE66330A36B859E25BE08A9F500DF71D98DC2EE',
+    'vr_reference_streams': '4253E62A1E7F827376B284C8218E55256B2D40604196565858021830E0C2BDEB',
+    'vr_boundary_bindings': '38BD6642FE8717BA3F59C864F1A1174B952E94EFFDD5BE83C8D67A21D4922FF4',
+    'vr_counter': '63762621FDFE017F7944F06708196F5AE6A46657459E140168374A736F0F3E02',
+    'vr_policy': '069FFFD41B612C7A3B2E0829FA7A7FF268EC040D653DAD662EAA450A923E9531',
+    'vr_preconditions': '0926723A0777EDA5E9E65677C3D6AE272976549186AAC5FE52C59A997AC9D5FC',
+    'vr_event_key': 'F083BB81684C7F7993063C16F79332B07668AC050F04050E3F9E0B98DC43B930',
+    'vr_validate_accounting': 'E2CF05638B943D61F3CC14B6B9A7D20A69CFEEBB6AC0F3D6846C39E5314A1478',
+    'vr_scan': '2C2CDEC216401F947043318797E938B17A89FC76CE219BCCDDECDF9A82E3BCB7',
+    'analyze_vr_repository': 'E0262F4286E561E2D51BB38787ED01B3B5D4791168E0B16EBD91297EDE5DB2E5',
+    'render_vr': '84533C309C35E1B073CAAC17BEECED8473C6B2B26F7ED9AEC41CF360169C7FA2',
+    'vr_cli_mode': '0F25FEE65FB4F0EDAEED5600765703529F192E0E217E4B918358A0BE43625902',
+    'vr_main': 'FB35B7ECE6060BCF72043FA42151C512189E37026211AF4FB6AAA38EECCA0A89',
+    'vr_replace_node': '8D40ADC5EA1428C2A8083D8F45264FA6E2FB241554CEE2FA795E9692179445EA',
+    'vr_mutate_source': '7F018A7186A566407842EF6379325FFE51DEF7533BE37D71D6D9117FF55EAC51',
+    'vr_run_cases': '94CB70BE54BD10FC006AF216CD484972B321AB1CC608C700B6C397777C59C7E8',
+    'vr_self_test': '1C479B27375D9EB83B0D8261CCDE73357E114FE1C3D35F5E3E208A9FD1BF9112',
 }
 _UPSTREAM_INTEGRATION_NODE_SPECS = (
     (
@@ -550,122 +596,9 @@ _EXACT_FIXTURE_NODE_HASHES = {
         "positive_cases",
     ): "69BA81B427567053D502FDE79AA7445AC9410D8AC44AECE132759392C534F03B",
 }
-_SELF_AUDIT_NODE_NAMES = (
-    "_ROOT_DIR",
-    "_CHECKER_PATH",
-    "_DISCOVERY_PATH",
-    "_POLICY_PATH",
-    "_UPSTREAM_CHECKER_PATH",
-    "_NON_VENDOR_OUTPUT_SOURCE_PATHS",
-    "_APPROVED_POLICY_SHA256",
-    "_PASS_MARKER",
-    "_SELF_TEST_MARKER",
-    "_NORMAL_SCOPE",
-    "_ISSUE_CODES",
-    "_POLICY_MARKERS",
-    "_POLICY_MARKER_COUNTS",
-    "_ANOMALY_CATEGORIES",
-    "_SOURCE_TABLES",
-    "_NEW_TABLES",
-    "_SENSITIVE_COLUMNS",
-    "_CANONICAL_SYMBOLS",
-    "_CANONICAL_CLI_OPTIONS",
-    "_CANONICAL_QUERIES",
-    "_NORMALIZED_CANONICAL_QUERIES",
-    "_UPSTREAM_SCHEMA_METADATA_QUERIES",
-    "_CANONICAL_QUERY_FRAGMENTS",
-    "_EXCLUDED_TOP_LEVELS",
-    "_SQL_SINKS",
-    "_WRITE_CALLS",
-    "_BACKEND_ROOTS",
-    "_PROJECT_IMPORT_ROOTS",
-    "_UPSTREAM_ALLOWED_NODE_NAMES",
-    "_EXPECTED_UPSTREAM_ALLOWED_V002_ISSUE_CODES",
-    "_UPSTREAM_STATIC_NODE_HASHES",
-    "_UPSTREAM_INTEGRATION_NODE_SPECS",
-    "_UPSTREAM_INTEGRATION_OWNER_HASHES",
-    "_EXACT_FIXTURE_NODE_HASHES",
-    "_SELF_AUDIT_NODE_NAMES",
-    "_SELF_AUDIT_AST_SHA256",
-    "_Issue",
-    "_Value",
-    "_Source",
-    "_Callable",
-    "_Repository",
-    "_normalized",
-    "_unique_strings",
-    "_merge_values",
-    "_dotted_name",
-    "_assignment_targets",
-    "_binding_path",
-    "_binding_names",
-    "_assign_binding",
-    "_merge_binding_maps",
-    "_module_name",
-    "_relative_import_module",
-    "_node_text",
-    "_has_partial_discovery_name",
-    "_has_discovery_target",
-    "_has_canonical_query",
-    "_has_canonical_query_shape",
-    "_has_static_boundary_text",
-    "_has_boundary_evidence",
-    "_is_fixed_unsupported_text",
-    "_has_source_reference",
-    "_has_new_table_reference",
-    "_is_select",
-    "_is_mutating_sql",
-    "_add_issue",
-    "_read_text",
-    "_read_python",
-    "_section",
-    "_check_policy",
-    "_top_level_name",
-    "_ast_sha256",
-    "_ast_bundle_sha256",
-    "_compact_ast_bundle_sha256",
-    "_literal_assignment",
-    "_assignment_value",
-    "_selected_named_nodes",
-    "_upstream_integration_node_ids",
-    "_v002_protected_node_ids",
-    "_check_upstream_guard",
-    "_runtime_paths",
-    "_collect_imports",
-    "_imported_class_candidates",
-    "_resolve_class_reference",
-    "_resolve_method",
-    "_call_return_value",
-    "_resolve_value",
-    "_prepare_repository",
-    "_resolve_callable",
-    "_call_leaf",
-    "_classify_sql",
-    "_classify_node",
-    "_bind_call",
-    "_scan_callable",
-    "_apply_container_mutation",
-    "_scan_call_node",
-    "_callable_for_node",
-    "_iterated_value",
-    "_bind_match_pattern",
-    "_direct_call_nodes",
-    "_scan_nodes",
-    "_self_audit",
-    "_apply_source_boundary_fallback",
-    "_scan_repository",
-    "_dedupe_issues",
-    "_analyze_repository",
-    "_render_normal",
-    "_parse_args",
-    "_write_text",
-    "_copy_baseline",
-    "_assert_negative",
-    "_run_self_test",
-    "_main",
-)
+_SELF_AUDIT_NODE_NAMES = ('_ROOT_DIR', '_CHECKER_PATH', '_DISCOVERY_PATH', '_POLICY_PATH', '_UPSTREAM_CHECKER_PATH', '_NON_VENDOR_OUTPUT_SOURCE_PATHS', '_APPROVED_POLICY_SHA256', '_PASS_MARKER', '_SELF_TEST_MARKER', '_NORMAL_SCOPE', '_ISSUE_CODES', '_POLICY_MARKERS', '_POLICY_MARKER_COUNTS', '_ANOMALY_CATEGORIES', '_SOURCE_TABLES', '_NEW_TABLES', '_SENSITIVE_COLUMNS', '_CANONICAL_SYMBOLS', '_CANONICAL_CLI_OPTIONS', '_CANONICAL_QUERIES', '_NORMALIZED_CANONICAL_QUERIES', '_UPSTREAM_SCHEMA_METADATA_QUERIES', '_CANONICAL_QUERY_FRAGMENTS', '_EXCLUDED_TOP_LEVELS', '_SQL_SINKS', '_WRITE_CALLS', '_BACKEND_ROOTS', '_PROJECT_IMPORT_ROOTS', '_UPSTREAM_ALLOWED_NODE_NAMES', '_EXPECTED_UPSTREAM_ALLOWED_V002_ISSUE_CODES', '_UPSTREAM_STATIC_NODE_HASHES', '_UPSTREAM_INTEGRATION_NODE_SPECS', '_UPSTREAM_INTEGRATION_OWNER_HASHES', '_EXACT_FIXTURE_NODE_HASHES', '_SELF_AUDIT_NODE_NAMES', '_SELF_AUDIT_AST_SHA256', '_Issue', '_Value', '_Source', '_Callable', '_Repository', '_normalized', '_unique_strings', '_merge_values', '_dotted_name', '_assignment_targets', '_binding_path', '_binding_names', '_assign_binding', '_merge_binding_maps', '_module_name', '_relative_import_module', '_node_text', '_has_partial_discovery_name', '_has_discovery_target', '_has_canonical_query', '_has_canonical_query_shape', '_has_static_boundary_text', '_has_boundary_evidence', '_is_fixed_unsupported_text', '_has_source_reference', '_has_new_table_reference', '_is_select', '_is_mutating_sql', '_add_issue', '_read_text', '_read_python', '_section', '_check_policy', '_top_level_name', '_ast_sha256', '_ast_bundle_sha256', '_compact_ast_bundle_sha256', '_literal_assignment', '_assignment_value', '_selected_named_nodes', '_upstream_integration_node_ids', '_v002_protected_node_ids', '_check_upstream_guard', '_runtime_paths', '_collect_imports', '_imported_class_candidates', '_resolve_class_reference', '_resolve_method', '_call_return_value', '_resolve_value', '_prepare_repository', '_resolve_callable', '_call_leaf', '_classify_sql', '_classify_node', '_bind_call', '_scan_callable', '_apply_container_mutation', '_scan_call_node', '_callable_for_node', '_iterated_value', '_bind_match_pattern', '_direct_call_nodes', '_scan_nodes', '_self_audit', '_apply_source_boundary_fallback', '_scan_repository', '_dedupe_issues', '_analyze_repository', '_render_normal', '_parse_args', '_write_text', '_copy_baseline', '_assert_negative', '_run_self_test', '_main', 'DVR_POLICY_PATH', 'DVR_POLICY_SHA256', 'DVR_POLICY_DELIMITER', 'DVR_SCHEMA_POLICY_PATH', 'DVR_SCHEMA_POLICY_SHA256', 'DVR_SCHEMA_POLICY_DELIMITER', 'DVR_COLLECTOR_EXCLUDED_PATH', 'DVR_EXCLUDED_TOP_LEVELS', 'DVR_IDENTITY_FIELDS', 'DVR_PRIMARY_CODES', '_dvr_typed_hash', '_dvr_walk', '_dvr_dotted', '_dvr_reference_streams', '_dvr_boundary_bindings', '_dvr_counter', '_dvr_policy', '_dvr_preconditions', '_dvr_replace_node', '_dvr_mutate_source', '_dvr_strict_json', '_dvr_contract', '_dvr_issue', '_dvr_identity', '_dvr_declarations', '_dvr_preflight', '_dvr_map_event', '_DvrObserver', '_dvr_accounting', '_dvr_result', '_dvr_final_filter', '_dvr_analyze', '_dvr_render', '_dvr_mode', '_dvr_public', '_dvr_issue_rows', '_dvr_collect', '_dvr_test_private', '_dvr_run_cases', 'DVR_LAST_CASE_RESULTS', '_dvr_selftest_public')
 _SELF_AUDIT_AST_SHA256 = (
-    "131804DFD7B54E60F399B9F8E93B66C4BD89370B2E4D83F3F4882FE68F70E884"
+    "DB17D6129A8061C439A993F229D21EB4726B18C1936296E20D1C88249C29BFEF"
 )
 
 
@@ -4984,22 +4917,15 @@ def _render_normal(issues: Sequence[_Issue]) -> tuple[int, str]:
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Statically verify the frozen VENDOR-ID-003 absence-first "
-            "read-only vendor discovery boundary."
-        ),
-        allow_abbrev=False,
-    )
-    parser.add_argument(
-        "--self-test",
-        action="store_true",
-        help="run isolated static source and policy scenarios",
-    )
     tokens = list(sys.argv[1:] if argv is None else argv)
-    if tokens.count("--self-test") > 1:
-        parser.error("--self-test may be specified exactly once")
-    return parser.parse_args(tokens)
+    mode = _dvr_mode(tokens)
+    if mode == 'invalid':
+        print('usage: check_vendor_organization_discovery_readiness.py [-h] [--self-test | --vr-compat-r01 | --vr-compat-r01-self-test]\ncheck_vendor_organization_discovery_readiness.py: error: invalid invocation\n', file=sys.stderr, end='')
+        raise SystemExit(2)
+    if mode == 'help':
+        print('usage: check_vendor_organization_discovery_readiness.py [-h] [--self-test | --vr-compat-r01 | --vr-compat-r01-self-test]\n\nStatically verify the frozen VENDOR-ID-003 absence-first boundary or the independent VR\ncompatibility r01 source contract.\n\noptions:\n  -h, --help                 show this help message and exit\n  --self-test                run the unchanged legacy isolated static source and policy\n                             scenarios\n  --vr-compat-r01            verify only the independent VR compatibility r01 source\n                             contract\n  --vr-compat-r01-self-test  run the independent VR compatibility r01 isolated static\n                             scenarios\n', end='')
+        raise SystemExit(0)
+    return argparse.Namespace(self_test=mode == 'legacy-self-test', vr_compat=mode == 'compat', vr_self_test=mode == 'compat-self-test')
 
 
 def _write_text(root: Path, relative: str, text: str) -> None:
@@ -5042,7 +4968,44 @@ def _assert_negative(
             )
 
 
-def _run_self_test() -> int:
+def _run_self_test(mode: str | None = None) -> int:
+    if mode is not None:
+        if mode != 'vr':
+            raise ValueError('self-test mode')
+        contract = _dvr_contract(_ROOT_DIR)
+        prerequisite = _dvr_policy(_ROOT_DIR)
+        source_paths = tuple(prerequisite['source_paths']) + (
+            'docs/vendor_id_001_vendor_organization_owner_member_design.md',
+            'docs/vendor_id_002_physical_sqlite_schema_migration_baseline.md',
+            'docs/vendor_id_003_read_only_vendor_discovery_baseline.md',
+            DVR_SCHEMA_POLICY_PATH.as_posix(), DVR_POLICY_PATH.as_posix())
+        names = {case['id'] for case in contract['recipes']['scenarios']}
+        extra_paths = {'services/vr_compat_unapproved_reference.py'}
+        native_paths = {_POLICY_PATH.as_posix(), _UPSTREAM_CHECKER_PATH.as_posix(), _CHECKER_PATH.as_posix()}
+        native_extra = {case['recipe']['path'] for case in contract['recipes']['scenarios'] if case['id'].startswith('RESIDUAL-')}
+        with tempfile.TemporaryDirectory(prefix='vendor-vr-discovery-static-') as value:
+            scratch = Path(value).resolve()
+            def fixture(name, changes, omitted, native):
+                if name not in names or type(changes) is not dict or type(native) is not bool:
+                    raise ValueError('fixture identity')
+                selected = native_paths if native else set(source_paths)
+                permitted = selected | (native_extra if native else extra_paths)
+                if not set(changes).issubset(permitted) or not set(omitted).issubset(selected):
+                    raise ValueError('fixture scope')
+                target = scratch / name
+                if target.exists() or not target.resolve().is_relative_to(scratch):
+                    raise ValueError('fixture must be fresh')
+                for relative in sorted((selected | set(changes)) - set(omitted)):
+                    destination = target / relative
+                    if Path(relative).is_absolute() or not destination.resolve().is_relative_to(target):
+                        raise ValueError('fixture path')
+                    payload = changes[relative] if relative in changes else (_ROOT_DIR / relative).read_bytes()
+                    if type(payload) is not bytes:
+                        raise ValueError('fixture bytes')
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(payload)
+                return target
+            return _dvr_run_cases(_ROOT_DIR, fixture)
     scenario_count = 0
     with tempfile.TemporaryDirectory(
         prefix="vendor-id-003a-readiness-self-test-"
@@ -6854,13 +6817,993 @@ def _run_self_test() -> int:
 
 def _main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    if args.vr_compat:
+        return _dvr_public(lambda: _dvr_analyze(_ROOT_DIR))
+    if args.vr_self_test:
+        return _dvr_selftest_public(lambda: _run_self_test('vr'))
     if args.self_test:
         return _run_self_test()
     issues = _analyze_repository(_ROOT_DIR)
     status, output = _render_normal(issues)
-    print(output, end="")
+    print(output, end='')
     return status
 
+
+
+
+DVR_POLICY_PATH = Path('docs/004f_vr_discovery_compatibility_r01.md')
+DVR_POLICY_SHA256 = '4B2BF007DCEA6E91F27E1780A794B37B9F5544D6FAAEBA4C582A9F579D748811'
+DVR_POLICY_DELIMITER = '\n```json discovery-vr-compat-inventory\n'
+DVR_SCHEMA_POLICY_PATH = Path('docs/004f_vr_schema_compatibility_r01.md')
+DVR_SCHEMA_POLICY_SHA256 = '1789943E6F97E2846370E4838D260A88BFD5E5D550F290C5ED0E43ED6FB2F247'
+DVR_SCHEMA_POLICY_DELIMITER = '\n```json vr-compat-inventory\n'
+DVR_COLLECTOR_EXCLUDED_PATH = Path('tools/check_vendor_organization_schema.py')
+DVR_EXCLUDED_TOP_LEVELS = ('.codex', '.git', '.mypy_cache', '.nox', '.pytest_cache', '.ruff_cache', '.tox', '.venv', '__pycache__', 'build', 'dist', 'docs', 'env', 'node_modules', 'tests', 'venv')
+DVR_IDENTITY_FIELDS = ('code', 'line', 'mapping_status', 'node_address', 'node_type', 'owner', 'owner_address', 'path', 'scanner_module_sha256', 'scanner_node_sha256', 'scanner_owner_sha256', 'symbol', 'typed_module_sha256', 'typed_node_sha256', 'typed_owner_sha256')
+DVR_PRIMARY_CODES = {'policy': 'vr_discovery_compat_policy_drift', 'source_universe': 'vr_discovery_compat_source_universe_drift', 'source_parse': 'vr_discovery_compat_source_parse_error', 'dependencies': 'vr_discovery_compat_dependency_drift', 'references': 'vr_discovery_compat_reference_drift', 'observer': 'vr_discovery_compat_observer_integrity_failure', 'unobserved_append': 'vr_discovery_compat_unobserved_append', 'event_accounting': 'vr_discovery_compat_event_accounting_mismatch'}
+
+def _dvr_typed_hash(node):
+    return hashlib.sha256(ast.dump(node, annotate_fields=True,
+                                  include_attributes=False, indent=2).encode('utf-8')).hexdigest().upper()
+
+def _dvr_walk(tree):
+    rows = []
+    def visit(node, address, owner='<module>', owner_address='Module', parent=None):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            owner = node.name if owner == '<module>' else owner + '.' + node.name
+            owner_address = address
+        rows.append((node, address, owner, owner_address, parent))
+        for field_name, value in ast.iter_fields(node):
+            if isinstance(value, ast.AST):
+                visit(value, address + '.' + field_name, owner, owner_address, node)
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    if isinstance(child, ast.AST):
+                        visit(child, f'{address}.{field_name}[{index}]', owner, owner_address, node)
+    visit(tree, 'Module')
+    return rows
+
+def _dvr_dotted(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dvr_dotted(node.value)
+        return base + '.' + node.attr if base else ''
+    return ''
+
+def _dvr_reference_streams(trees, policy):
+    # Finite lexical candidates plus the five explicitly reviewed adapters.
+    # Owner hashes guard local uses; this is not a general Python interpreter.
+    protected_modules = set(policy['protected_modules'])
+    app_names = set(policy['app_names'])
+    def protected(target):
+        return (any(target == m or target.startswith(m + '.') for m in protected_modules)
+                or target == 'app' or (target.startswith('app.') and target.split('.')[1] in app_names))
+    streams = {'original': [], 'adapter': [], 'tool': []}
+    imports = []
+    maps = {p: {a: (n, o, op, par) for n, a, o, op, par in _dvr_walk(t)} for p, t in trees.items()}
+    hash_cache = {}
+    def digest(node):
+        key = id(node)
+        if key not in hash_cache:
+            hash_cache[key] = _dvr_typed_hash(node)
+        return hash_cache[key]
+    def identity(p, a, target, kind):
+        n, o, op, parent = maps[p][a]
+        return [kind, p, o, op, a, type(n).__name__, digest(n), digest(maps[p][op][0]), target]
+    for p, tree in trees.items():
+        if p == DVR_COLLECTOR_EXCLUDED_PATH.as_posix():
+            continue
+        rows = _dvr_walk(tree)
+        package = p[:-3].replace('/', '.').rpartition('.')[0]
+        aliases = {}
+        for n, a, owner, op, par in rows:
+            if not isinstance(n, (ast.Import, ast.ImportFrom)):
+                continue
+            if isinstance(n, ast.Import):
+                pairs = [(x.asname or x.name.split('.')[0], x.name if x.asname else x.name.split('.')[0], x.name) for x in n.names]
+            else:
+                base = n.module or ''
+                if n.level:
+                    bits = package.split('.') if package else []
+                    base = '.'.join(bits[:len(bits) - n.level + 1] + ([base] if base else []))
+                pairs = [(x.asname or x.name, base + '.' + x.name if base else x.name, base + '.' + x.name if base else x.name) for x in n.names]
+            for local, target, full_target in pairs:
+                if protected(target) or protected(full_target):
+                    aliases.setdefault(local, []).append((owner, op, target, a))
+                    imports.append((p, owner, op, a, local, target))
+                    streams['original'].append(identity(p, a, target, 'import'))
+        module = p[:-3].replace('/', '.')
+        defs = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+        for n, a, owner, op, par in rows:
+            name = _dvr_dotted(n)
+            candidates = []
+            if name:
+                for imported_owner, imported_op, target, impaddr in aliases.get(name.split('.')[0], []):
+                    if imported_owner == '<module>' or owner == imported_owner or owner.startswith(imported_owner + '.'):
+                        resolved = target + name[len(name.split('.')[0]):]
+                        if protected(resolved):
+                            candidates.append(resolved)
+                if module in protected_modules and isinstance(n, ast.Name) and n.id in defs:
+                    candidates.append(module + '.' + n.id)
+                if p == 'app.py' and isinstance(n, ast.Name) and n.id in app_names:
+                    candidates.append('app.' + n.id)
+            if candidates:
+                labels = sorted(set(candidates))
+                if labels == ['app.register_vendor_scope_admin', 'routes.vendor_scope_admin.register_vendor_scope_admin']:
+                    labels = ['routes.vendor_scope_admin.register_vendor_scope_admin']
+                if labels == ['app.register_vendor_scope_admin']:
+                    labels = ['routes.vendor_scope_admin.register_vendor_scope_admin']
+                if labels == ['app.register_vendor_registration']:
+                    labels = ['routes.vendor_registration.register_vendor_registration']
+                if len(labels) != 1:
+                    raise ValueError('ambiguous protected reference')
+                streams['original'].append(identity(p, a, labels[0], 'reference'))
+    for p in policy['adapter_paths']:
+        for n, a, owner, op, parent in _dvr_walk(trees[p]):
+            if not isinstance(n, ast.Call) or _dvr_dotted(n.func) != '_app_state':
+                continue
+            if n.args or n.keywords or not isinstance(parent, ast.Assign) or len(parent.targets) != 1 or not isinstance(parent.targets[0], ast.Name) or parent.targets[0].id != 'app':
+                raise ValueError('unsupported adapter binding')
+            for child, ca, co, cop, cp in _dvr_walk(trees[p]):
+                if co == owner and ca.startswith(op + '.') and (_dvr_dotted(child) == 'app' or _dvr_dotted(child).startswith('app.')):
+                    streams['adapter'].append(identity(p, ca, _dvr_dotted(child), 'adapter'))
+    for p, owner, op, address, local, target in imports:
+        if not p.startswith('tools/'):
+            continue
+        for n, a, no, nop, parent in _dvr_walk(trees[p]):
+            if owner != '<module>' and not (no == owner or no.startswith(owner + '.')):
+                continue
+            spelling = _dvr_dotted(n)
+            if spelling and spelling.split('.')[0] == local:
+                streams['tool'].append(identity(p, a, target + spelling[len(local):], 'tool'))
+    return streams
+
+def _dvr_boundary_bindings(trees, policy):
+    # Supplement the three accepted inventories without changing their identities.
+    # Fixed import boundaries and five factory names only; no alias interpreter.
+    boundaries = {p[:-3].replace('/', '.') for p in policy['modules'] if p != 'app.py'}
+    boundaries.update(p[:-3].replace('/', '.') for p in policy['adapter_paths'])
+    boundaries.add('app')
+    imports, factory_names = [], []
+    for path, tree in trees.items():
+        if path == DVR_COLLECTOR_EXCLUDED_PATH.as_posix():
+            continue
+        rows = _dvr_walk(tree)
+        nodes = {a:n for n,a,o,op,par in rows}
+        owner_hashes = {}
+        for node, address, owner, owner_address, parent in rows:
+            targets = []
+            if isinstance(node, ast.Import):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                package = path[:-3].replace('/', '.').rpartition('.')[0]
+                base = node.module or ''
+                if node.level:
+                    parts = package.split('.') if package else []
+                    base = '.'.join(parts[:len(parts)-node.level+1] + ([base] if base else []))
+                targets = [base if alias.name == '*' else base + '.' + alias.name if base else alias.name for alias in node.names]
+            related = [target for target in targets if any(target == b or target.startswith(b + '.') or b.startswith(target + '.') for b in boundaries) or target.endswith('._app_state')]
+            factory = False
+            if path in policy['adapter_paths']:
+                factory = (
+                    isinstance(node, ast.Name) and node.id == '_app_state'
+                    or isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler)) and node.name == '_app_state'
+                    or isinstance(node, ast.alias) and (node.name == '*' or (node.asname or node.name.split('.')[0]) == '_app_state')
+                    or isinstance(node, ast.arg) and node.arg == '_app_state'
+                    or isinstance(node, (ast.Global, ast.Nonlocal)) and '_app_state' in node.names
+                    or isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == '_app_state'
+                    or isinstance(node, ast.MatchMapping) and node.rest == '_app_state'
+                    or isinstance(node, ast.Constant) and node.value == '_app_state'
+                    or isinstance(node, ast.Call) and _dvr_dotted(node.func) in {'getattr','setattr','delattr','vars','globals','locals','eval','exec','__import__','importlib.import_module'}
+                )
+            if related or factory:
+                if owner_address not in owner_hashes:
+                    owner_hashes[owner_address] = _dvr_typed_hash(nodes[owner_address])
+                row = [path, owner, owner_address, address, type(node).__name__, _dvr_typed_hash(node), owner_hashes[owner_address]]
+                if related:
+                    imports.extend(row + [target] for target in related)
+                if factory:
+                    factory_names.append(row + [type(getattr(node, 'ctx', None)).__name__])
+    return {'imports': imports, 'factory_names': factory_names}
+
+def _dvr_counter(rows):
+    from collections import Counter
+    return Counter(tuple(row) for row in rows)
+
+def _dvr_policy(root):
+    import json
+    raw = (root / DVR_SCHEMA_POLICY_PATH).read_bytes()
+    if hashlib.sha256(raw).hexdigest().upper() != DVR_SCHEMA_POLICY_SHA256:
+        raise ValueError('policy identity')
+    text = raw.decode('utf-8')
+    if text.count(DVR_SCHEMA_POLICY_DELIMITER) != 1 or not text.endswith('\n```\n'):
+        raise ValueError('policy serialization')
+    return json.loads(text.split(DVR_SCHEMA_POLICY_DELIMITER)[1][:-5])
+
+def _dvr_preconditions(root, policy):
+    import platform
+    problems = []
+    if platform.python_implementation() != 'CPython' or sys.version_info[:2] != (3, 14):
+        return [_Issue('vr_compat_dependency_drift', DVR_COLLECTOR_EXCLUDED_PATH.as_posix(), 1, 'qualified_python')], {}
+    paths = []
+    for path in root.rglob('*.py'):
+        relative = path.relative_to(root)
+        if relative.parts[0] in set(DVR_EXCLUDED_TOP_LEVELS) - {'tests'}:
+            continue
+        paths.append(relative.as_posix())
+        if path.is_symlink() or path.resolve() != root.resolve().joinpath(relative):
+            problems.append(_Issue('vr_compat_reference_drift', relative.as_posix(), 1, 'source_identity'))
+    expected = set(policy['source_paths'])
+    for path in sorted(set(paths) ^ expected):
+        problems.append(_Issue('vr_compat_reference_drift', path, 1, 'universe-addition' if path not in expected else 'universe-missing'))
+    if len(paths) != len(set(paths)):
+        problems.append(_Issue('vr_compat_reference_drift', '-', 1, 'duplicate_source'))
+    if problems:
+        return sorted(set(problems)), {}
+    trees = {}
+    for path in sorted(paths):
+        try:
+            trees[path] = ast.parse((root / path).read_text(encoding='utf-8-sig'), filename=path, type_comments=True)
+        except (OSError, UnicodeError, SyntaxError):
+            problems.append(_Issue('vr_compat_parse_error', path, 1, 'source-parse'))
+    if problems:
+        return sorted(set(problems)), {}
+    for path, expected_hash in policy['modules'].items():
+        if _dvr_typed_hash(trees[path]) != expected_hash:
+            problems.append(_Issue('vr_compat_dependency_drift', path, 1, 'Module'))
+    if problems:
+        return sorted(set(problems)), trees
+    try:
+        bindings = _dvr_boundary_bindings(trees, policy)
+        for stream in ('imports', 'factory_names'):
+            difference = _dvr_counter(bindings[stream]) - _dvr_counter(policy['boundary_bindings'][stream])
+            difference += _dvr_counter(policy['boundary_bindings'][stream]) - _dvr_counter(bindings[stream])
+            for row in difference:
+                problems.append(_Issue('vr_compat_reference_drift', row[0], 1, row[2]))
+        actual = _dvr_reference_streams(trees, policy)
+        for stream in ('original', 'adapter', 'tool'):
+            if _dvr_counter(actual[stream]) != _dvr_counter(policy['streams'][stream]):
+                changed = _dvr_counter(actual[stream]) - _dvr_counter(policy['streams'][stream])
+                changed += _dvr_counter(policy['streams'][stream]) - _dvr_counter(actual[stream])
+                for row in changed:
+                    problems.append(_Issue('vr_compat_reference_drift', row[1], 1, row[3]))
+    except ValueError:
+        problems.append(_Issue('vr_compat_reference_drift', '-', 1, 'unsupported_shape'))
+    return sorted(set(problems)), trees
+
+def _dvr_replace_node(tree, address, replacement=None, list_operation=None):
+    parent_address, tail = address.rsplit('.', 1)
+    parent = {a: n for n, a, o, op, par in _dvr_walk(tree)}[parent_address]
+    match = re.fullmatch(r'([a-z_]+)(?:\[([0-9]+)\])?', tail)
+    field_name, index = match.groups()
+    if index is None:
+        if list_operation:
+            raise ValueError('list target required')
+        setattr(parent, field_name, replacement)
+    else:
+        sequence = getattr(parent, field_name)
+        i = int(index)
+        if list_operation == 'remove':
+            sequence.pop(i)
+        elif list_operation in ('before', 'after'):
+            pos = i + (list_operation == 'after')
+            sequence[pos:pos] = replacement
+        else:
+            sequence[i] = replacement
+
+def _dvr_mutate_source(source, case):
+    tree = ast.parse(source, type_comments=True)
+    targets = case.get('targets', [case.get('target')])
+    nodes = {a: n for n, a, o, op, par in _dvr_walk(tree)}
+    for target in targets:
+        if target and target.get('ast_path'):
+            if _dvr_typed_hash(nodes[target['ast_path']]) != target['typed_sha256']:
+                raise ValueError('mutation target drift')
+    target = targets[0]
+    address = target['ast_path']
+    node = nodes[address]
+    recipe = case['edit_recipe']
+    operation = recipe['operation']
+    value = recipe.get('value_or_source', recipe.get('source'))
+    if case['id'] == 'same_line_different_node':
+        literal = 'import app; app.resolve_vendor_work_entry_actor_session_type(); app.resolve_vendor_work_entry_actor_session_type()'
+        if value != literal or not isinstance(node, ast.FunctionDef) or node.col_offset != 0:
+            raise ValueError('same-line recipe target')
+        lines = source.splitlines(keepends=True)
+        insertion_line = node.end_lineno + 1
+        lines.insert(node.end_lineno, '    ' + literal + '\n')
+        mutated = ''.join(lines)
+        parsed = ast.parse(mutated, type_comments=True)
+        calls = [(n, a) for n, a, o, op, par in _dvr_walk(parsed)
+                 if isinstance(n, ast.Call) and _dvr_dotted(n.func) == 'app.resolve_vendor_work_entry_actor_session_type'
+                 and n.lineno == insertion_line]
+        if len(calls) != 2 or len({n.lineno for n, a in calls}) != 1 or len({a for n, a in calls}) != 2:
+            raise ValueError('same-line call identity')
+        return mutated
+    if operation in ('expression', 'replace_expression'):
+        _dvr_replace_node(tree, address, ast.parse(value, mode='eval').body)
+    elif operation in ('constant', 'boolean'):
+        _dvr_replace_node(tree, address, ast.Constant(value=value))
+    elif operation in ('insert_before', 'insert_after'):
+        _dvr_replace_node(tree, address, ast.parse(value).body, 'before' if operation.endswith('before') else 'after')
+    elif operation == 'remove_statement':
+        _dvr_replace_node(tree, address, list_operation='remove')
+    elif operation == 'dict_add':
+        if not isinstance(node, ast.Dict) or value in [getattr(k, 'value', None) for k in node.keys]:
+            raise ValueError('dict target drift')
+        node.keys.append(ast.Constant(value=value))
+        node.values.append(ast.Name(id='membership_id', ctx=ast.Load()))
+    elif operation == 'SQL_replace_disabled':
+        if node.value.count("'disabled'") != 1:
+            raise ValueError('disabled occurrence drift')
+        node.value = node.value.replace("'disabled'", "'active'", 1)
+    elif operation == 'set_orelse':
+        if node.orelse:
+            raise ValueError('expected empty else')
+        node.orelse = ast.parse(value).body
+    elif operation == 'remove_bool_operands':
+        node.values = [v for i, v in enumerate(node.values) if i not in value]
+    elif operation == 'actor_and_target':
+        _dvr_replace_node(tree, address, ast.Constant(value=False))
+        _dvr_replace_node(tree, recipe['second_target'], ast.Constant(value=False))
+    elif operation in ('select_left', 'select_arg0'):
+        _dvr_replace_node(tree, address, node.left if operation == 'select_left' else node.args[0])
+    elif operation in ('append_ast_statement', 'append_source_snippet_at_exact_owner_end'):
+        node.body.extend(ast.parse(value).body)
+    elif operation == 'append_decorator':
+        node.decorator_list.append(ast.parse(value, mode='eval').body)
+    elif operation == 'set_type_comment':
+        node.type_comment = recipe['value']
+    elif operation == 'append_type_ignore_comment_to_exact_import_line':
+        lines = source.splitlines(keepends=True)
+        line = recipe['target_import']['line']
+        if '# type:' in lines[line - 1]:
+            raise ValueError('existing type comment')
+        lines[line - 1] = lines[line - 1].rstrip('\r\n') + '  # type: ignore[vr_compat_mutation]\n'
+        mutated = ''.join(lines)
+        parsed = ast.parse(mutated, type_comments=True)
+        if not any(x.lineno == line and x.tag == '[vr_compat_mutation]' for x in parsed.type_ignores):
+            raise ValueError('missing intended TypeIgnore')
+        return mutated
+    elif operation == 'replace_statement':
+        _dvr_replace_node(tree, address, ast.parse(value).body[0])
+    elif operation == 'set_field':
+        setattr(node, recipe['field'], recipe['value'])
+    elif operation == 'replace_bases':
+        node.bases = [ast.parse(value, mode='eval').body]
+    elif operation == 'replace_keyword_value':
+        node.value = ast.parse(value, mode='eval').body
+    elif operation == 'insert_one_Pass_at_owner_body_index0':
+        node.body.insert(0, ast.Pass())
+    elif operation == 'append_invalid_module_source':
+        return source + value
+    else:
+        raise ValueError('unsupported fixed mutation operation')
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree) + '\n'
+
+def _dvr_strict_json(text):
+    import json
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError('duplicate JSON key')
+            result[key] = value
+        return result
+    def invalid(value):
+        raise ValueError('nonfinite JSON value')
+    return json.loads(text, object_pairs_hook=pairs, parse_constant=invalid)
+
+
+def _dvr_contract(root):
+    raw = (root / DVR_POLICY_PATH).read_bytes()
+    if hashlib.sha256(raw).hexdigest().upper() != DVR_POLICY_SHA256:
+        raise ValueError('discovery policy identity')
+    text = raw.decode('utf-8')
+    if text.count(DVR_POLICY_DELIMITER) != 1 or not text.endswith('\n```\n'):
+        raise ValueError('discovery policy serialization')
+    value = _dvr_strict_json(text.split(DVR_POLICY_DELIMITER)[1][:-5])
+    if not _dvr_declarations(value['ledger']):
+        raise ValueError('discovery declaration contract')
+    return value
+
+
+def _dvr_issue(stage):
+    return _Issue(DVR_PRIMARY_CODES[stage], _CHECKER_PATH.as_posix(), 1,
+                  'vr_compat_r01:' + stage)
+
+
+def _dvr_identity(item):
+    return tuple(item[name] for name in DVR_IDENTITY_FIELDS)
+
+
+def _dvr_declarations(rows):
+    if type(rows) is not list or len(rows) != 71:
+        return False
+    identities, ordinals = set(), set()
+    total = 0
+    for row in rows:
+        if type(row) is not dict or set(row) != {'identity', 'multiplicity', 'raw_ordinals'}:
+            return False
+        item, multiplicity, positions = row['identity'], row['multiplicity'], row['raw_ordinals']
+        if type(item) is not dict or set(item) != set(DVR_IDENTITY_FIELDS):
+            return False
+        if type(multiplicity) is not int or multiplicity < 1 or type(positions) is not list or len(positions) != multiplicity:
+            return False
+        for key, value in item.items():
+            if key == 'line':
+                if type(value) is not int or value < 1:
+                    return False
+            elif type(value) is not str or not value:
+                return False
+            if key.endswith('_sha256') and not re.fullmatch('[0-9A-F]{64}', value):
+                return False
+        if item['mapping_status'] != 'MAPPED' or item['code'] not in _ISSUE_CODES:
+            return False
+        key = _dvr_identity(item)
+        if key in identities:
+            return False
+        identities.add(key)
+        for position in positions:
+            if type(position) is not int or not 1 <= position <= 161 or position in ordinals:
+                return False
+            ordinals.add(position)
+        total += multiplicity
+    return total == 161 and ordinals == set(range(1, 162))
+
+
+def _dvr_preflight(root, contract):
+    try:
+        policy = _dvr_policy(root)
+    except (OSError, UnicodeError, ValueError):
+        return 'policy', {}, {}
+    problems, trees = _dvr_preconditions(root, policy)
+    if problems:
+        if any(p.symbol in {'source_identity', 'universe-addition', 'universe-missing', 'duplicate_source'} for p in problems):
+            stage = 'source_universe'
+        elif any(p.code == 'vr_compat_parse_error' for p in problems):
+            stage = 'source_parse'
+        elif any(p.code == 'vr_compat_dependency_drift' for p in problems):
+            stage = 'dependencies'
+        else:
+            stage = 'references'
+        return stage, trees, policy
+    schema_tree = trees[DVR_COLLECTOR_EXCLUDED_PATH.as_posix()]
+    functions = {node.name: node for node in schema_tree.body if isinstance(node, ast.FunctionDef)}
+    if any(name not in functions or _dvr_typed_hash(functions[name]) != value
+           for name, value in contract['schema_helper_pins'].items()):
+        return 'dependencies', trees, policy
+    return None, trees, policy
+
+
+def _dvr_map_event(issue, node, registry, typed_trees):
+    if node is None:
+        raise ValueError('node_none')
+    matches = []
+    for (path, tree_id), tree in registry.items():
+        if path != issue.path:
+            continue
+        rows = _dvr_walk(tree)
+        addresses = {address: (n, owner, owner_address) for n, address, owner, owner_address, parent in rows}
+        for candidate, address, owner, owner_address, parent in rows:
+            if candidate is node:
+                matches.append((tree, addresses, address, owner, owner_address))
+    if len(matches) != 1:
+        raise ValueError('scanner_address_not_unique')
+    scanner_tree, scanner, address, owner, owner_address = matches[0]
+    if issue.path not in typed_trees:
+        raise ValueError('typed_path_missing')
+    typed_tree = typed_trees[issue.path]
+    typed = {a: (n, o, oa) for n, a, o, oa, parent in _dvr_walk(typed_tree)}
+    if address not in typed:
+        raise ValueError('typed_address_missing')
+    typed_node, typed_owner, typed_owner_address = typed[address]
+    if type(node) is not type(typed_node):
+        raise ValueError('node_type_mismatch')
+    if owner != typed_owner or owner_address != typed_owner_address:
+        raise ValueError('owner_identity_mismatch')
+    scanner_node_hash, typed_node_hash = _dvr_typed_hash(node), _dvr_typed_hash(typed_node)
+    if scanner_node_hash != typed_node_hash:
+        raise ValueError('node_fingerprint_mismatch')
+    scanner_owner_hash = _dvr_typed_hash(scanner[owner_address][0])
+    typed_owner_hash = _dvr_typed_hash(typed[typed_owner_address][0])
+    if scanner_owner_hash != typed_owner_hash:
+        raise ValueError('owner_fingerprint_mismatch')
+    scanner_module_hash, typed_module_hash = _dvr_typed_hash(scanner_tree), _dvr_typed_hash(typed_tree)
+    if scanner_module_hash != typed_module_hash:
+        raise ValueError('module_fingerprint_mismatch')
+    return {'code': issue.code, 'path': issue.path, 'line': issue.line, 'symbol': issue.symbol,
+            'mapping_status': 'MAPPED', 'node_address': address, 'owner': owner,
+            'owner_address': owner_address, 'node_type': type(node).__name__,
+            'scanner_node_sha256': scanner_node_hash, 'typed_node_sha256': typed_node_hash,
+            'scanner_owner_sha256': scanner_owner_hash, 'typed_owner_sha256': typed_owner_hash,
+            'scanner_module_sha256': scanner_module_hash, 'typed_module_sha256': typed_module_hash}
+
+
+class _DvrObserver:
+    names = ('_add_issue', '_read_python', '_prepare_repository', '_dedupe_issues')
+
+    def __init__(self, trees):
+        self.trees = trees
+        self.original = {name: globals()[name] for name in self.names}
+        self.registry, self.events, self.appended, self.raw_lists = {}, [], [], []
+        self.repositories = []
+        self.attempts = 0
+        self.integrity = True
+        self.active = False
+
+    def __enter__(self):
+        if self.active or any(globals()[name] is not original for name, original in self.original.items()):
+            raise ValueError('observer installation')
+        self.active = True
+        def add(issues, code, path, node=None, symbol='-'):
+            before = len(issues)
+            self.attempts += 1
+            result = self.original['_add_issue'](issues, code, path, node, symbol)
+            if len(issues) != before + 1 or result is not None:
+                self.integrity = False
+                return result
+            issue = issues[-1]
+            self.appended.append((issues, issue))
+            try:
+                mapped = _dvr_map_event(issue, node, self.registry, self.trees)
+            except ValueError:
+                mapped = {'mapping_status': 'HOLD', 'code': issue.code, 'path': issue.path,
+                          'line': issue.line, 'symbol': issue.symbol}
+            self.events.append(mapped)
+            return result
+        def read(*args, **kwargs):
+            tree = self.original['_read_python'](*args, **kwargs)
+            relative = args[1] if len(args) > 1 else kwargs['relative']
+            if isinstance(tree, ast.Module):
+                self.registry[(relative.as_posix(), id(tree))] = tree
+            return tree
+        read.__dict__.update(self.original['_read_python'].__dict__)
+        self.read_wrapper = read
+        def prepare(*args, **kwargs):
+            repository = self.original['_prepare_repository'](*args, **kwargs)
+            self.repositories.append(repository)
+            return repository
+        def dedupe(issues):
+            if isinstance(issues, list):
+                self.raw_lists.append(tuple(issues))
+            else:
+                self.integrity = False
+            return self.original['_dedupe_issues'](issues)
+        for name, wrapper in zip(self.names, (add, read, prepare, dedupe)):
+            globals()[name] = wrapper
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        try:
+            if '_ast_cache' in self.read_wrapper.__dict__:
+                self.original['_read_python']._ast_cache = self.read_wrapper._ast_cache
+        finally:
+            for name, original in self.original.items():
+                globals()[name] = original
+            self.active = False
+        return False
+
+    def restored(self):
+        return all(globals()[name] is original for name, original in self.original.items())
+
+    def raw_reconciled(self):
+        if len(self.repositories) != 1 or len(self.raw_lists) != 1:
+            return False
+        repository = self.repositories[0]
+        return (self.integrity and all(rows is repository.issues for rows, issue in self.appended)
+                and [issue for rows, issue in self.appended] == list(self.raw_lists[0]) == repository.issues)
+
+
+def _dvr_accounting(declarations, events, issues, counts):
+    from collections import Counter
+    if not _dvr_declarations(declarations):
+        return False
+    if type(counts) is not dict or set(counts) != {'raw_count', 'logical_count'}:
+        return False
+    if any(type(value) is not int for value in counts.values()) or counts != {'raw_count': 161, 'logical_count': 70}:
+        return False
+    if type(events) is not list or len(events) != 161:
+        return False
+    if any(type(event) is not dict or set(event) != set(DVR_IDENTITY_FIELDS) for event in events):
+        return False
+    for event in events:
+        for key, value in event.items():
+            if key == 'line':
+                if type(value) is not int or value < 1:
+                    return False
+            elif type(value) is not str or not value:
+                return False
+            if key.endswith('_sha256') and not re.fullmatch('[0-9A-F]{64}', value):
+                return False
+        if event['mapping_status'] != 'MAPPED' or event['code'] not in _ISSUE_CODES:
+            return False
+    expected = Counter({_dvr_identity(row['identity']): row['multiplicity'] for row in declarations})
+    if Counter(_dvr_identity(event) for event in events) != expected:
+        return False
+    logical = {_Issue(item['code'], item['path'], item['line'], item['symbol'])
+               for item in (row['identity'] for row in declarations)}
+    return len(logical) == 70 and tuple(sorted(logical)) == tuple(sorted(set(issues)))
+
+
+def _dvr_result(stage=None, secondary=(), logical=0, raw=0, consumed=0, scanned=False):
+    return {'primary': [] if stage is None else [_dvr_issue(stage)], 'secondary': sorted(set(secondary)),
+            'logical': logical, 'raw': raw, 'consumed': consumed, 'scanned': scanned}
+
+
+def _dvr_final_filter(declarations, events, issues, counts, restored, reconciled):
+    if not restored:
+        stage = 'observer'
+    elif not reconciled:
+        stage = 'unobserved_append'
+    elif not _dvr_accounting(declarations, events, issues, counts):
+        stage = 'event_accounting'
+    else:
+        stage = None
+    return _dvr_result(stage, issues if stage else (), len(set(issues)), len(events),
+                       161 if stage is None else 0, True)
+
+
+def _dvr_analyze(root):
+    try:
+        contract = _dvr_contract(root)
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+        return _dvr_result('policy')
+    stage, trees, prerequisite = _dvr_preflight(root, contract)
+    if stage:
+        return _dvr_result(stage)
+    observer = _DvrObserver(trees)
+    with observer:
+        issues = _analyze_repository(root)
+    return _dvr_final_filter(contract['ledger'], observer.events, issues,
+                             {'raw_count': len(observer.events), 'logical_count': len(issues)},
+                             observer.restored(), observer.raw_reconciled())
+
+
+def _dvr_render(result):
+    lines = ['vendor_discovery_readiness_scope: static_source_and_frozen_policy_and_vr_compat_r01_only',
+             'vr_compat_contract: 004f_vr_discovery_compatibility_r01',
+             'vr_compat_observation_status: ' + ('COMPLETE' if result['scanned'] else 'NOT_RUN'),
+             'vr_compat_logical_expected: 70', f"vr_compat_logical_observed: {result['logical']}",
+             'vr_compat_emissions_expected: 161', f"vr_compat_emissions_observed: {result['raw']}",
+             f"vr_compat_emissions_consumed: {result['consumed']}",
+             f"primary_issues_count: {len(result['primary'])}", f"secondary_issues_count: {len(result['secondary'])}",
+             'database_access: 0', 'app_imports: 0']
+    issues = result['primary'] + result['secondary']
+    lines.extend(f'{issue.code}: {issue.path}:{issue.line}:{issue.symbol}' for issue in issues)
+    lines.append('FAIL vendor organization discovery VR compatibility r01' if issues else 'vendor organization discovery VR compatibility r01 PASS')
+    return (1 if issues else 0), '\n'.join(lines) + '\n'
+
+
+def _dvr_mode(argv):
+    return {(): 'legacy', ('--self-test',): 'legacy-self-test', ('-h',): 'help', ('--help',): 'help',
+            ('--vr-compat-r01',): 'compat', ('--vr-compat-r01-self-test',): 'compat-self-test'}.get(tuple(argv), 'invalid')
+
+
+def _dvr_public(producer):
+    try:
+        status, output = _dvr_render(producer())
+    except Exception:
+        print('vendor organization discovery VR compatibility r01 internal failure', file=sys.stderr)
+        return 1
+    print(output, end='')
+    return status
+
+
+def _dvr_issue_rows(issues):
+    return [{'code': item.code, 'path': item.path, 'line': item.line, 'symbol': item.symbol}
+            for item in sorted(issues)]
+
+
+def _dvr_collect(root):
+    contract = _dvr_contract(root)
+    stage, trees, prerequisite = _dvr_preflight(root, contract)
+    if stage:
+        raise AssertionError('positive preflight')
+    observer = _DvrObserver(trees)
+    with observer:
+        issues = _analyze_repository(root)
+    result = _dvr_final_filter(contract['ledger'], observer.events, issues,
+                               {'raw_count': len(observer.events), 'logical_count': len(issues)},
+                               observer.restored(), observer.raw_reconciled())
+    if result['primary'] or result['secondary']:
+        raise AssertionError('positive event baseline')
+    return contract, prerequisite, trees, observer, issues, result
+
+
+def _dvr_test_private(case, contract, prerequisite, trees, observer, issues, root):
+    import copy
+    name = case['id']
+    events = copy.deepcopy(observer.events)
+    counts = {'raw_count': 161, 'logical_count': 70}
+    restored, reconciled = True, True
+    edit = case['exact_edit']
+    if name == 'A01':
+        events.pop(0)
+    elif name in ('A02', 'A03'):
+        value = dict(edit['value'])
+        value.pop('ordinal', None)
+        events.append(value)
+    elif name == 'A04':
+        events.pop(0)
+        value = dict(edit['append_value'])
+        value.pop('ordinal', None)
+        events.append(value)
+    elif name == 'A05':
+        counts['raw_count'] = 162
+    elif name in ('A06', 'A07'):
+        events[edit['ordinal'] - 1] = copy.deepcopy(edit['after'])
+    elif name == 'A08':
+        events[0]['symbol'] = edit['after']
+    elif name == 'A09':
+        counts['logical_count'] = 69
+    elif name == 'A10':
+        if not observer.restored() or not observer.raw_reconciled():
+            raise AssertionError('A10 requires actual reconciled observer baseline')
+        raw = observer.repositories[0].issues
+        raw_before = tuple(raw)
+        events_before = copy.deepcopy(observer.events)
+        appended_before = tuple(observer.appended)
+        raw_lists_before = tuple(observer.raw_lists)
+        appended_issue = _Issue(**edit['value'])
+        if (len(raw_before) != 161 or len(events_before) != 161
+                or len(set(issues)) != 70 or appended_issue != raw_before[0]
+                or appended_issue not in issues):
+            raise AssertionError('A10 exact append target or baseline drift')
+        try:
+            raw.append(appended_issue)
+            if (len(raw) != 162 or observer.events != events_before
+                    or tuple(observer.appended) != appended_before
+                    or tuple(observer.raw_lists) != raw_lists_before
+                    or observer.raw_reconciled()):
+                raise AssertionError('A10 must produce an actual unobserved append')
+            result = _dvr_final_filter(
+                contract['ledger'], observer.events, issues,
+                {'raw_count': len(observer.events), 'logical_count': len(issues)},
+                observer.restored(), observer.raw_reconciled())
+            if (result['primary'] != [_dvr_issue('unobserved_append')]
+                    or result['consumed'] != 0 or result['logical'] != 70
+                    or result['secondary'] != sorted(set(issues))):
+                raise AssertionError('A10 exact rejection must retain all native findings')
+        finally:
+            raw[:] = raw_before
+            if (tuple(raw) != raw_before or observer.events != events_before
+                    or tuple(observer.appended) != appended_before
+                    or tuple(observer.raw_lists) != raw_lists_before
+                    or not observer.restored() or not observer.raw_reconciled()):
+                raise AssertionError('A10 observer restoration failed')
+        return result['primary']
+    elif name in ('A11', 'A12'):
+        restored = False
+    elif name in ('A13', 'A14', 'A15', 'A16'):
+        originals = (_dvr_typed_hash, _dvr_reference_streams, _dvr_boundary_bindings)
+        target = edit
+        try:
+            if name == 'A13':
+                def changed_hash(node):
+                    value = originals[0](node)
+                    return target['after'] if isinstance(node, ast.Module) and value == target['before'] else value
+                globals()['_dvr_typed_hash'] = changed_hash
+            elif name in ('A14', 'A15'):
+                def changed_streams(source_trees, policy):
+                    value = originals[1](source_trees, policy)
+                    assert value['original'][0] == target.get('before', target.get('value'))
+                    if name == 'A14':
+                        value['original'].pop(0)
+                    else:
+                        value['original'].append(target['value'])
+                    return value
+                globals()['_dvr_reference_streams'] = changed_streams
+            else:
+                def changed_bindings(source_trees, policy):
+                    value = originals[2](source_trees, policy)
+                    assert value['imports'][0] == target['before']
+                    value['imports'][0] = target['after']
+                    return value
+                globals()['_dvr_boundary_bindings'] = changed_bindings
+            problems, unused = _dvr_preconditions(root, prerequisite)
+        finally:
+            globals()['_dvr_typed_hash'], globals()['_dvr_reference_streams'], globals()['_dvr_boundary_bindings'] = originals
+        stage = 'dependencies' if name == 'A13' else 'references'
+        expected_legacy_code = 'vr_compat_dependency_drift' if name == 'A13' else 'vr_compat_reference_drift'
+        if not problems or any(problem.code != expected_legacy_code for problem in problems):
+            raise AssertionError('private prerequisite wrong stage')
+        return [_dvr_issue(stage)]
+    else:
+        raise AssertionError('unknown private recipe')
+    result = _dvr_final_filter(contract['ledger'], events, issues, counts, restored, reconciled)
+    if result['consumed'] != 0 or result['secondary'] != sorted(set(issues)):
+        raise AssertionError('failure must preserve native results')
+    return result['primary']
+
+
+def _dvr_run_cases(root, fixture):
+    import copy
+    global DVR_LAST_CASE_RESULTS
+    contract, prerequisite, trees, observer, issues, positive = _dvr_collect(root)
+    results = []
+    DVR_LAST_CASE_RESULTS = results
+    original_sources = {path: (root / path).read_text(encoding='utf-8-sig') for path in prerequisite['source_paths']}
+    source_cases = {row['id']: row for row in prerequisite['source_cases']}
+    def passed(case, details):
+        results.append({'id': case['id'], 'status': 'PASS', 'details': details})
+    for case in contract['recipes']['scenarios']:
+        name = case['id']
+        if name.startswith('CLI-'):
+            arguments = case['argv']
+            out, err = io.StringIO(), io.StringIO()
+            status = 0
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    _parse_args(arguments)
+                except SystemExit as exc:
+                    status = exc.code
+            if name.startswith('CLI-N'):
+                if status != 2 or out.getvalue() != '' or err.getvalue() != case['expected_stderr']:
+                    raise AssertionError(name + ': exact CLI rejection')
+            elif _dvr_mode(arguments) == 'help':
+                if status != 0 or out.getvalue() != contract['help_golden'] or err.getvalue() != '':
+                    raise AssertionError(name + ': exact help')
+            elif status != 0 or out.getvalue() or err.getvalue() or _dvr_mode(arguments) == 'invalid':
+                raise AssertionError(name + ': dispatch')
+            passed(case, {'dispatch_only': True, 'exit': status})
+        elif name.startswith('SRC-'):
+            source_case = source_cases[name.removeprefix('SRC-')]
+            cid = source_case['id']
+            if cid == 'new_runtime_source':
+                changes = {source_case['edit_recipe']['path']: source_case['edit_recipe']['source'].encode('utf-8')}
+                omitted = ()
+            elif cid == 'missing_runtime_source':
+                changes = {}
+                omitted = (source_case['edit_recipe']['path'],)
+            else:
+                target = source_case.get('targets', [source_case.get('target')])[0]
+                path = target['path']
+                source = original_sources[path]
+                mutated = _dvr_mutate_source(source, source_case)
+                if mutated == source:
+                    raise AssertionError(name + ': no-op source edit')
+                if cid == 'new_source_syntax_error':
+                    try:
+                        ast.parse(mutated, type_comments=True)
+                    except SyntaxError:
+                        pass
+                    else:
+                        raise AssertionError('parse mutation did not fail')
+                else:
+                    if _dvr_typed_hash(ast.parse(source, type_comments=True)) == _dvr_typed_hash(ast.parse(mutated, type_comments=True)):
+                        raise AssertionError(name + ': no-op AST edit')
+                changes, omitted = {path: mutated.encode('utf-8')}, ()
+            changed_root = fixture(name, changes, omitted, False)
+            actual = _dvr_analyze(changed_root)
+            if (_dvr_issue_rows(actual['primary']) != case['full_primary_issues_predicted']
+                    or actual['secondary'] or actual['scanned'] or actual['consumed']):
+                raise AssertionError(name + ': exact prerequisite failure')
+            passed(case, {'full_primary': _dvr_issue_rows(actual['primary']), 'secondary': [], 'scan': False})
+        elif name in {'POLICY-MISSING', 'POLICY-CHANGED', 'SCHEMA-POLICY-CHANGED', 'SCHEMA-ADAPTER-IDENTITY-CHANGED'}:
+            edit = case['exact_edit']
+            changes, omitted = {}, ()
+            if name == 'POLICY-MISSING':
+                omitted = (DVR_POLICY_PATH.as_posix(),)
+            elif 'offset' in edit:
+                raw = bytearray((root / edit['path']).read_bytes())
+                if raw[edit['offset']] != edit['before_byte']:
+                    raise AssertionError('byte target')
+                raw[edit['offset']] = edit['after_byte']
+                changes[edit['path']] = bytes(raw)
+            else:
+                source = original_sources[edit['path']]
+                tree = ast.parse(source, type_comments=True)
+                node = {a:n for n,a,o,oa,p in _dvr_walk(tree)}[edit['node_address']]
+                if _dvr_typed_hash(node) != edit['before_sha256']:
+                    raise AssertionError('helper mutation identity')
+                _dvr_replace_node(tree, edit['node_address'], ast.parse("return '0' * 64").body[0])
+                ast.fix_missing_locations(tree)
+                changes[edit['path']] = (ast.unparse(tree) + '\n').encode('utf-8')
+            actual = _dvr_analyze(fixture(name, changes, omitted, False))
+            if _dvr_issue_rows(actual['primary']) != case['full_primary_issues_predicted'] or actual['secondary'] or actual['scanned']:
+                raise AssertionError(name + ': policy/adapter rejection')
+            passed(case, {'full_primary': _dvr_issue_rows(actual['primary'])})
+        elif name in {'ROSTER-106-WRITABLE-SCHEMA', 'ROSTER-225-WRITE', 'ACCESS-207-SECRET-PROJECTION'}:
+            target = case['target']
+            tree = ast.parse(original_sources[target['path']], type_comments=True)
+            node = {a:n for n,a,o,oa,p in _dvr_walk(tree)}[target['node_address']]
+            if _dvr_typed_hash(node) != target['node_sha256']:
+                raise AssertionError('leaf mutation identity')
+            if name == 'ACCESS-207-SECRET-PROJECTION':
+                changed = copy.deepcopy(node)
+                literals = [n for n in ast.walk(changed) if isinstance(n, ast.Constant) and type(n.value) is str and 's.site_name' in n.value]
+                if len(literals) != 1 or literals[0].value.count('s.site_name') != 1:
+                    raise AssertionError('projection occurrence')
+                literals[0].value = literals[0].value.replace('s.site_name', 's.password_hash')
+            else:
+                changed = ast.parse(case['recipe']).body[0].value
+            if _dvr_typed_hash(changed) != case['mutated_node_sha256']:
+                raise AssertionError('leaf mutation fingerprint')
+            _dvr_replace_node(tree, target['node_address'], changed)
+            ast.fix_missing_locations(tree)
+            actual = _dvr_analyze(fixture(name, {target['path']: (ast.unparse(tree)+'\n').encode('utf-8')}, (), False))
+            if _dvr_issue_rows(actual['primary']) != case['full_primary_issues_predicted'] or actual['secondary'] or actual['scanned']:
+                raise AssertionError(name + ': exact leaf prerequisite')
+            passed(case, {'full_primary': _dvr_issue_rows(actual['primary']), 'semantic_detector_claim': False})
+        elif re.fullmatch('A[0-9]{2}', name):
+            actual = _dvr_test_private(case, contract, prerequisite, trees, observer, issues, root)
+            if _dvr_issue_rows(actual) != case['full_primary_issues_predicted']:
+                raise AssertionError(name + ': exact private failure')
+            passed(case, {'full_primary': _dvr_issue_rows(actual), 'private_validator_only': True})
+        elif name.startswith('RESIDUAL-'):
+            data = case['recipe']
+            native_root = fixture(name, {data['path']: data['source'].encode('utf-8')}, (), True)
+            actual = _analyze_repository(native_root)
+            if _dvr_issue_rows(actual) != case['full_secondary_issues_observed']:
+                raise AssertionError(name + ': complete native Issue set')
+            status, rendered = _render_normal(actual)
+            if status != 1 or _PASS_MARKER in rendered:
+                raise AssertionError(name + ': native failure')
+            # No accounting declaration authorizes any of these native fixture results.
+            filtered = _dvr_final_filter(contract['ledger'], [], actual, {'raw_count': 0, 'logical_count': len(actual)}, True, True)
+            if filtered['consumed'] != 0 or filtered['primary'] != [_dvr_issue('event_accounting')]:
+                raise AssertionError(name + ': actual final filter rejection')
+            retained = filtered['secondary']
+            if _dvr_issue_rows(retained) != case['full_secondary_issues_observed']:
+                raise AssertionError(name + ': residual preservation')
+            passed(case, {'full_secondary': _dvr_issue_rows(actual), 'public_prerequisite_bypass': False})
+        elif name == 'POS-BASELINE':
+            status, output = _dvr_render(positive)
+            if status != 0 or output != contract['cli']['compat_success_stdout_utf8_lf']:
+                raise AssertionError('exact positive output')
+            passed(case, {'raw': 161, 'logical': 70, 'consumed': 161})
+        elif name == 'POS-REPEATED-LEDGER':
+            second = _dvr_collect(root)
+            if second[3] is observer or second[3].events is observer.events or second[3].events != observer.events:
+                raise AssertionError('fresh repeated ledger')
+            if second[5] != positive:
+                raise AssertionError('repeat positive')
+            passed(case, {'fresh_state': True, 'first_state_preserved': True})
+        elif name == 'POS-EXCEPTION-RESTORE':
+            original = globals()['_read_python']
+            sentinel = RuntimeError('synthetic-private-sentinel-do-not-print')
+            def failure(*args, **kwargs):
+                raise sentinel
+            globals()['_read_python'] = failure
+            wrapped = _DvrObserver({})
+            received = None
+            try:
+                with wrapped:
+                    _read_python(Path('x'), Path('x'), [])
+            except RuntimeError as exc:
+                received = exc
+            finally:
+                restored_before_harness_cleanup = wrapped.restored()
+                globals()['_read_python'] = original
+            if not restored_before_harness_cleanup or received is not sentinel or wrapped.active or any(globals()[n] is not fn for n,fn in wrapped.original.items() if n != '_read_python'):
+                raise AssertionError('exception restoration')
+            passed(case, {'same_exception_object': True, 'restored': True})
+        else:
+            raise AssertionError('unregistered frozen scenario')
+    if len(results) != 144 or len({r['id'] for r in results}) != 144:
+        raise AssertionError('scenario count')
+    print(contract['cli']['compat_selftest_success_stdout_utf8_lf'], end='')
+    return 0
+
+
+DVR_LAST_CASE_RESULTS = []
+
+
+def _dvr_selftest_public(producer):
+    output, error = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            status = producer()
+        if status != 0 or error.getvalue() or output.getvalue() != 'vendor_discovery_readiness_scope: isolated_static_vr_compat_r01_scenarios\nscenarios_checked: 144\ndatabase_access: 0\napp_imports: 0\nvendor organization discovery VR compatibility r01 self-test PASS\n':
+            raise ValueError('self-test contract')
+    except Exception:
+        print('vendor organization discovery VR compatibility r01 self-test failure\n', file=sys.stderr, end='')
+        return 1
+    print(output.getvalue(), end='')
+    return 0
 
 if __name__ == "__main__":
     raise SystemExit(_main())

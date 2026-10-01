@@ -227,122 +227,9 @@ DISCOVERY_READINESS_ALLOWED_V002_ISSUE_CODES = frozenset(
         "unresolved_vendor_schema_capability",
     }
 )
-DISCOVERY_READINESS_NODE_NAMES = (
-    "_ROOT_DIR",
-    "_CHECKER_PATH",
-    "_DISCOVERY_PATH",
-    "_POLICY_PATH",
-    "_UPSTREAM_CHECKER_PATH",
-    "_NON_VENDOR_OUTPUT_SOURCE_PATHS",
-    "_APPROVED_POLICY_SHA256",
-    "_PASS_MARKER",
-    "_SELF_TEST_MARKER",
-    "_NORMAL_SCOPE",
-    "_ISSUE_CODES",
-    "_POLICY_MARKERS",
-    "_POLICY_MARKER_COUNTS",
-    "_ANOMALY_CATEGORIES",
-    "_SOURCE_TABLES",
-    "_NEW_TABLES",
-    "_SENSITIVE_COLUMNS",
-    "_CANONICAL_SYMBOLS",
-    "_CANONICAL_CLI_OPTIONS",
-    "_CANONICAL_QUERIES",
-    "_NORMALIZED_CANONICAL_QUERIES",
-    "_UPSTREAM_SCHEMA_METADATA_QUERIES",
-    "_CANONICAL_QUERY_FRAGMENTS",
-    "_EXCLUDED_TOP_LEVELS",
-    "_SQL_SINKS",
-    "_WRITE_CALLS",
-    "_BACKEND_ROOTS",
-    "_PROJECT_IMPORT_ROOTS",
-    "_UPSTREAM_ALLOWED_NODE_NAMES",
-    "_EXPECTED_UPSTREAM_ALLOWED_V002_ISSUE_CODES",
-    "_UPSTREAM_STATIC_NODE_HASHES",
-    "_UPSTREAM_INTEGRATION_NODE_SPECS",
-    "_UPSTREAM_INTEGRATION_OWNER_HASHES",
-    "_EXACT_FIXTURE_NODE_HASHES",
-    "_SELF_AUDIT_NODE_NAMES",
-    "_SELF_AUDIT_AST_SHA256",
-    "_Issue",
-    "_Value",
-    "_Source",
-    "_Callable",
-    "_Repository",
-    "_normalized",
-    "_unique_strings",
-    "_merge_values",
-    "_dotted_name",
-    "_assignment_targets",
-    "_binding_path",
-    "_binding_names",
-    "_assign_binding",
-    "_merge_binding_maps",
-    "_module_name",
-    "_relative_import_module",
-    "_node_text",
-    "_has_partial_discovery_name",
-    "_has_discovery_target",
-    "_has_canonical_query",
-    "_has_canonical_query_shape",
-    "_has_static_boundary_text",
-    "_has_boundary_evidence",
-    "_is_fixed_unsupported_text",
-    "_has_source_reference",
-    "_has_new_table_reference",
-    "_is_select",
-    "_is_mutating_sql",
-    "_add_issue",
-    "_read_text",
-    "_read_python",
-    "_section",
-    "_check_policy",
-    "_top_level_name",
-    "_ast_sha256",
-    "_ast_bundle_sha256",
-    "_compact_ast_bundle_sha256",
-    "_literal_assignment",
-    "_assignment_value",
-    "_selected_named_nodes",
-    "_upstream_integration_node_ids",
-    "_v002_protected_node_ids",
-    "_check_upstream_guard",
-    "_runtime_paths",
-    "_collect_imports",
-    "_imported_class_candidates",
-    "_resolve_class_reference",
-    "_resolve_method",
-    "_call_return_value",
-    "_resolve_value",
-    "_prepare_repository",
-    "_resolve_callable",
-    "_call_leaf",
-    "_classify_sql",
-    "_classify_node",
-    "_bind_call",
-    "_scan_callable",
-    "_apply_container_mutation",
-    "_scan_call_node",
-    "_callable_for_node",
-    "_iterated_value",
-    "_bind_match_pattern",
-    "_direct_call_nodes",
-    "_scan_nodes",
-    "_self_audit",
-    "_apply_source_boundary_fallback",
-    "_scan_repository",
-    "_dedupe_issues",
-    "_analyze_repository",
-    "_render_normal",
-    "_parse_args",
-    "_write_text",
-    "_copy_baseline",
-    "_assert_negative",
-    "_run_self_test",
-    "_main",
-)
+DISCOVERY_READINESS_NODE_NAMES = ('_ROOT_DIR', '_CHECKER_PATH', '_DISCOVERY_PATH', '_POLICY_PATH', '_UPSTREAM_CHECKER_PATH', '_NON_VENDOR_OUTPUT_SOURCE_PATHS', '_APPROVED_POLICY_SHA256', '_PASS_MARKER', '_SELF_TEST_MARKER', '_NORMAL_SCOPE', '_ISSUE_CODES', '_POLICY_MARKERS', '_POLICY_MARKER_COUNTS', '_ANOMALY_CATEGORIES', '_SOURCE_TABLES', '_NEW_TABLES', '_SENSITIVE_COLUMNS', '_CANONICAL_SYMBOLS', '_CANONICAL_CLI_OPTIONS', '_CANONICAL_QUERIES', '_NORMALIZED_CANONICAL_QUERIES', '_UPSTREAM_SCHEMA_METADATA_QUERIES', '_CANONICAL_QUERY_FRAGMENTS', '_EXCLUDED_TOP_LEVELS', '_SQL_SINKS', '_WRITE_CALLS', '_BACKEND_ROOTS', '_PROJECT_IMPORT_ROOTS', '_UPSTREAM_ALLOWED_NODE_NAMES', '_EXPECTED_UPSTREAM_ALLOWED_V002_ISSUE_CODES', '_UPSTREAM_STATIC_NODE_HASHES', '_UPSTREAM_INTEGRATION_NODE_SPECS', '_UPSTREAM_INTEGRATION_OWNER_HASHES', '_EXACT_FIXTURE_NODE_HASHES', '_SELF_AUDIT_NODE_NAMES', '_SELF_AUDIT_AST_SHA256', '_Issue', '_Value', '_Source', '_Callable', '_Repository', '_normalized', '_unique_strings', '_merge_values', '_dotted_name', '_assignment_targets', '_binding_path', '_binding_names', '_assign_binding', '_merge_binding_maps', '_module_name', '_relative_import_module', '_node_text', '_has_partial_discovery_name', '_has_discovery_target', '_has_canonical_query', '_has_canonical_query_shape', '_has_static_boundary_text', '_has_boundary_evidence', '_is_fixed_unsupported_text', '_has_source_reference', '_has_new_table_reference', '_is_select', '_is_mutating_sql', '_add_issue', '_read_text', '_read_python', '_section', '_check_policy', '_top_level_name', '_ast_sha256', '_ast_bundle_sha256', '_compact_ast_bundle_sha256', '_literal_assignment', '_assignment_value', '_selected_named_nodes', '_upstream_integration_node_ids', '_v002_protected_node_ids', '_check_upstream_guard', '_runtime_paths', '_collect_imports', '_imported_class_candidates', '_resolve_class_reference', '_resolve_method', '_call_return_value', '_resolve_value', '_prepare_repository', '_resolve_callable', '_call_leaf', '_classify_sql', '_classify_node', '_bind_call', '_scan_callable', '_apply_container_mutation', '_scan_call_node', '_callable_for_node', '_iterated_value', '_bind_match_pattern', '_direct_call_nodes', '_scan_nodes', '_self_audit', '_apply_source_boundary_fallback', '_scan_repository', '_dedupe_issues', '_analyze_repository', '_render_normal', '_parse_args', '_write_text', '_copy_baseline', '_assert_negative', '_run_self_test', '_main', 'DVR_POLICY_PATH', 'DVR_POLICY_SHA256', 'DVR_POLICY_DELIMITER', 'DVR_SCHEMA_POLICY_PATH', 'DVR_SCHEMA_POLICY_SHA256', 'DVR_SCHEMA_POLICY_DELIMITER', 'DVR_COLLECTOR_EXCLUDED_PATH', 'DVR_EXCLUDED_TOP_LEVELS', 'DVR_IDENTITY_FIELDS', 'DVR_PRIMARY_CODES', '_dvr_typed_hash', '_dvr_walk', '_dvr_dotted', '_dvr_reference_streams', '_dvr_boundary_bindings', '_dvr_counter', '_dvr_policy', '_dvr_preconditions', '_dvr_replace_node', '_dvr_mutate_source', '_dvr_strict_json', '_dvr_contract', '_dvr_issue', '_dvr_identity', '_dvr_declarations', '_dvr_preflight', '_dvr_map_event', '_DvrObserver', '_dvr_accounting', '_dvr_result', '_dvr_final_filter', '_dvr_analyze', '_dvr_render', '_dvr_mode', '_dvr_public', '_dvr_issue_rows', '_dvr_collect', '_dvr_test_private', '_dvr_run_cases', 'DVR_LAST_CASE_RESULTS', '_dvr_selftest_public')
 DISCOVERY_READINESS_AST_SHA256 = (
-    "B8E4343E0B11BFE8D4D78EBA3D1D94537BAE95E94AB1699B2769B1BD60B87A5B"
+    "EBA95AC04DBD4CB6FB89F8AF94C963EA74218D375F80A0583ECB80378AEEB1DC"
 )
 VENDOR_SCHEMA_ERROR_CODES = (
     "invalid_connection",
@@ -6377,5 +6264,740 @@ def main() -> int:
     return status
 
 
+# Independent, versioned source qualification. Legacy scanners remain unchanged.
+VR_POLICY_PATH = Path('docs/004f_vr_schema_compatibility_r01.md')
+VR_POLICY_SHA256 = '1789943E6F97E2846370E4838D260A88BFD5E5D550F290C5ED0E43ED6FB2F247'
+VR_POLICY_DELIMITER = '\n```json vr-compat-inventory\n'
+VR_PASS = 'vendor organization schema VR compatibility r01 PASS'
+
+
+def vr_typed_hash(node):
+    return hashlib.sha256(ast.dump(node, annotate_fields=True,
+                                  include_attributes=False, indent=2).encode('utf-8')).hexdigest().upper()
+
+
+def vr_walk(tree):
+    rows = []
+    def visit(node, address, owner='<module>', owner_address='Module', parent=None):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            owner = node.name if owner == '<module>' else owner + '.' + node.name
+            owner_address = address
+        rows.append((node, address, owner, owner_address, parent))
+        for field_name, value in ast.iter_fields(node):
+            if isinstance(value, ast.AST):
+                visit(value, address + '.' + field_name, owner, owner_address, node)
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    if isinstance(child, ast.AST):
+                        visit(child, f'{address}.{field_name}[{index}]', owner, owner_address, node)
+    visit(tree, 'Module')
+    return rows
+
+
+def vr_dotted(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = vr_dotted(node.value)
+        return base + '.' + node.attr if base else ''
+    return ''
+
+
+def vr_reference_streams(trees, policy):
+    # Finite lexical candidates plus the five explicitly reviewed adapters.
+    # Owner hashes guard local uses; this is not a general Python interpreter.
+    protected_modules = set(policy['protected_modules'])
+    app_names = set(policy['app_names'])
+    def protected(target):
+        return (any(target == m or target.startswith(m + '.') for m in protected_modules)
+                or target == 'app' or (target.startswith('app.') and target.split('.')[1] in app_names))
+    streams = {'original': [], 'adapter': [], 'tool': []}
+    imports = []
+    maps = {p: {a: (n, o, op, par) for n, a, o, op, par in vr_walk(t)} for p, t in trees.items()}
+    hash_cache = {}
+    def digest(node):
+        key = id(node)
+        if key not in hash_cache:
+            hash_cache[key] = vr_typed_hash(node)
+        return hash_cache[key]
+    def identity(p, a, target, kind):
+        n, o, op, parent = maps[p][a]
+        return [kind, p, o, op, a, type(n).__name__, digest(n), digest(maps[p][op][0]), target]
+    for p, tree in trees.items():
+        if p == CHECKER_PATH.as_posix():
+            continue
+        rows = vr_walk(tree)
+        package = p[:-3].replace('/', '.').rpartition('.')[0]
+        aliases = {}
+        for n, a, owner, op, par in rows:
+            if not isinstance(n, (ast.Import, ast.ImportFrom)):
+                continue
+            if isinstance(n, ast.Import):
+                pairs = [(x.asname or x.name.split('.')[0], x.name if x.asname else x.name.split('.')[0], x.name) for x in n.names]
+            else:
+                base = n.module or ''
+                if n.level:
+                    bits = package.split('.') if package else []
+                    base = '.'.join(bits[:len(bits) - n.level + 1] + ([base] if base else []))
+                pairs = [(x.asname or x.name, base + '.' + x.name if base else x.name, base + '.' + x.name if base else x.name) for x in n.names]
+            for local, target, full_target in pairs:
+                if protected(target) or protected(full_target):
+                    aliases.setdefault(local, []).append((owner, op, target, a))
+                    imports.append((p, owner, op, a, local, target))
+                    streams['original'].append(identity(p, a, target, 'import'))
+        module = p[:-3].replace('/', '.')
+        defs = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+        for n, a, owner, op, par in rows:
+            name = vr_dotted(n)
+            candidates = []
+            if name:
+                for imported_owner, imported_op, target, impaddr in aliases.get(name.split('.')[0], []):
+                    if imported_owner == '<module>' or owner == imported_owner or owner.startswith(imported_owner + '.'):
+                        resolved = target + name[len(name.split('.')[0]):]
+                        if protected(resolved):
+                            candidates.append(resolved)
+                if module in protected_modules and isinstance(n, ast.Name) and n.id in defs:
+                    candidates.append(module + '.' + n.id)
+                if p == 'app.py' and isinstance(n, ast.Name) and n.id in app_names:
+                    candidates.append('app.' + n.id)
+            if candidates:
+                labels = sorted(set(candidates))
+                if labels == ['app.register_vendor_scope_admin', 'routes.vendor_scope_admin.register_vendor_scope_admin']:
+                    labels = ['routes.vendor_scope_admin.register_vendor_scope_admin']
+                if labels == ['app.register_vendor_scope_admin']:
+                    labels = ['routes.vendor_scope_admin.register_vendor_scope_admin']
+                if labels == ['app.register_vendor_registration']:
+                    labels = ['routes.vendor_registration.register_vendor_registration']
+                if len(labels) != 1:
+                    raise ValueError('ambiguous protected reference')
+                streams['original'].append(identity(p, a, labels[0], 'reference'))
+    for p in policy['adapter_paths']:
+        for n, a, owner, op, parent in vr_walk(trees[p]):
+            if not isinstance(n, ast.Call) or vr_dotted(n.func) != '_app_state':
+                continue
+            if n.args or n.keywords or not isinstance(parent, ast.Assign) or len(parent.targets) != 1 or not isinstance(parent.targets[0], ast.Name) or parent.targets[0].id != 'app':
+                raise ValueError('unsupported adapter binding')
+            for child, ca, co, cop, cp in vr_walk(trees[p]):
+                if co == owner and ca.startswith(op + '.') and (vr_dotted(child) == 'app' or vr_dotted(child).startswith('app.')):
+                    streams['adapter'].append(identity(p, ca, vr_dotted(child), 'adapter'))
+    for p, owner, op, address, local, target in imports:
+        if not p.startswith('tools/'):
+            continue
+        for n, a, no, nop, parent in vr_walk(trees[p]):
+            if owner != '<module>' and not (no == owner or no.startswith(owner + '.')):
+                continue
+            spelling = vr_dotted(n)
+            if spelling and spelling.split('.')[0] == local:
+                streams['tool'].append(identity(p, a, target + spelling[len(local):], 'tool'))
+    return streams
+
+
+def vr_boundary_bindings(trees, policy):
+    # Supplement the three accepted inventories without changing their identities.
+    # Fixed import boundaries and five factory names only; no alias interpreter.
+    boundaries = {p[:-3].replace('/', '.') for p in policy['modules'] if p != 'app.py'}
+    boundaries.update(p[:-3].replace('/', '.') for p in policy['adapter_paths'])
+    boundaries.add('app')
+    imports, factory_names = [], []
+    for path, tree in trees.items():
+        if path == CHECKER_PATH.as_posix():
+            continue
+        rows = vr_walk(tree)
+        nodes = {a:n for n,a,o,op,par in rows}
+        owner_hashes = {}
+        for node, address, owner, owner_address, parent in rows:
+            targets = []
+            if isinstance(node, ast.Import):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                package = path[:-3].replace('/', '.').rpartition('.')[0]
+                base = node.module or ''
+                if node.level:
+                    parts = package.split('.') if package else []
+                    base = '.'.join(parts[:len(parts)-node.level+1] + ([base] if base else []))
+                targets = [base if alias.name == '*' else base + '.' + alias.name if base else alias.name for alias in node.names]
+            related = [target for target in targets if any(target == b or target.startswith(b + '.') or b.startswith(target + '.') for b in boundaries) or target.endswith('._app_state')]
+            factory = False
+            if path in policy['adapter_paths']:
+                factory = (
+                    isinstance(node, ast.Name) and node.id == '_app_state'
+                    or isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler)) and node.name == '_app_state'
+                    or isinstance(node, ast.alias) and (node.name == '*' or (node.asname or node.name.split('.')[0]) == '_app_state')
+                    or isinstance(node, ast.arg) and node.arg == '_app_state'
+                    or isinstance(node, (ast.Global, ast.Nonlocal)) and '_app_state' in node.names
+                    or isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == '_app_state'
+                    or isinstance(node, ast.MatchMapping) and node.rest == '_app_state'
+                    or isinstance(node, ast.Constant) and node.value == '_app_state'
+                    or isinstance(node, ast.Call) and vr_dotted(node.func) in {'getattr','setattr','delattr','vars','globals','locals','eval','exec','__import__','importlib.import_module'}
+                )
+            if related or factory:
+                if owner_address not in owner_hashes:
+                    owner_hashes[owner_address] = vr_typed_hash(nodes[owner_address])
+                row = [path, owner, owner_address, address, type(node).__name__, vr_typed_hash(node), owner_hashes[owner_address]]
+                if related:
+                    imports.extend(row + [target] for target in related)
+                if factory:
+                    factory_names.append(row + [type(getattr(node, 'ctx', None)).__name__])
+    return {'imports': imports, 'factory_names': factory_names}
+
+
+def vr_counter(rows):
+    from collections import Counter
+    return Counter(tuple(row) for row in rows)
+
+
+def vr_policy(root):
+    import json
+    raw = (root / VR_POLICY_PATH).read_bytes()
+    if hashlib.sha256(raw).hexdigest().upper() != VR_POLICY_SHA256:
+        raise ValueError('policy identity')
+    text = raw.decode('utf-8')
+    if text.count(VR_POLICY_DELIMITER) != 1 or not text.endswith('\n```\n'):
+        raise ValueError('policy serialization')
+    return json.loads(text.split(VR_POLICY_DELIMITER)[1][:-5])
+
+
+def vr_preconditions(root, policy):
+    import platform
+    problems = []
+    if platform.python_implementation() != 'CPython' or sys.version_info[:2] != (3, 14):
+        return [Issue('vr_compat_dependency_drift', CHECKER_PATH.as_posix(), 1, 'qualified_python')], {}
+    paths = []
+    for path in root.rglob('*.py'):
+        relative = path.relative_to(root)
+        if relative.parts[0] in set(EXCLUDED_TOP_LEVEL_RUNTIME_NAMES) - {'tests'}:
+            continue
+        paths.append(relative.as_posix())
+        if path.is_symlink() or path.resolve() != root.resolve().joinpath(relative):
+            problems.append(Issue('vr_compat_reference_drift', relative.as_posix(), 1, 'source_identity'))
+    expected = set(policy['source_paths'])
+    for path in sorted(set(paths) ^ expected):
+        problems.append(Issue('vr_compat_reference_drift', path, 1, 'universe-addition' if path not in expected else 'universe-missing'))
+    if len(paths) != len(set(paths)):
+        problems.append(Issue('vr_compat_reference_drift', '-', 1, 'duplicate_source'))
+    if problems:
+        return sorted(set(problems)), {}
+    trees = {}
+    for path in sorted(paths):
+        try:
+            trees[path] = ast.parse((root / path).read_text(encoding='utf-8-sig'), filename=path, type_comments=True)
+        except (OSError, UnicodeError, SyntaxError):
+            problems.append(Issue('vr_compat_parse_error', path, 1, 'source-parse'))
+    if problems:
+        return sorted(set(problems)), {}
+    for path, expected_hash in policy['modules'].items():
+        if vr_typed_hash(trees[path]) != expected_hash:
+            problems.append(Issue('vr_compat_dependency_drift', path, 1, 'Module'))
+    if problems:
+        return sorted(set(problems)), trees
+    try:
+        bindings = vr_boundary_bindings(trees, policy)
+        for stream in ('imports', 'factory_names'):
+            difference = vr_counter(bindings[stream]) - vr_counter(policy['boundary_bindings'][stream])
+            difference += vr_counter(policy['boundary_bindings'][stream]) - vr_counter(bindings[stream])
+            for row in difference:
+                problems.append(Issue('vr_compat_reference_drift', row[0], 1, row[2]))
+        actual = vr_reference_streams(trees, policy)
+        for stream in ('original', 'adapter', 'tool'):
+            if vr_counter(actual[stream]) != vr_counter(policy['streams'][stream]):
+                changed = vr_counter(actual[stream]) - vr_counter(policy['streams'][stream])
+                changed += vr_counter(policy['streams'][stream]) - vr_counter(actual[stream])
+                for row in changed:
+                    problems.append(Issue('vr_compat_reference_drift', row[1], 1, row[3]))
+    except ValueError:
+        problems.append(Issue('vr_compat_reference_drift', '-', 1, 'unsupported_shape'))
+    return sorted(set(problems)), trees
+
+
+def vr_event_key(item):
+    return tuple(item[name] for name in ('path', 'owner', 'owner_ast_path', 'ast_path', 'code', 'node_type', 'node_typed_sha256', 'owner_typed_sha256', 'scanner_node_sha256'))
+
+
+def vr_validate_accounting(declarations, events, issues, counts):
+    from collections import Counter
+    expected = Counter()
+    logical = []
+    for row in declarations:
+        if len(row['structural_identities']) != 1:
+            return False
+        item = row['structural_identities'][0]
+        key = vr_event_key(item)
+        if key in expected or type(item['multiplicity']) is not int or item['multiplicity'] < 1 or row['raw_multiplicity'] != item['multiplicity']:
+            return False
+        expected[key] = item['multiplicity']
+        finding = row['logical_finding']
+        logical.append(Issue(finding['code'], finding['path'], finding['line'], finding['symbol']))
+    if len(declarations) != 18 or len(set(logical)) != 18 or sum(expected.values()) != 71:
+        return False
+    # vr_scan independently reconciles every final raw list before this logical check.
+    return (counts == {'attempts': 281, 'legacy_consumed': 210, 'appended': 71}
+            and Counter(vr_event_key(e) for e in events) == expected
+            and sorted(set(issues)) == sorted(logical))
+
+
+def vr_scan(root, trees):
+    events = []
+    counts = {'attempts': 0, 'legacy_consumed': 0, 'appended': 0}
+    original = PythonSourceAnalyzer.add
+    scanner_maps = {}
+    contexts = []
+    appended_issues = []
+    typed_maps = {p: {a: (n, o, op) for n, a, o, op, par in vr_walk(t)} for p, t in trees.items()}
+    def observe(analyzer, code, node, symbol=''):
+        if id(analyzer.tree) not in scanner_maps:
+            inverse = {}
+            for n, a, o, op, par in vr_walk(analyzer.tree):
+                inverse.setdefault(id(n), []).append((a, o, op))
+            scanner_maps[id(analyzer.tree)] = inverse
+        matches = scanner_maps[id(analyzer.tree)].get(id(node), [])
+        if len(matches) != 1:
+            raise ValueError('scanner AST mapping')
+        a, owner, op = matches[0]
+        typed, typed_owner, typed_op = typed_maps[analyzer.path][a]
+        if type(node) is not type(typed) or owner != typed_owner or op != typed_op:
+            raise ValueError('typed AST mapping')
+        if analyzer.context is not None and not any(c is analyzer.context for c in contexts):
+            contexts.append(analyzer.context)
+        before = len(analyzer.issues)
+        allowance = analyzer.context.allowance if analyzer.context is not None else None
+        protected = None if allowance is None else (set(allowance.consumable_issues), set(allowance.required_consumptions), set(allowance.approved_target_nodes))
+        result = original(analyzer, code, node, symbol)
+        if allowance is not None and protected != (allowance.consumable_issues, allowance.required_consumptions, allowance.approved_target_nodes):
+            raise ValueError('legacy allowance changed')
+        counts['attempts'] += 1
+        appended = len(analyzer.issues) - before
+        if appended == 0:
+            if allowance is None or (analyzer.path, id(node), code) not in allowance.consumed_issues:
+                raise ValueError('unaccounted legacy event')
+            counts['legacy_consumed'] += 1
+        elif appended == 1:
+            counts['appended'] += 1
+            appended_issues.extend(analyzer.issues[before:])
+            events.append({'path': analyzer.path, 'owner': owner, 'owner_ast_path': op, 'ast_path': a, 'code': code,
+                           'node_type': type(node).__name__, 'node_typed_sha256': vr_typed_hash(typed),
+                           'owner_typed_sha256': vr_typed_hash(typed_maps[analyzer.path][op][0]), 'scanner_node_sha256': vr_typed_hash(node)})
+        else:
+            raise ValueError('invalid append delta')
+        return result
+    try:
+        PythonSourceAnalyzer.add = observe
+        issues = analyze_repository(root)
+    finally:
+        PythonSourceAnalyzer.add = original
+    from collections import Counter
+    if len(contexts) != 1:
+        raise ValueError('repository context accounting')
+    raw = [issue for analyzer in contexts[0].analyzers.values() for issue in analyzer.issues]
+    raw_reconciled = Counter(raw) == Counter(appended_issues)
+    return issues, events, counts, raw_reconciled
+
+
+def analyze_vr_repository(root):
+    try:
+        policy = vr_policy(root)
+    except (OSError, UnicodeError, ValueError):
+        return [Issue('vr_compat_policy_drift', VR_POLICY_PATH.as_posix(), 1, 'raw_policy')], 0, 0, 0
+    problems, trees = vr_preconditions(root, policy)
+    if problems:
+        return problems, 0, 0, 0
+    original_issues, events, counts, raw_reconciled = vr_scan(root, trees)
+    if not raw_reconciled or not vr_validate_accounting(policy['ledger'], events, original_issues, counts):
+        return sorted(set(original_issues + [Issue('vr_compat_ledger_mismatch', CHECKER_PATH.as_posix(), 1, 'exact_multiset')])), len(original_issues), len(events), 0
+    return [], len(original_issues), len(events), len(events)
+
+
+def render_vr(result):
+    issues, logical, emissions, consumed = result
+    lines = ['vendor_schema_readiness_scope: static_exact_physical_schema_and_vr_compat_r01_source_only',
+             'vr_compat_contract: 004f_vr_schema_compatibility_r01', 'vr_compat_logical_expected: 18',
+             f'vr_compat_logical_observed: {logical}', 'vr_compat_emissions_expected: 71',
+             f'vr_compat_emissions_observed: {emissions}', f'vr_compat_emissions_consumed: {consumed}',
+             f'issues_count: {len(issues)}', 'database_access: 0', 'app_imports: 0']
+    for issue in sorted(issues):
+        lines.append(f'issue: {issue.code} path={issue.path} line={issue.line} symbol={issue.symbol}')
+    if not issues:
+        lines.append(VR_PASS)
+    return (1 if issues else 0), '\n'.join(lines) + '\n'
+
+
+def vr_cli_mode(argv):
+    modes = {(): 'legacy', ('--self-test',): 'legacy-self-test', ('--vr-compat-r01',): 'compat',
+             ('--vr-compat-r01-self-test',): 'compat-self-test', ('--help',): 'help', ('-h',): 'help'}
+    return modes.get(tuple(argv), 'invalid')
+
+
+def vr_main():
+    mode = vr_cli_mode(sys.argv[1:])
+    usage = 'usage: check_vendor_organization_schema.py [-h] [--self-test | --vr-compat-r01 | --vr-compat-r01-self-test]\n'
+    if mode == 'invalid':
+        print(usage + 'check_vendor_organization_schema.py: error: invalid invocation', file=sys.stderr)
+        return 2
+    if mode == 'help':
+        print(usage + '\nCheck frozen physical schema or explicit VR source compatibility.\n\noptions:\n  -h, --help                 show this help message and exit\n  --self-test                run legacy isolated static-analysis scenarios\n  --vr-compat-r01            qualify the reviewed VR source contract\n  --vr-compat-r01-self-test   run isolated VR compatibility scenarios')
+        return 0
+    if mode in ('legacy', 'legacy-self-test'):
+        return main()
+    if mode == 'compat-self-test':
+        return vr_self_test()
+    try:
+        status, output = render_vr(analyze_vr_repository(ROOT_DIR))
+    except Exception:
+        print('vendor organization schema VR compatibility r01 internal failure', file=sys.stderr)
+        return 1
+    print(output, end='')
+    return status
+
+
+def vr_replace_node(tree, address, replacement=None, list_operation=None):
+    parent_address, tail = address.rsplit('.', 1)
+    parent = {a: n for n, a, o, op, par in vr_walk(tree)}[parent_address]
+    match = re.fullmatch(r'([a-z_]+)(?:\[([0-9]+)\])?', tail)
+    field_name, index = match.groups()
+    if index is None:
+        if list_operation:
+            raise ValueError('list target required')
+        setattr(parent, field_name, replacement)
+    else:
+        sequence = getattr(parent, field_name)
+        i = int(index)
+        if list_operation == 'remove':
+            sequence.pop(i)
+        elif list_operation in ('before', 'after'):
+            pos = i + (list_operation == 'after')
+            sequence[pos:pos] = replacement
+        else:
+            sequence[i] = replacement
+
+
+def vr_mutate_source(source, case):
+    tree = ast.parse(source, type_comments=True)
+    targets = case.get('targets', [case.get('target')])
+    nodes = {a: n for n, a, o, op, par in vr_walk(tree)}
+    for target in targets:
+        if target and target.get('ast_path'):
+            if vr_typed_hash(nodes[target['ast_path']]) != target['typed_sha256']:
+                raise ValueError('mutation target drift')
+    target = targets[0]
+    address = target['ast_path']
+    node = nodes[address]
+    recipe = case['edit_recipe']
+    operation = recipe['operation']
+    value = recipe.get('value_or_source', recipe.get('source'))
+    if case['id'] == 'same_line_different_node':
+        literal = 'import app; app.resolve_vendor_work_entry_actor_session_type(); app.resolve_vendor_work_entry_actor_session_type()'
+        if value != literal or not isinstance(node, ast.FunctionDef) or node.col_offset != 0:
+            raise ValueError('same-line recipe target')
+        lines = source.splitlines(keepends=True)
+        insertion_line = node.end_lineno + 1
+        lines.insert(node.end_lineno, '    ' + literal + '\n')
+        mutated = ''.join(lines)
+        parsed = ast.parse(mutated, type_comments=True)
+        calls = [(n, a) for n, a, o, op, par in vr_walk(parsed)
+                 if isinstance(n, ast.Call) and vr_dotted(n.func) == 'app.resolve_vendor_work_entry_actor_session_type'
+                 and n.lineno == insertion_line]
+        if len(calls) != 2 or len({n.lineno for n, a in calls}) != 1 or len({a for n, a in calls}) != 2:
+            raise ValueError('same-line call identity')
+        return mutated
+    if operation in ('expression', 'replace_expression'):
+        vr_replace_node(tree, address, ast.parse(value, mode='eval').body)
+    elif operation in ('constant', 'boolean'):
+        vr_replace_node(tree, address, ast.Constant(value=value))
+    elif operation in ('insert_before', 'insert_after'):
+        vr_replace_node(tree, address, ast.parse(value).body, 'before' if operation.endswith('before') else 'after')
+    elif operation == 'remove_statement':
+        vr_replace_node(tree, address, list_operation='remove')
+    elif operation == 'dict_add':
+        if not isinstance(node, ast.Dict) or value in [getattr(k, 'value', None) for k in node.keys]:
+            raise ValueError('dict target drift')
+        node.keys.append(ast.Constant(value=value))
+        node.values.append(ast.Name(id='membership_id', ctx=ast.Load()))
+    elif operation == 'SQL_replace_disabled':
+        if node.value.count("'disabled'") != 1:
+            raise ValueError('disabled occurrence drift')
+        node.value = node.value.replace("'disabled'", "'active'", 1)
+    elif operation == 'set_orelse':
+        if node.orelse:
+            raise ValueError('expected empty else')
+        node.orelse = ast.parse(value).body
+    elif operation == 'remove_bool_operands':
+        node.values = [v for i, v in enumerate(node.values) if i not in value]
+    elif operation == 'actor_and_target':
+        vr_replace_node(tree, address, ast.Constant(value=False))
+        vr_replace_node(tree, recipe['second_target'], ast.Constant(value=False))
+    elif operation in ('select_left', 'select_arg0'):
+        vr_replace_node(tree, address, node.left if operation == 'select_left' else node.args[0])
+    elif operation in ('append_ast_statement', 'append_source_snippet_at_exact_owner_end'):
+        node.body.extend(ast.parse(value).body)
+    elif operation == 'append_decorator':
+        node.decorator_list.append(ast.parse(value, mode='eval').body)
+    elif operation == 'set_type_comment':
+        node.type_comment = recipe['value']
+    elif operation == 'append_type_ignore_comment_to_exact_import_line':
+        lines = source.splitlines(keepends=True)
+        line = recipe['target_import']['line']
+        if '# type:' in lines[line - 1]:
+            raise ValueError('existing type comment')
+        lines[line - 1] = lines[line - 1].rstrip('\r\n') + '  # type: ignore[vr_compat_mutation]\n'
+        mutated = ''.join(lines)
+        parsed = ast.parse(mutated, type_comments=True)
+        if not any(x.lineno == line and x.tag == '[vr_compat_mutation]' for x in parsed.type_ignores):
+            raise ValueError('missing intended TypeIgnore')
+        return mutated
+    elif operation == 'replace_statement':
+        vr_replace_node(tree, address, ast.parse(value).body[0])
+    elif operation == 'set_field':
+        setattr(node, recipe['field'], recipe['value'])
+    elif operation == 'replace_bases':
+        node.bases = [ast.parse(value, mode='eval').body]
+    elif operation == 'replace_keyword_value':
+        node.value = ast.parse(value, mode='eval').body
+    elif operation == 'insert_one_Pass_at_owner_body_index0':
+        node.body.insert(0, ast.Pass())
+    elif operation == 'append_invalid_module_source':
+        return source + value
+    else:
+        raise ValueError('unsupported fixed mutation operation')
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree) + '\n'
+
+
+def vr_run_cases(source_root, scratch):
+    import copy
+    import json
+    policy = vr_policy(source_root)
+    positive = analyze_vr_repository(source_root)
+    if positive[0]:
+        raise ValueError('positive prerequisite failed')
+    problems, trees = vr_preconditions(source_root, policy)
+    if problems:
+        raise ValueError('positive preconditions failed')
+    original_issues, original_events, counts, raw_reconciled = vr_scan(source_root, trees)
+    if not raw_reconciled or not vr_validate_accounting(policy['ledger'], original_events, original_issues, counts):
+        raise ValueError('fresh positive accounting failed')
+    results = []
+    source_paths = policy['source_paths'] + [VENDOR_POLICY_PATH.as_posix(), SCHEMA_POLICY_PATH.as_posix(),
+                    'docs/vendor_id_003_read_only_vendor_discovery_baseline.md', VR_POLICY_PATH.as_posix()]
+    baseline = {p: (source_root / p).read_bytes() for p in source_paths}
+    def record(case_id, passed, **details):
+        row = {'id': case_id, 'status': 'PASS' if passed else 'FAIL', **details}
+        results.append(row)
+        (scratch / 'results.json').write_text(json.dumps(results, ensure_ascii=True, indent=2) + '\n', encoding='utf-8')
+    def root_for(case_id, changes=None, omitted=None):
+        root = scratch / case_id
+        root.mkdir()
+        for path, raw in baseline.items():
+            if path == omitted:
+                continue
+            destination = root / path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes((changes or {}).get(path, raw))
+        for path, raw in (changes or {}).items():
+            if path not in baseline:
+                destination = root / path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(raw)
+        return root
+    # Every source mutation has an independent root; originals are never overwritten.
+    for case in policy['source_cases']:
+        target = case.get('targets', [case.get('target')])[0]
+        path = target['path']
+        operation = case['edit_recipe']['operation']
+        changes = {}
+        omitted = None
+        expected_code = 'vr_compat_dependency_drift' if path in policy['modules'] else 'vr_compat_reference_drift'
+        if operation == 'virtual_add_source':
+            path = case['edit_recipe']['path']
+            if path in baseline:
+                raise ValueError('new source already present')
+            changes[path] = case['edit_recipe']['source'].encode('utf-8')
+        elif operation == 'virtual_source_tombstone':
+            omitted = case['edit_recipe']['path']
+            path = omitted
+        else:
+            original = baseline[path].decode('utf-8-sig')
+            mutated = vr_mutate_source(original, case)
+            if mutated == original:
+                raise ValueError('no-op mutation')
+            if operation == 'append_invalid_module_source':
+                try:
+                    ast.parse(mutated, type_comments=True)
+                except SyntaxError:
+                    pass
+                else:
+                    raise ValueError('expected syntax error missing')
+                expected_code = 'vr_compat_parse_error'
+            elif vr_typed_hash(ast.parse(original, type_comments=True)) == vr_typed_hash(ast.parse(mutated, type_comments=True)):
+                raise ValueError('reparsed no-op mutation')
+            if operation != 'append_invalid_module_source':
+                expected_mutant = case['edit_recipe'].get('mutated_reparsed_AST_sha256', case.get('validated_reparsed_module_hash'))
+                actual_mutant = vr_typed_hash(ast.parse(mutated, type_comments=True))
+                if expected_mutant is not None and actual_mutant != expected_mutant:
+                    raise ValueError('reviewed mutant digest mismatch')
+            changes[path] = mutated.encode('utf-8')
+        root = root_for(case['id'], changes, omitted)
+        outcome = analyze_vr_repository(root)
+        codes = {(issue.code, issue.path) for issue in outcome[0]}
+        expected_symbol = 'Module' if expected_code == 'vr_compat_dependency_drift' else target.get('owner_ast_path')
+        if operation == 'virtual_add_source':
+            expected_symbol = 'universe-addition'
+        elif operation == 'virtual_source_tombstone':
+            expected_symbol = 'universe-missing'
+        elif operation == 'append_invalid_module_source':
+            expected_symbol = 'source-parse'
+        if 'expected_issue_set' in case:
+            expected_primary = sorted(Issue(**row) for row in case['expected_issue_set'])
+            if len(expected_primary) != len(set(expected_primary)):
+                raise ValueError('duplicate expected issue declaration')
+        else:
+            expected_primary = [Issue(expected_code, path, 1, expected_symbol)]
+        primary_ok = outcome[0] == expected_primary and render_vr(outcome)[0] == 1 and VR_PASS not in render_vr(outcome)[1]
+        secondary = case.get('secondary_assertion')
+        secondary_ok = True
+        detail = {'primary_observed': [issue.__dict__ for issue in outcome[0]], 'primary_expected': [issue.__dict__ for issue in expected_primary], 'source_sha256': hashlib.sha256(changes.get(path, b'')).hexdigest() if path in changes else None}
+        if secondary and secondary != 'AST_ONLY':
+            if isinstance(secondary, dict) and secondary['kind'] == 'exact_AST_delta_and_digest':
+                actual_hash = vr_typed_hash(ast.parse(changes[path].decode('utf-8'), type_comments=True))
+                expected_hash = case['edit_recipe']['mutated_reparsed_AST_sha256']
+                secondary_ok = actual_hash == expected_hash
+                detail['secondary'] = {'kind':'EXACT_AST_DELTA; SQL_NOT_APPLICABLE','expected':expected_hash,'actual':actual_hash}
+            else:
+                # The unchanged original scan is separately observed; dependency pins are never replaced.
+                mutation_trees = {p: ast.parse((root / p).read_text(encoding='utf-8-sig'), type_comments=True) for p in policy['source_paths']}
+                raw_issues, raw_events, raw_counts, secondary_raw_reconciled = vr_scan(root, mutation_trees)
+                detail['secondary_raw_reconciled'] = secondary_raw_reconciled
+                detail['secondary_scope'] = 'original detector observation only; never compatibility qualification'
+                if isinstance(secondary, dict) and secondary['kind'] == 'helper_emission_counter_increase':
+                    def count(items):
+                        return sum(x['path'] == path and x['owner'] == secondary['helper'] and x['code'] == secondary['code'] for x in items)
+                    old_count, new_count = count(original_events), count(raw_events)
+                    helper = secondary['helper']
+                    old_helpers = [(a,n) for n,a,o,op,par in vr_walk(trees[path]) if isinstance(n,ast.FunctionDef) and o == helper]
+                    new_helpers = [(a,n) for n,a,o,op,par in vr_walk(mutation_trees[path]) if isinstance(n,ast.FunctionDef) and o == helper]
+                    helper_unchanged = len(old_helpers) == len(new_helpers) == 1 and old_helpers[0][0] == new_helpers[0][0] and vr_typed_hash(old_helpers[0][1]) == vr_typed_hash(new_helpers[0][1])
+                    secondary_ok = helper_unchanged and new_count > old_count
+                    detail['helper_owner_unchanged'] = helper_unchanged
+                    detail['secondary_counter'] = {'baseline': old_count, 'mutant': new_count, 'helper': secondary['helper'], 'code': secondary['code']}
+                else:
+                    required = set(secondary['required_codes']) if isinstance(secondary, dict) else {secondary}
+                    targets = case.get('targets', [target])
+                    addresses = [t['ast_path'] for t in targets]
+                    if operation == 'insert_after':
+                        match = re.fullmatch(r'(.*)\[([0-9]+)\]', addresses[0])
+                        if match is None:
+                            raise ValueError('insertion address')
+                        addresses = [f'{match[1]}[{int(match[2]) + 1}]']
+                    old_nodes = {a:vr_typed_hash(n) for n,a,o,op,par in vr_walk(trees[path])}
+                    matching = [e for e in raw_events if e['path'] == path and old_nodes.get(e['ast_path']) != e['node_typed_sha256'] and any(e['ast_path'] == a or e['ast_path'].startswith(a + '.') or a.startswith(e['ast_path'] + '.') for a in addresses)]
+                    observed = {e['code'] for e in matching}
+                    secondary_ok = required <= observed
+                    detail['secondary_required_codes'] = sorted(required)
+                    detail['secondary_observed_codes'] = sorted(observed)
+                    detail['secondary_exact_events'] = matching
+        record(case['id'], primary_ok and secondary_ok, **detail)
+    # Ledger recipes mutate only private declaration/event copies; source never changes.
+    for case in policy['ledger_cases']:
+        declarations = copy.deepcopy(policy['ledger'])
+        emitted = copy.deepcopy(original_events)
+        index = case['logical_index']
+        item = declarations[index]['structural_identities'][0]
+        name = case['recipe_name']
+        if name in ('wrong_path', 'wrong_owner', 'wrong_owner_address', 'wrong_node_address', 'wrong_issue_code'):
+            field_name = {'wrong_path':'path','wrong_owner':'owner','wrong_owner_address':'owner_ast_path','wrong_node_address':'ast_path','wrong_issue_code':'code'}[name]
+            if name in ('wrong_path', 'wrong_owner'):
+                item[field_name] += '.unapproved'
+            elif name in ('wrong_owner_address', 'wrong_node_address'):
+                item[field_name] += '.body[999]'
+            else:
+                item[field_name] = 'unapproved_vr_issue'
+        elif name == 'missing_identity':
+            declarations.pop(index)
+        elif name == 'duplicate_declaration':
+            declarations.insert(index, copy.deepcopy(declarations[index]))
+        elif name == 'excess_emission':
+            emitted.append(copy.deepcopy(next(e for e in emitted if vr_event_key(e) == vr_event_key(item))))
+        else:
+            raise ValueError('unknown ledger recipe')
+        record(case['id'], not vr_validate_accounting(declarations, emitted, original_issues, counts))
+    for case in policy['other_cases']:
+        name = case['id']
+        declarations = copy.deepcopy(policy['ledger'])
+        emitted = copy.deepcopy(original_events)
+        mutated_counts = dict(counts)
+        if name in ('repeated_analysis_ledger_not_fresh','repeated_emission'):
+            emitted.append(copy.deepcopy(emitted[0]))
+        elif name == 'overlapping_claim':
+            declarations.append(copy.deepcopy(declarations[0]))
+        elif name == 'new_issue_code':
+            declarations[0]['structural_identities'][0]['code'] = 'unapproved_vr_issue'
+        elif name == 'missing_emission':
+            emitted.pop(0)
+        elif name == 'legacy_consumption_count_mixed_into_VR':
+            mutated_counts['appended'] += 210
+        elif name in ('missing_policy','changed_policy_LF_bytes'):
+            changed = {} if name == 'missing_policy' else {VR_POLICY_PATH.as_posix():baseline[VR_POLICY_PATH.as_posix()] + b'\n<!-- vr-compat-policy-negative -->\n'}
+            root = root_for(name, changed, VR_POLICY_PATH.as_posix() if name == 'missing_policy' else None)
+            outcome = analyze_vr_repository(root)
+            record(name, len(outcome[0]) == 1 and outcome[0][0].code == 'vr_compat_policy_drift')
+            continue
+        elif name == 'wrong_policy_raw_hash':
+            original_hash = globals()['VR_POLICY_SHA256']
+            try:
+                globals()['VR_POLICY_SHA256'] = '0' * 64
+                outcome = analyze_vr_repository(source_root)
+            finally:
+                globals()['VR_POLICY_SHA256'] = original_hash
+            record(name, len(outcome[0]) == 1 and outcome[0][0].code == 'vr_compat_policy_drift')
+            continue
+        else:
+            raise ValueError('unknown other recipe')
+        record(name, not vr_validate_accounting(declarations, emitted, original_issues, mutated_counts))
+    for case in policy['remaining_cases']:
+        name = case['id']
+        if case['kind'] == 'parser-negative':
+            old_argv = sys.argv
+            stdout, stderr = io.StringIO(), io.StringIO()
+            try:
+                sys.argv = ['check_vendor_organization_schema.py'] + case['argv']
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    exit_code = vr_main()
+            finally:
+                sys.argv = old_argv
+            record(name, exit_code == 2 and stdout.getvalue() == '' and stderr.getvalue() == policy['invalid_stderr'])
+        elif case['kind'] == 'output-parser-negative':
+            record(name, re.fullmatch(r'(?:0|[1-9][0-9]*)', case['value']) is None)
+        else:
+            checks = {
+                'positive_exact_baseline': not positive[0],
+                'positive_fresh_repeated_analysis': vr_validate_accounting(policy['ledger'], original_events, original_issues, counts),
+                'positive_typed_path_mapping_all18': len({vr_event_key(e) for e in original_events}) == 18,
+                'positive_same_line_independent_node_address': len({a for n,a,o,op,par in vr_walk(ast.parse('f(); f()')) if isinstance(n,ast.Call)}) == 2,
+                'positive_all_71_emissions_counted': len(original_events) == 71,
+                'positive_legacy_allowances_separate': counts == {'attempts':281,'legacy_consumed':210,'appended':71},
+                'positive_seven_modules_and_app_complete': len(policy['modules']) == 11 and all(vr_typed_hash(trees[p]) == h for p,h in policy['modules'].items()),
+                'positive_approved_terminal_reference_inventory': all(vr_counter(vr_reference_streams(trees,policy)[s]) == vr_counter(policy['streams'][s]) for s in ('original','adapter','tool')),
+                'positive_canonical_integer_and_whole_line_parser': all(re.fullmatch(r'(?:0|[1-9][0-9]*)', s) for s in ('0','18','71')) and render_vr(positive)[1] == policy['success_stdout'],
+            }
+            record(name, checks[name])
+    if len(results) != 254 or len({r['id'] for r in results}) != 254:
+        raise ValueError('case inventory mismatch')
+    return results
+
+
+def vr_self_test():
+    try:
+        scratch = Path(tempfile.mkdtemp(prefix='vr-compat-r01-source-'))
+        results = vr_run_cases(ROOT_DIR, scratch)
+        if any(row['status'] != 'PASS' for row in results):
+            raise ValueError('qualification failure')
+    except Exception:
+        print('vendor organization schema VR compatibility r01 self-test failure', file=sys.stderr)
+        return 1
+    print('vr_compat_self_test_scope: isolated_static_vr_compat_r01')
+    print(f'self_test_scenarios: {len(results)}')
+    print('database_access: 0\napp_imports: 0')
+    print('vendor organization schema VR compatibility r01 self-test PASS')
+    return 0
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(vr_main())
