@@ -1,0 +1,96 @@
+{
+  "observed_date_utc": "2026-10-01",
+  "observation_window_utc": "10:55-11:05; bounded read-only preparation checks",
+  "repository": "a71859682/handover-system",
+  "base_branch": "ci-vr-schema-compat-r01",
+  "base_commit": "f95c028f782028f214e0340ec4732ac66d386450",
+  "qualification_branch": "ci-vendor004-backup-linux-r01",
+  "repo_webhooks": [],
+  "repo_rulesets": [],
+  "api_results": "GitHub CLI read-only GET hooks/rulesets succeeded; public repo default_branch main.",
+  "local_active_git_hooks": [],
+  "base_workflows": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "push": "all branches",
+      "pull_request": "all",
+      "jobs": [
+        "linux-portable",
+        "windows-native",
+        "verify"
+      ],
+      "deployment_steps": false,
+      "modified": false
+    }
+  ],
+  "default_branch_workflows": [
+    {
+      "path": ".github/workflows/ci.yml",
+      "blob_sha": "be73b2961a981a4d9e3a1c3f639219ca82285f51",
+      "push": "all branches",
+      "pull_request": "all",
+      "deployment_steps": false
+    }
+  ],
+  "render_workspace": "tea-d8vmr4ok1i2s73etn1tg",
+  "render_services": [
+    {
+      "name": "handover-vendor004-preview-20261001",
+      "id": "srv-dauveqm0tbcc73ctdt20",
+      "branch": "ci-vr-schema-compat-r01",
+      "autoDeploy": "no",
+      "autoDeployTrigger": "off",
+      "previews": {
+        "generation": "off"
+      },
+      "pullRequestPreviewsEnabled": "no"
+    },
+    {
+      "name": "handover-vr4-preview-20260928-r01",
+      "id": "srv-dasvh9npn0mc73a97mrg",
+      "branch": "preview/004f-vr4-nav-20260928-r02",
+      "autoDeploy": "no",
+      "autoDeployTrigger": "off",
+      "previews": {
+        "generation": "off"
+      },
+      "pullRequestPreviewsEnabled": "no"
+    },
+    {
+      "name": "handover-system-staging",
+      "id": "srv-d92g3cdaeets73ehitn0",
+      "branch": "staging",
+      "autoDeploy": "yes",
+      "autoDeployTrigger": "commit",
+      "previews": {
+        "generation": "off"
+      },
+      "pullRequestPreviewsEnabled": "no"
+    },
+    {
+      "name": "handover-system-dev",
+      "id": "srv-d8vqk58k1i2s73f1v7sg",
+      "branch": "develop",
+      "autoDeploy": "yes",
+      "autoDeployTrigger": "commit",
+      "previews": {
+        "generation": "off"
+      },
+      "pullRequestPreviewsEnabled": "no"
+    },
+    {
+      "name": "handover-system",
+      "id": "srv-d8vmv2rsq97s738i5lh0",
+      "branch": "main",
+      "autoDeploy": "yes",
+      "autoDeployTrigger": "commit",
+      "previews": {
+        "generation": "off"
+      },
+      "pullRequestPreviewsEnabled": "no"
+    }
+  ],
+  "assessment": "No deployment path to the qualification branch found in queried repo/workspace settings. Existing wildcard application CI WILL ALSO run on future push; not disabled. No PR/merge planned.",
+  "visibility_limit": "Read-only snapshot of repository hooks/rulesets/workflows and selected Render workspace. It cannot attest an unlisted external account/integration or later setting changes.",
+  "actions_performed": "Read-only settings inspection plus explicitly authorized new local worktree/branch. No push/CI/deploy, no environment-secret reads."
+}

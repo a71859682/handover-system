@@ -1,0 +1,8 @@
+backup_candidate.py -text
+test_backup_candidate.py -text
+test_r02_regressions.py -text
+*.json text eol=lf
+*.md text eol=lf
+posix_cases.py text eol=lf
+qualify.py text eol=lf
+supervise.py text eol=lf

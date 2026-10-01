@@ -1,0 +1,55 @@
+name: Vendor004 backup Linux qualification candidate
+
+on:
+  push:
+    branches: [ci-vendor004-backup-linux-r01]
+    paths:
+      - tools/vendor004_backup_linux/**
+      - .github/workflows/vendor004-backup-linux.yml
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      QUAL_EVIDENCE_DIR: ${{ runner.temp }}/vendor004-backup-linux-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout exact qualification commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Fixed Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14.7'
+          architecture: x64
+          check-latest: false
+      - name: Non-root synthetic qualification under whole-job supervisor
+        id: qualification
+        shell: bash
+        run: python -I -S -B tools/vendor004_backup_linux/supervise.py --evidence-root "$QUAL_EVIDENCE_DIR"
+      - name: Retain explicit sanitized evidence allowlist
+        if: always() && steps.qualification.outputs.artifacts_validated == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vendor004-backup-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: false
+          path: |
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/backup_candidate.py
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/test_backup_candidate.py
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/test_r02_regressions.py
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/posix_cases.py
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/qualify.py
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/supervise.py
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/README.md
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/pins.json
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/runtime.json
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/suite.json
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/console.txt
+            ${{ env.QUAL_EVIDENCE_DIR }}/artifact/supervisor.json

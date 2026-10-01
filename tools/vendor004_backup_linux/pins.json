@@ -1,0 +1,43 @@
+{
+  "base_commit": "f95c028f782028f214e0340ec4732ac66d386450",
+  "python_version": "3.14.7",
+  "runner": "ubuntu-24.04",
+  "architecture": "x64",
+  "files": {
+    "backup_candidate.py": "9042FE33A26BC903BB27D364EB67AEE202EF68483BAF5B5603E64655D293BC54",
+    "test_backup_candidate.py": "A0BDD8F0E7CC2F134C5898797B41870E661618BDC63F55EA55CF28CA1315079F",
+    "test_r02_regressions.py": "49A4E8E1A58FB5D35FAC777E656266E636B6F9F1C59ACB722F775029C16D9038",
+    "posix_cases.py": "F6D6C775B089E57F16E9162D15C0EA6CE3B6DC5FAD214C8A9FB06B19214791AA",
+    "qualify.py": "683EC0CE4AFD27FC1377D0C88D3DC769C4F148C3D8D37B0F7B5C9858F0F9DBCC",
+    "supervise.py": "7E54B3A0E3246C8F3916B51E3958D8FF53ADE060425E3D4529D984B2AE58C465"
+  },
+  "reviewed_linux_sqlite": null,
+  "sqlite_limit": "Actual linked Linux library/source ID/hash/backport provenance unobserved; first functional success remains LIMITED.",
+  "actions": {
+    "checkout": {
+      "tag": "v7.0.1",
+      "sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "source": "https://github.com/actions/checkout/releases/tag/v7.0.1"
+    },
+    "setup-python": {
+      "tag": "v7.0.0",
+      "sha": "5fda3b95a4ea91299a34e894583c3862153e4b97",
+      "source": "https://github.com/actions/setup-python/releases/tag/v7.0.0"
+    },
+    "upload-artifact": {
+      "tag": "v7.0.1",
+      "sha": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+      "source": "https://github.com/actions/upload-artifact/releases/tag/v7.0.1"
+    }
+  },
+  "python_upstream_metadata": {
+    "release": "3.14.7-31064857500",
+    "asset": "python-3.14.7-linux-24.04-x64.tar.gz",
+    "published_sha256": "76d5ddab6d2dd89a39c06220f6efeda486a48ed481eae97bfc596c74ac3623db",
+    "build_source_commit": "f73ecf911ef77c72e9b35243fcca2468b1b12eae",
+    "source": "https://github.com/actions/python-versions/releases/expanded_assets/3.14.7-31064857500",
+    "downloaded_or_verified_locally": false,
+    "future_toolcache_or_download_unobserved": true
+  },
+  "sqlite_advisory": "https://sqlite.org/wal.html#the_wal_reset_bug"
+}
