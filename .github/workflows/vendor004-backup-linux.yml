@@ -14,8 +14,6 @@ jobs:
   synthetic:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    env:
-      QUAL_EVIDENCE_DIR: ${{ runner.temp }}/vendor004-backup-linux-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout exact qualification commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,10 +29,14 @@ jobs:
       - name: Non-root synthetic qualification under whole-job supervisor
         id: qualification
         shell: bash
+        env:
+          QUAL_EVIDENCE_DIR: ${{ runner.temp }}/vendor004-backup-linux-${{ github.run_id }}-${{ github.run_attempt }}
         run: python -I -S -B tools/vendor004_backup_linux/supervise.py --evidence-root "$QUAL_EVIDENCE_DIR"
       - name: Retain explicit sanitized evidence allowlist
         if: always() && steps.qualification.outputs.artifacts_validated == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        env:
+          QUAL_EVIDENCE_DIR: ${{ runner.temp }}/vendor004-backup-linux-${{ github.run_id }}-${{ github.run_attempt }}
         with:
           name: vendor004-backup-linux-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: warn
